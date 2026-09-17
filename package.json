@@ -1,0 +1,39 @@
+{
+  "name": "ai-gal",
+  "version": "1.0.0",
+  "description": "本地运行的 AI 角色扮演 / 视觉小说引擎（SillyTavern 兼容角色卡 · 世界书 · MVU 变量 · ComfyUI 生图 · TTS）",
+  "main": "server/index.js",
+  "license": "MIT",
+  "author": "zHdna",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zHdna/ai-gal.git"
+  },
+  "homepage": "https://github.com/zHdna/ai-gal#readme",
+  "bugs": {
+    "url": "https://github.com/zHdna/ai-gal/issues"
+  },
+  "keywords": [
+    "ai",
+    "roleplay",
+    "galgame",
+    "visual-novel",
+    "sillytavern",
+    "comfyui",
+    "tts",
+    "character-card"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "express": "^4.21.0",
+    "multer": "^2.1.1",
+    "uuid": "^11.0.0"
+  }
+}

@@ -1,0 +1,2079 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-GAL</title>
+  <!-- [移动端前端临时屏蔽 2026-09-11]
+       下面的「移动端自动跳转」脚本已停用：无论 UA 还是屏幕宽度，局域网访问一律停留在桌面版 index.html。
+       恢复方法：删掉本注释包裹（保留 script），并放开 server/index.js 里的 DISABLE_MOBILE_FRONTEND。
+  <script>
+    // Auto-redirect mobile/tablet visitors to the mobile-optimized page.
+    (function () {
+      try {
+        if (location.search.indexOf('desktop=1') !== -1) {
+          localStorage.setItem('forceDesktop', '1'); // remember preference
+        }
+        if (localStorage.getItem('forceDesktop') === '1') return; // user opted into desktop
+        if (/mobile\.html/.test(location.pathname)) return;        // already on mobile page
+        var ua = navigator.userAgent || '';
+        var isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua);
+        var w = Math.min(window.innerWidth, (window.screen && window.screen.width) ? window.screen.width : window.innerWidth);
+        var isTouchSmall = (navigator.maxTouchPoints > 0 || ('ontouchstart' in window)) && w < 1024;
+        if (isMobileUA || isTouchSmall) {
+          location.replace('mobile.html');
+        }
+      } catch (e) {}
+    })();
+  </script>
+  -->
+  <link rel="stylesheet" href="css/ai-rp-tool-redesign.css?v=20260905a">
+  <link rel="stylesheet" href="css/theater-enhance.css">
+  <style>
+    #btnTTSStop {
+      background: var(--danger);
+      color: #fff;
+    }
+
+    /* TTS player bar removed (2026-07-09): playback is controlled via the 🎧 floating list popup */
+
+    /* Recorder button active state (popup open) */
+    #btnTTSListFloat.active {
+      background: var(--color-accent-600);
+      color: var(--text-primary);
+    }
+
+    /* TTS list popup (floating, opened from recorder button) */
+    .tts-list-popup {
+      position: fixed;
+      right: 52px;
+      bottom: 84px;
+      width: 320px;
+      max-height: min(62vh, calc(100vh - 96px));
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-secondary, #1c1c1e);
+      border: 1px solid var(--border-color, #333);
+      border-radius: 10px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+      z-index: 200;
+      overflow: hidden;
+    }
+
+    .tts-list-popup.hidden {
+      display: none;
+    }
+
+    .tts-list-popup-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-color, #333);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary, #eee);
+    }
+
+    .tts-list-popup-close {
+      background: transparent;
+      border: none;
+      color: var(--text-muted, #888);
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+
+    .tts-list-popup-close:hover {
+      color: var(--text-primary, #eee);
+    }
+
+    /* Small icon action buttons in header (Stop + Close) */
+    .tts-list-popup-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+
+    .tts-icon-btn {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      border: 1px solid var(--border-color, #444);
+      background: var(--bg-tertiary, #2c2c2e);
+      color: var(--text-primary, #eee);
+      font-size: 13px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      transition: background 0.15s, transform 0.12s, border-color 0.15s;
+    }
+
+    .tts-icon-btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .tts-icon-btn.stop:hover {
+      background: #FF3B30;
+      border-color: #FF3B30;
+      color: #fff;
+    }
+
+    .tts-icon-btn.close:hover {
+      background: var(--accent, #007aff);
+      border-color: var(--accent, #007aff);
+      color: #fff;
+    }
+
+    .tts-list-popup-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    /* Slim scrollbar for the audio list */
+    .tts-list-popup-body::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .tts-list-popup-body::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .tts-list-popup-body::-webkit-scrollbar-thumb {
+      background: var(--border-color, #444);
+      border-radius: 4px;
+    }
+
+    .tts-list-popup-body::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted, #888);
+    }
+
+    .tts-list-popup-body .tts-pl-empty {
+      padding: 18px 10px;
+      text-align: center;
+      color: var(--text-muted, #888);
+      font-size: 12px;
+    }
+
+    .tts-list-popup-body .tts-pl-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-secondary, #ccc);
+      transition: background 0.15s;
+    }
+
+    .tts-list-popup-body .tts-pl-item:hover {
+      background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+    }
+
+    .tts-list-popup-body .tts-pl-item.active {
+      background: var(--accent, #007aff);
+      color: #fff;
+    }
+
+    .tts-list-popup-body .tts-pl-item.loading {
+      opacity: 0.5;
+    }
+
+    .tts-list-popup-body .tts-pl-item .tts-pl-icon {
+      width: 16px;
+      text-align: center;
+      font-size: 10px;
+    }
+
+    .tts-list-popup-body .tts-pl-item .tts-pl-text {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tts-list-popup-body .tts-pl-item .tts-pl-dur {
+      font-size: 10px;
+      color: var(--text-muted, #666);
+      min-width: 32px;
+      text-align: right;
+    }
+
+    @keyframes tts-pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.3;
+      }
+    }
+  </style>
+  <link rel="stylesheet" href="css/desktop/vn.css?v=20260917j">
+</head>
+
+<body>
+  <!-- Top Navigation Bar -->
+  <!-- VN-SHELL:BEGIN（由 tools/build-desktop-vn.js 从设计稿生成） -->
+<div class="app" id="app">
+
+    <!-- ===================== 顶部 HUD ===================== -->
+    <header class="hud">
+      <div class="hud-left">
+        <span class="brand"><i></i>AI-GAL</span>
+        <span class="save tip" id="saveSwitch" data-tip="展开左侧游戏列表 / 存档进度">
+          <b>北岭夜行</b>
+          <em>第 12 轮 · 夜谈</em>
+        </span>
+      </div>
+
+      <div class="hud-center">
+        <span class="stability tip" data-tip="时空稳定度 = 上下文占用比例（8.4k / 13.2k tokens）">
+          <span class="lbl">稳 定</span>
+          <span class="bar"><i style="width:63%"></i></span>
+          <span class="num">8.4k / 13.2k</span>
+        </span>
+
+        <!-- 隐藏 / 显示记录：等同 /hide 与 /unhide，点击后询问轮次范围（紧挨上下文条） -->
+        <button class="hbtn tip" id="btnHideRec" data-tip="隐藏记录：这些轮次不再作为 AI 上下文（等同 /hide N）">🙈 <span class="bl">隐藏记录</span></button>
+        <button class="hbtn tip" id="btnShowRec" data-tip="显示记录：恢复被隐藏的轮次（等同 /unhide N）">👁 <span class="bl">显示记录</span></button>
+
+        <!-- 背景 CG 切换器：夹在「上下文条/记录按钮」与 AUTO 之间（手动翻看，不与文本对应） -->
+        <div class="cg-nav" id="cgNav" title="切换背景 CG（Shift + ←/→）">
+          <button class="cgn" id="cgPrev" title="上一张 CG（Shift + ←）" aria-label="上一张 CG">‹</button>
+          <span class="cgn-i" id="cgIdx">3 / 12</span>
+          <button class="cgn" id="cgNext" title="下一张 CG（Shift + →）" aria-label="下一张 CG">›</button>
+        </div>
+      </div>
+
+      <div class="hud-right">
+        <button class="hbtn tip" id="btnAuto" data-tip="自动推进（默认关，点击启用）">◐ <span class="bl">AUTO</span></button>
+        <button class="hbtn tip" id="btnSkip" data-tip="快速跳过">⏩ <span class="bl">SKIP</span></button>
+        <button class="hbtn tip" id="btnHist" data-tip="回顾历史记录（H）">☰ <span class="bl">回顾</span></button>
+
+        <!-- BGM 开关 + 音量条（参考旧前端 multimedia-bar） -->
+        <div class="audio-grp">
+          <span class="viz" id="audioVisualizer"><i></i><i></i><i></i><i></i><i></i></span>
+          <button class="hbtn icon tip" id="btnToggleAudio" data-tip="开关 BGM（B）"><span id="audioIcon">🔊</span></button>
+          <input type="range" id="bgmVolume" min="0" max="100" value="32" title="音量">
+        </div>
+
+        <button class="hbtn tip" id="btnConsole" data-tip="幕后控制台">🐞 <span class="bl">控制台</span></button>
+        <button class="hbtn icon tip" id="btnTheme" data-tip="明 / 暗主题（T）">☾</button>
+        <button class="hbtn gold tip" id="btnMenu" data-tip="菜单（M）">≡ <span class="bl">菜单</span></button>
+      </div>
+    </header>
+
+    <!-- ===================== 左侧游戏列表（纵向 · 可向左折叠） ===================== -->
+    <div class="stage-row">
+      <aside class="sidebar" id="leftSidebar">
+        <!-- 折叠态竖条 -->
+        <div class="sidebar-strip" id="sidebarStrip">
+          <button class="strip-toggle tip" id="btnExpandSidebar" data-tip="展开游戏列表">📂</button>
+          <div class="strip-avatars" id="stripAvatars">
+            <span class="strip-av on" data-demo="1" data-cast="0" style="background-image:none"></span>
+            <span class="strip-av" data-demo="1" data-cast="1" style="background-image:none"></span>
+            <span class="strip-av" data-demo="1" data-cast="2" style="background-image:none"></span>
+          </div>
+          <button class="strip-add tip" id="btnNewCharacterStrip" data-tip="新建角色卡">➕</button>
+        </div>
+
+        <!-- 展开态面板 -->
+        <div class="sidebar-panel" id="sidebarPanel">
+          <div class="side-head">
+            <h3>游戏列表</h3>
+            <span class="spacer"></span>
+            <button class="close-x tip" id="btnNewCharacter" data-tip="新建角色卡">➕</button>
+            <button class="close-x tip" id="btnCollapseSidebar" data-tip="收起侧栏">📁</button>
+          </div>
+
+          <div class="side-tags" id="characterTagsBar">
+            <span class="side-tag on" data-demo="1">全部</span>
+            <span class="side-tag" data-demo="1">日常</span>
+            <span class="side-tag" data-demo="1">恋爱</span>
+            <span class="side-tag" data-demo="1">悬疑</span>
+          </div>
+
+          <div class="sidebar-body">
+            <div class="grp">角 色 卡 · 存 档 进 度</div>
+            <div class="character-list" id="characterList"></div>
+
+            <div class="save-char on" data-demo="1">
+              <div class="h">
+                <div class="av" style="background-image:none"></div>
+                <div class="nm">
+                  <b>示例角色丙</b>
+                  <small>日常 · 恋爱 · 3 个进度 · engine 卡</small>
+                </div>
+              </div>
+              <div class="list show">
+                <div class="save-item on">
+                  <span class="t">第 12 轮 · 观星台<em>当前</em><small>2026-09-16 23:40</small></span>
+                  <button class="mi tip" data-tip="导出">⤓</button>
+                </div>
+                <div class="save-item">
+                  <span class="t">第 06 轮 · 雪夜的缆车<small>2026-09-14 22:10</small></span>
+                  <button class="mi tip" data-tip="导出">⤓</button>
+                  <button class="mi del tip" data-tip="删除进度">🗑</button>
+                </div>
+                <div class="save-item">
+                  <span class="t">第 01 轮 · 开场白<small>2026-09-12 21:05</small></span>
+                  <button class="mi tip" data-tip="导出">⤓</button>
+                  <button class="mi del tip" data-tip="删除进度">🗑</button>
+                </div>
+                <div class="save-item new" data-demo="1">＋ 新开游戏</div>
+              </div>
+            </div>
+
+            <div class="save-char" data-demo="1">
+              <div class="h">
+                <div class="av" style="background-image:none"></div>
+                <div class="nm">
+                  <b>示例角色丁</b>
+                  <small>日常 · 家庭 · 1 个进度</small>
+                </div>
+              </div>
+            </div>
+            <div class="save-char" data-demo="1">
+              <div class="h">
+                <div class="av" style="background-image:none"></div>
+                <div class="nm">
+                  <b>示例角色乙</b>
+                  <small>悬疑 · 返乡 · 2 个进度</small>
+                </div>
+              </div>
+            </div>
+
+            <button class="btn-block" id="btnImportCharacter">↓ 导入角色卡（.json / .png）</button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="main-col">
+        <!-- ===================== 舞台：一张图 + 背景色填充 ===================== -->
+        <div class="stage" id="stage">
+          <div class="art-frame" id="artFrame">
+            <img class="cg" id="cgImg" data-empty="1" alt="当前画面 CG">
+            <span class="corner tl"></span><span class="corner tr"></span>
+            <span class="corner bl"></span><span class="corner br"></span>
+            <div class="chip chip-loc"><i></i>北岭 · 观星台 · 雪线<span class="t">深夜 23:40</span></div>
+            <!-- 隐藏 UI 时的唯一出口：大图右上角的小 ✕（关掉大图 / 回到主界面） -->
+            <button class="stage-x" id="stageX" title="关闭大图，回到主界面（H）" aria-label="关闭大图">✕</button>
+          </div>
+
+          <!-- 行动选项：浮于画面正中，纵向排列；只在最后一段出现 -->
+          <div class="choices" id="choices">
+            <button class="ch"><span>问她为什么半夜把你叫出来</span><kbd>1</kbd></button>
+            <button class="ch"><span>把那张星图递过去</span><kbd>2</kbd></button>
+            <button class="ch"><span>什么也不问，先给她披上外套</span><kbd>3</kbd></button>
+          </div>
+        </div>
+
+    <!-- ===================== 底部演出带：头像 + 对话框 + 指令条 ===================== -->
+    <div class="bottom">
+
+      <!-- 左下：当前说话者大头像（说话时点亮，旁白时半透明）——不挂姓名/身份标签。
+           原来左右各一个槽位靠 dialog-wrapper-left/right 交替点亮，观感是「两张脸来回跳」，
+           现固定只留左侧一个。 -->
+      <div class="av-slot left on" id="avL" title="点击查看大图">
+        <img id="avLImg" data-empty="1" alt="示例角色丙">
+      </div>
+
+      <div class="mid">
+        <!-- 主对话框：高度已压小，把画面留给 CG -->
+        <div class="dialog" id="dialog">
+          <span class="corner tl"></span><span class="corner tr"></span>
+          <span class="corner bl"></span><span class="corner br"></span>
+
+          <!-- 右上三个按钮骑在顶边金线上（--[]--[]--[]--）：不占正文高度。
+               数据中心（#fabData）挪到这里，夹在「语音」和「隐藏UI」之间；
+               ⚠ 它只负责开关，弹窗本体 .dock 仍是右下角绝对定位，位置不随按钮走。 -->
+          <span class="dlg-actions">
+            <button class="tool tip" id="btnTtsToggle" data-tip="语音朗读">▷ 语音</button>
+            <button class="tool tip" id="fabData" data-tip="数据中心（D）· 打开后可继续游戏">▤ 数据中心</button>
+            <button class="tool tip" id="btnHideUI" data-tip="隐藏界面，只看画面（H）">⛶ 隐藏UI</button>
+          </span>
+
+          <div class="plate-row">
+            <span class="plate"><b id="spkName">示例角色丙</b><em id="spkRomaji">AYANO</em></span>
+            <span class="aff">
+              <span class="h">♥</span>
+              <span class="bar"><i id="affBar" style="width:62%"></i></span>
+              <b id="affNum">62</b>
+            </span>
+            <span class="row-spacer"></span>
+          </div>
+
+          <div class="body">
+            <div class="nar-hint" id="narHint">↕ 本段较长，可滚动</div>
+            <div class="dlg-text" id="dlgText">「……你把我叫到这种地方，是为了看星星？」<span class="cur"></span></div>
+            <div class="dlg-narr" id="dlgNarr"></div>
+          </div>
+
+          <div class="tools">
+            <button class="tool tip" id="toolHist" data-tip="回顾历史记录（L）">▾ 回顾</button>
+            <span class="seg-info">
+              <span class="seg-dots" id="segDots"></span>
+              <span class="seg-badge" id="segBadge">1 / 5</span>
+            </span>
+            <span class="seg-ctrl">
+              <button class="tool" id="btnPrev" title="上一段（←）">‹ 上一段</button>
+              <button class="tool primary" id="btnNext" title="下一段（→ / 空格）">下一段 ›</button>
+            </span>
+          </div>
+        </div>
+
+        <!-- 指令条：与主对话框合并成一个面板（无缝，去掉了导入角色卡的 ＋ 键） -->
+        <div class="cmd">
+          <textarea id="messageInput" rows="1" placeholder="输入你的行动或台词…（Enter 发送，Shift + Enter 换行）"></textarea>
+          <span class="hint"><kbd>Enter</kbd> 发送 · <kbd>Esc</kbd> 收起面板</span>
+          <button class="send" id="btnSend">发 送</button>
+        </div>
+      </div>
+
+      <!-- 右下：预留位（原玩家头像槽的位置）。
+           刻意留空，但占住同宽的一列，主对话框才不会被撑宽；
+           以后要在这块放新 UI，直接把内容塞进这个容器即可。 -->
+      <div class="right-slot" id="rightSlot" aria-hidden="true"></div>
+    </div>
+      </div>
+    </div>
+
+    <!-- ===================== 数据中心（右下方悬浮窗 · 非模态） ===================== -->
+    <aside class="dock" id="dock">
+      <div class="dock-head">
+        <h3>数据中心</h3>
+        <span class="spacer"></span>
+        <button class="close-x tip" id="btnDockClose" data-tip="收起（D / Esc）">✕</button>
+      </div>
+
+      <div class="dock-tabs" id="dockTabs">
+        <button class="dtab on" data-pane="status">主要状态</button>
+        <button class="dtab" data-pane="roster">角色名册</button>
+        <button class="dtab" data-pane="gallery">CG 画廊</button>
+        <button class="dtab" data-pane="memory">记忆表格</button>
+        <button class="dtab" data-pane="world">世界状态</button>
+      </div>
+
+      <div class="dock-body">
+        <div class="pane on" data-pane="status">
+          <div class="card">
+            <h5>氛围<span>深夜 · 静谧</span></h5>
+            <div class="tags">
+              <span class="tag gold">雪线</span>
+              <span class="tag cyan">星空</span>
+              <span class="tag rose">心事</span>
+              <span class="tag">寒冷 −6℃</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <h5>角色数值<span>示例角色丙</span></h5>
+            <div class="kv-grid">
+              <div class="kv">
+                <span class="k">好 感 度</span>
+                <span class="v rose">62</span>
+                <div class="meter rose"><i style="width:62%"></i></div>
+              </div>
+              <div class="kv">
+                <span class="k">信 任</span>
+                <span class="v cyan">44</span>
+                <div class="meter"><i style="width:44%"></i></div>
+              </div>
+              <div class="kv">
+                <span class="k">体 力</span>
+                <span class="v">61 / 100</span>
+                <div class="meter"><i style="width:61%"></i></div>
+              </div>
+              <div class="kv">
+                <span class="k">心 情</span>
+                <span class="v gold" style="font-size:13px">平静 · 微暖</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h5>世界<span>实时</span></h5>
+            <div class="kv-grid">
+              <div class="kv"><span class="k">时 间</span><span class="v" style="font-size:13px">深夜 23:40</span></div>
+              <div class="kv"><span class="k">天 气</span><span class="v" style="font-size:13px">晴 · 无风 −6℃</span></div>
+              <div class="kv"><span class="k">金 钱</span><span class="v gold">¥12,400</span></div>
+              <div class="kv"><span class="k">线 索</span><span class="v cyan">3 / 8</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pane" data-pane="roster">
+          <div class="roster" data-big="" data-name="示例角色丙">
+            <div class="av" style="background-image:none"></div>
+            <div class="info">
+              <b>示例角色丙</b>
+              <p>女 · 21 · 青梅竹马 · 天文社</p>
+              <div class="meter rose"><i style="width:62%"></i></div>
+            </div>
+            <span class="rel">好感 62</span>
+          </div>
+          <div class="roster" data-big="" data-name="示例角色丁">
+            <div class="av" style="background-image:none"></div>
+            <div class="info">
+              <b>示例角色丁</b>
+              <p>女 · 19 · 妹妹 · 高三在读</p>
+              <div class="meter rose"><i style="width:38%"></i></div>
+            </div>
+            <span class="rel">好感 38</span>
+          </div>
+          <div class="roster" data-big="" data-name="示例角色乙">
+            <div class="av" style="background-image:none"></div>
+            <div class="info">
+              <b>示例角色乙</b>
+              <p>女 · 24 · 表姐 · 外地返乡</p>
+              <div class="meter rose"><i style="width:51%"></i></div>
+            </div>
+            <span class="rel">好感 51</span>
+          </div>
+          <div class="roster" data-big="" data-name="我">
+            <div class="av" style="background-image:none"></div>
+            <div class="info">
+              <b>我（玩家）</b>
+              <p>男 · 22 · 大学生 · 寒假返乡</p>
+              <div class="meter gold"><i style="width:61%"></i></div>
+            </div>
+            <span class="rel">体力 61</span>
+          </div>
+        </div>
+
+        <div class="pane" data-pane="gallery">
+          <div class="card">
+            <h5>CG 画廊<span>3 / 12</span></h5>
+            <div class="cg-grid">
+              <div class="cg" data-big="" data-name="雪线之上 · 星空" style="background-image:none">
+                <span class="cap">雪线之上 · 星空</span>
+              </div>
+              <div class="cg" data-big="" data-name="荒漠 · 潜行" style="background-image:none">
+                <span class="cap">荒漠 · 潜行</span>
+              </div>
+              <div class="cg locked" title="尚未解锁">🔒</div>
+              <div class="cg locked" title="尚未解锁">🔒</div>
+            </div>
+          </div>
+          <!-- 画廊只放 CG：头像 / 卡面不进画廊（角色卡资源在左侧游戏列表里看） -->
+        </div>
+
+        <div class="pane" data-pane="memory">
+          <div class="card">
+            <h5>记忆表格<span>管家 AI 摘要</span></h5>
+            <div class="mem">
+              <div class="k">那张星图<em>第 12 轮</em></div>
+              <p class="v">三日前夹在她借去的《冬季星座》里，正面是北岭的星轨，背面用铅笔写着「23:40，老地方」。</p>
+            </div>
+            <div class="mem">
+              <div class="k">雪夜的缆车<em>第 09 轮</em></div>
+              <p class="v">末班缆车停运后你们走了两小时山路，她一路没说话，却把围巾分了一半给你。</p>
+            </div>
+            <div class="mem">
+              <div class="k">天文社的旧照片<em>第 05 轮</em></div>
+              <p class="v">照片背面写着一行日期与「北岭」两个字，笔迹与星图上的铅笔字一致。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="pane" data-pane="world">
+          <div class="card">
+            <h5>MVU 世界状态<span>engine 卡</span></h5>
+            <div class="ws-acts">
+              <button class="tool" data-toast="预览稿：重新读取初始变量">↺ 重读初始值</button>
+              <button class="tool" data-toast="预览稿：按全部消息重放补丁">⟳ 重新处理</button>
+              <button class="tool" data-toast="预览稿：清除楼层变量">🗑 清除</button>
+              <button class="tool" data-toast="预览稿：手动新增变量">＋ 新增</button>
+            </div>
+            <div class="mvu-row"><span class="n">世界.地点</span><span class="ty">str</span><span class="val">北岭 · 观星台</span></div>
+            <div class="mvu-row"><span class="n">世界.时间</span><span class="ty">str</span><span class="val">深夜 23:40</span></div>
+            <div class="mvu-row"><span class="n">世界.天气</span><span class="ty">str</span><span class="val">晴 · 无风</span></div>
+            <div class="mvu-row"><span class="n">世界.温度</span><span class="ty">num</span><span class="val">-6</span></div>
+            <div class="mvu-row"><span class="n">世界.在场</span><span class="ty">arr</span><span class="val">示例角色丙, 我</span></div>
+            <div class="mvu-row"><span class="n">示例角色丙.好感</span><span class="ty">num</span><span class="val">62</span></div>
+            <div class="mvu-row"><span class="n">示例角色丙.心事</span><span class="ty">bool</span><span class="val">true</span></div>
+            <div class="mvu-row"><span class="n">线索.星图</span><span class="ty">obj</span><span class="val">{ found: true, owner: ? }</span></div>
+          </div>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- ===================== 遮罩 + 侧滑面板 ===================== -->
+    <div class="scrim" id="scrim"></div>
+
+
+    <section class="sheet right" id="sheetHist">
+      <div class="sheet-head">
+        <h3>历史记录</h3>
+        <span class="sub">本存档 · 12 轮</span>
+        <button class="close-x" data-close>✕</button>
+      </div>
+      <div class="hist-bar">
+        <button class="hb on" data-hist-scope="all">全部</button>
+        <button class="hb" data-hist-scope="dlg">对白</button>
+        <button class="hb" data-hist-scope="narr">旁白</button>
+        <span class="spacer"></span>
+        <button class="hb" id="histExpandAll">展开全部</button>
+      </div>
+      <div class="sheet-body" id="histBody">
+        <div class="hist" data-goto="0">
+          <span class="who">示例角色丙</span>
+          <span class="txt">「……你把我叫到这种地方，是为了看星星？」</span>
+          <span class="seq">#12</span>
+          <span class="exp">▾</span>
+          <div class="full">
+            <p class="meta">第 12 轮 · 示例角色丙 · 2026-09-16 23:40:02 · 模型 main-agent · 用时 1.8s · tokens 8421/386</p>
+            <p class="q">「……你把我叫到这种地方，是为了看星星？」</p>
+            <p>她的声音压得很低，尾音被风吹散了一半。说完这句，她就没再看你，只是把围巾往上拉了拉，盖住半张脸。</p>
+            <p class="note">本条是模型响应切分后的第 1/5 段，前台逐段演出；完整响应见「幕后控制台 → 主 Agent」。</p>
+            <button class="jump" data-jump="0">跳到这一段 ›</button>
+          </div>
+        </div>
+        <div class="hist">
+          <span class="who">旁白</span>
+          <span class="txt"><span class="narr">风停了。雪线以上没有云，银河像被谁泼上去的一道亮痕，横在两人头顶。</span></span>
+          <span class="seq">#11</span>
+          <span class="exp">▾</span>
+          <div class="full">
+            <p class="meta">第 12 轮 · 旁白 · 2026-09-16 23:40:02 · 切分 2/5</p>
+            <p>风停了。雪线以上没有云，银河像被谁泼上去的一道亮痕，横在两人头顶。观星台的木栏上结了一层薄冰，远处山脊有一列灯光在缓慢移动——那是最后一班下山的缆车。</p>
+            <p>她没有说话，只是看着那道光。你能听见她呼吸的声音在冷空气里变得很清楚，一下，又一下。</p>
+          </div>
+        </div>
+        <div class="hist me">
+          <span class="who">我</span>
+          <span class="txt">「不是看星星。是你把星图留在我书里，还写了时间地点。」</span>
+          <span class="seq">#10</span>
+          <span class="exp">▾</span>
+          <div class="full">
+            <p class="meta">第 11 轮 · 玩家 · 2026-09-16 23:32:18</p>
+            <p class="q">「不是看星星。是你把星图留在我书里，还写了时间地点。」</p>
+          </div>
+        </div>
+        <div class="hist">
+          <span class="who">示例角色丙</span>
+          <span class="txt">「……你居然真的来了。」她的声音很轻，像是确认一件早就知道的事。</span>
+          <span class="seq">#09</span>
+          <span class="exp">▾</span>
+          <div class="full">
+            <p class="meta">第 11 轮 · 示例角色丙 · 2026-09-16 23:32:21 · 用时 2.4s · tokens 7930/512</p>
+            <p>「……你居然真的来了。」她的声音很轻，像是确认一件早就知道的事。</p>
+            <p>她把手里那张折得很旧的星图递过来，边角已经起了毛。「背面那行字，我写了三次才敢留下。」</p>
+          </div>
+        </div>
+        <div class="hist">
+          <span class="who">旁白</span>
+          <span class="txt"><span class="narr">观星台的木栏上结了一层薄冰，她把手指从栏杆上收回来，插进了外套口袋。</span></span>
+          <span class="seq">#08</span>
+          <span class="exp">▾</span>
+          <div class="full">
+            <p class="meta">第 11 轮 · 旁白 · 2026-09-16 23:32:21 · 切分 1/3</p>
+            <p>观星台的木栏上结了一层薄冰，她把手指从栏杆上收回来，插进了外套口袋。夜里的北岭没有别的声响，只有雪被踩实的轻响。</p>
+          </div>
+        </div>
+        <div class="hist me">
+          <span class="who">我</span>
+          <span class="txt">「那本书我翻了三年了。你写的字我认得。」</span>
+          <span class="seq">#07</span>
+          <span class="exp">▾</span>
+          <div class="full">
+            <p class="meta">第 10 轮 · 玩家 · 2026-09-16 23:24:40</p>
+            <p class="q">「那本书我翻了三年了。你写的字我认得。」</p>
+          </div>
+        </div>
+        <div class="hist">
+          <span class="who">旁白</span>
+          <span class="txt"><span class="narr">缆车的灯光一盏一盏灭下去，山脊重新沉进黑里。</span></span>
+          <span class="seq">#06</span>
+          <span class="exp">▾</span>
+          <div class="full">
+            <p class="meta">第 10 轮 · 旁白 · 2026-09-16 23:24:41 · 切分 2/2</p>
+            <p>缆车的灯光一盏一盏灭下去，山脊重新沉进黑里。她终于转过身来面对你，围巾上还落着没化完的雪。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sheet right" id="sheetConsole">
+      <div class="sheet-head">
+        <h3>幕后控制台</h3>
+        <span class="sub">主 Agent / 管家 AI · 点条目看细节</span>
+        <button class="close-x" data-close>✕</button>
+      </div>
+      <div class="con-tabs">
+        <button class="con-tab on" data-con="agent">主 Agent</button>
+        <button class="con-tab" data-con="butler">管家 AI</button>
+        <span class="spacer"></span>
+        <button class="con-filter on" data-con-filter="all">全部</button>
+        <button class="con-filter" data-con-filter="err">仅错误</button>
+        <button class="con-filter" id="conExpandAll">展开全部</button>
+      </div>
+      <div class="sheet-body">
+        <div class="log" id="logAgent">
+          <div class="con-item">
+            <div class="con-line"><span class="ts">23:40:02</span><span class="k-agent">主Agent</span>收到用户输入，构建上下文（含 12 轮历史 / 世界书 3 条命中）。<span class="exp">▾</span></div>
+            <div class="con-detail">
+              <div class="cd-row"><b>阶段</b><span>context-build</span></div>
+              <div class="cd-row"><b>模型</b><span>main-agent（temperature 0.85 / top_p 0.92）</span></div>
+              <div class="cd-row"><b>上下文</b><span>历史 12 轮 · 约 6.2k tokens · 世界书命中 3 条：星图 / 北岭 / 缆车</span></div>
+              <div class="debug-section-title" style="color:#f0a040">思维链（Chain-of-Thought）</div>
+              <pre class="debug-pre">1. 玩家刚抵达观星台，情绪是克制的期待 → 让示例角色丙先不开口，用环境压一拍。
+2. 世界书命中的「星图」是关键道具，本轮必须让它回到对话里，但不要一次说完。
+3. 玩家用「我到了」这种短句，回应也要短，节奏才对得上。</pre>
+              <div class="debug-section-title">完整输出</div>
+              <pre>prompt 尾部片段：
+[user]   我到了。你在哪？
+[system] 你在扮演示例角色丙。保持第一人称，不要替玩家行动。
+[user]   ……你终于来了。</pre>
+            </div>
+          </div>
+          <div class="con-item">
+            <div class="con-line"><span class="ts">23:40:02</span><span class="k-agent">主Agent</span>输出解析：### mood=quiet ### story=1 ### dialog=2<span class="exp">▾</span></div>
+            <div class="con-detail">
+              <div class="cd-row"><b>原始尾部</b><span>### mood=quiet ### story=1 ### dialog=2 ### choices=3</span></div>
+              <pre>mood    = quiet
+story   = 1     （旁白段数）
+dialog  = 2     （对白段数）
+choices = 3     （行动选项数）</pre>
+            </div>
+          </div>
+          <div class="con-item">
+            <div class="con-line"><span class="ts">23:40:03</span><span class="k-agent">主Agent</span>段落切分 → 5 段（对白 3 / 旁白 2），已交前台逐段演出。<span class="exp">▾</span></div>
+            <div class="con-detail">
+              <pre>#1 对白 示例角色丙  「……你把我叫到这种地方，是为了看星星？」
+#2 旁白 ---   风停了。雪线以上没有云……
+#3 对白 我    「不是看星星。是你把星图留在我书里……」
+#4 对白 示例角色丙  「……你居然真的来了。」
+#5 旁白 ---   观星台的木栏上结了一层薄冰……</pre>
+            </div>
+          </div>
+          <div class="con-item">
+            <div class="con-line"><span class="ts">23:40:03</span><span class="k-agent">主Agent</span>tokens: prompt 8421 / completion 386 / 用时 1.8s<span class="exp">▾</span></div>
+            <div class="con-detail">
+              <div class="cd-row"><b>prompt</b><span>8421 tokens（预算 13.2k，占用 63%）</span></div>
+              <div class="cd-row"><b>completion</b><span>386 tokens</span></div>
+              <div class="cd-row"><b>耗时</b><span>首字 0.6s / 总 1.8s</span></div>
+              <div class="cd-row"><b>重试</b><span>0 次</span></div>
+            </div>
+          </div>
+          <div class="con-item err">
+            <div class="con-line"><span class="ts">23:40:03</span><span class="k-err">错误</span>管家 AI 请求失败：HTTP 429（rate limit），已退避重试成功。<span class="exp">▾</span></div>
+            <div class="con-detail">
+              <div class="cd-row"><b>时间</b><span>2026-09-16 23:40:03.412</span></div>
+              <div class="cd-row"><b>组件</b><span>butler-agent → provider=qwen-cloud</span></div>
+              <div class="cd-row"><b>错误</b><span class="bad">HTTP 429 Too Many Requests</span></div>
+              <div class="cd-row"><b>重试</b><span>第 1 次 · 退避 2000ms · 结果：成功</span></div>
+              <pre class="stack">Error: HTTP 429 Too Many Requests
+    at Provider.fetch (server/providers/qwen.js:142:11)
+    at ButlerAgent.run (server/agents/butler.js:88:22)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+  response: {"error":{"code":"rate_limit_exceeded","message":"Requests rate limit exceeded"}}</pre>
+            </div>
+          </div>
+        </div>
+        <div class="log" id="logButler" style="display:none">
+          <div class="con-item">
+            <div class="con-line"><span class="ts">23:40:04</span><span class="k-butler">管家AI</span>氛围判定：深夜 · 静谧 → BGM「星轨 · 雪原」<span class="exp">▾</span></div>
+            <div class="con-detail">
+              <pre>输入：最近 2 轮文本 + 场景标签（北岭 / 观星台 / 雪）
+mood       = 深夜 · 静谧
+bgm        = 星轨 · 雪原   （素材库命中 4/12）
+volume     = 32%
+confidence = 0.88</pre>
+            </div>
+          </div>
+          <div class="con-item">
+            <div class="con-line"><span class="ts">23:40:04</span><span class="k-butler">管家AI</span>立绘判定：示例角色丙 / 通常1（置信 0.91）<span class="exp">▾</span></div>
+            <div class="con-detail">
+              <div class="cd-row"><b>角色</b><span>示例角色丙（当前在场）</span></div>
+              <div class="cd-row"><b>立绘</b><span>通常1（未命中差分）</span></div>
+              <div class="cd-row"><b>置信</b><span>0.91</span></div>
+            </div>
+          </div>
+          <div class="con-item">
+            <div class="con-line"><span class="ts">23:40:05</span><span class="k-butler">管家AI</span>CG 判定：命中「雪线之上 · 星空」（CG 03/12）<span class="exp">▾</span></div>
+            <div class="con-detail">
+              <pre>候选：
+  1) 雪线之上 · 星空   0.93  ← 采用
+  2) 观星台 · 远景     0.61
+  3) 缆车 · 夜         0.44
+已切换前台 CG 并写入画廊。</pre>
+            </div>
+          </div>
+          <div class="con-item">
+            <div class="con-line"><span class="ts">23:40:06</span><span class="k-warn">管家AI</span>属性补丁：示例角色丙.心事 = true（新增）<span class="exp">▾</span></div>
+            <div class="con-detail">
+              <pre>patch = [
+  { op: "set", path: "示例角色丙.心事", value: true, reason: "承认写了时间地点" },
+  { op: "inc", path: "示例角色丙.好感", value: +2 }
+]
+应用结果：成功 2 / 跳过 0 / 失败 0</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== 系统菜单 ===================== -->
+    <div class="menu" id="menu">
+      <div class="menu-panel">
+        <span class="corner tl"></span><span class="corner tr"></span>
+        <span class="corner bl"></span><span class="corner br"></span>
+
+        <div class="menu-head">
+          <h2>菜 单</h2>
+          <span class="save">北岭夜行 · 第 12 轮 · 夜谈</span>
+          <button class="close-x" id="menuClose" title="返回游戏（Esc）">✕</button>
+        </div>
+
+        <!-- 置顶：账号与人设 / 接口设置（最常用的两个入口） -->
+        <div class="mgroup mgroup-top">
+          <h4>账 号 与 接 口</h4>
+          <div class="mgrid">
+            <button class="mi" data-toast="用户设定"><span class="ic">👤</span><span class="tx"><b>用户设定</b><small>多用户 · 扮演身份</small></span></button>
+            <button class="mi" data-toast="API 供应商与预设"><span class="ic">🔌</span><span class="tx"><b>API 供应商与预设</b><small>增删改 · 模型 · ST 预设</small></span></button>
+          </div>
+        </div>
+
+        <div class="mgroup">
+          <h4>故 事</h4>
+          <div class="mgrid">
+            <button class="mi" data-sidebar="1"><span class="ic">⚑</span><span class="tx"><b>游戏列表</b><small>左侧栏 · 角色卡 · 切换</small></span></button>
+            <button class="mi" data-sidebar="1"><span class="ic">⌛</span><span class="tx"><b>游戏存档</b><small>进度 · 新建 / 导出 / 删除</small></span></button>
+            <button class="mi" data-toast="预览稿：重启对话"><span class="ic">⟲</span><span class="tx"><b>重启对话</b><small>回到开场白</small></span></button>
+            <button class="mi" data-toast="预览稿：导出对话"><span class="ic">📤</span><span class="tx"><b>导出对话</b><small>Markdown / JSON</small></span></button>
+          </div>
+        </div>
+
+        <div class="mgroup">
+          <h4>数 据 中 心</h4>
+          <div class="mgrid">
+            <button class="mi" data-pane="status"><span class="ic">📊</span><span class="tx"><b>主要状态</b><small>MVU 变量 / 数值条</small></span></button>
+            <button class="mi" data-pane="roster"><span class="ic">👥</span><span class="tx"><b>角色名册</b><small>性别 · 年龄 · 关系</small></span></button>
+            <button class="mi" data-pane="gallery"><span class="ic">🖼</span><span class="tx"><b>CG 画廊</b><small>全屏看图</small></span></button>
+            <button class="mi" data-pane="world"><span class="ic">🌐</span><span class="tx"><b>世界状态 (MVU)</b><small>播种 / 重放 / 清除</small></span></button>
+          </div>
+        </div>
+
+        <div class="mgroup">
+          <h4>声 音 与 外 观</h4>
+          <div class="mgrid">
+            <button class="mi" data-tts-sys="1" id="menuTtsSys"><span class="ic">🔊</span><span class="tx"><b>语音朗读（TTS）</b><small>系统设置 · 关闭后对话框语音开关置灰</small></span></button>
+            <div class="fs-row wide">
+              <span class="lbl">字号</span>
+              <div class="fs-ctrl">
+                <button id="fsMinus" title="缩小（Ctrl + −）">A−</button>
+                <input type="range" id="fsRange" min="85" max="150" step="5" value="100" title="正文大小">
+                <button id="fsPlus" title="放大（Ctrl + ＋）">A＋</button>
+                <button class="val" id="fsVal" title="点击恢复 100%">100%</button>
+              </div>
+              <div class="fs-presets" id="fsPresets">
+                <button data-fs="0.9">小</button>
+                <button class="on" data-fs="1">标准</button>
+                <button data-fs="1.15">大</button>
+                <button data-fs="1.3">特大</button>
+              </div>
+            </div>
+            <button class="mi" data-bgm-toggle="1"><span class="ic">🎵</span><span class="tx"><b>BGM 开关</b><small>与右上角开关联动</small></span></button>
+          </div>
+        </div>
+
+        <div class="mgroup">
+          <h4>调 试</h4>
+          <div class="mgrid">
+            <button class="mi" data-open="sheetConsole"><span class="ic">🐞</span><span class="tx"><b>幕后控制台</b><small>主 Agent / 管家 AI</small></span></button>
+          </div>
+        </div>
+
+        <div class="menu-foot">
+          <span class="ver">AI-GAL · 桌面版设计稿 v2</span>
+          <span class="spacer"></span>
+          <button class="tool" id="menuResume">↩ 返回游戏</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="viewer" id="viewer">
+      <img id="viewerImg" alt="大图">
+      <div class="cap"><span id="viewerCap"></span><small>点击任意处关闭</small></div>
+      <!-- 隐藏 UI 时大图右上角的小 ✕（点它可以关掉大图回到主界面） -->
+      <button class="stage-x viewer-x" id="viewerX" title="关闭大图，回到主界面" aria-label="关闭大图">✕</button>
+    </div>
+
+    <!-- 幕后控制台 · 条目详情：完整输出 + 思维链（查故障用，点条目弹出） -->
+    <div class="con-modal" id="conModal">
+      <div class="cm-panel" role="dialog" aria-modal="true" aria-label="调试条目详情">
+        <div class="cm-head">
+          <span class="cm-kind" id="conModalKind">主Agent</span>
+          <span class="cm-title" id="conModalTitle">条目详情</span>
+          <span class="cm-time" id="conModalTime"></span>
+          <button class="cm-btn" id="conModalCopy" title="复制完整内容">复制</button>
+          <button class="cm-btn cm-x" id="conModalClose" title="关闭（Esc）">✕</button>
+        </div>
+        <div class="cm-body" id="conModalBody"></div>
+        <div class="cm-foot"><span>完整输出 + 思维链（Chain-of-Thought）；内容来自调试面板原始记录，未截断。</span><small>Esc 或点空白处关闭</small></div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+    <div class="draft">设 计 稿 v2 · 静 态 演 示</div>
+  </div>
+<!-- VN-SHELL:END -->
+<div id="vnLegacyDom" hidden aria-hidden="true">
+  <nav class="top-bar" data-component="TopBar">
+    <div class="top-bar-accent-line"></div>
+    <div class="top-bar-left">
+      <span class="app-title">AI-GAL</span>
+    </div>
+    <div class="top-bar-center">
+      <span class="conversation-title" id="conversationTitle">选择角色开始对话</span>
+    </div>
+    <div class="top-bar-right">
+      <button class="theme-mode-toggle" id="themeModeToggle" title="切换亮/暗模式">
+        <span class="mode-icon mode-icon-dark">🌙</span>
+        <span class="mode-icon mode-icon-light">☀️</span>
+      </button>
+      <div class="theme-preset-wrap">
+        <span class="tp-label">🎨</span>
+        <select class="theme-preset-select" id="themePresetSelect" title="切换主题方案">
+          <option value="default">默认深色</option>
+          <option value="ios">☁️ iOS</option>
+          <option value="parchment">📜 羊皮卷</option>
+          <option value="pink">🌸 粉红</option>
+        </select>
+      </div>
+      <button class="ws-toggle-btn" id="btnWorldState" title="世界状态 (MVU)">
+        <span>🌐</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Unified System Menu Bar -->
+  <div class="system-menu-bar" id="systemMenuBar">
+    <button class="sys-menu-btn" id="btnGameSettings" title="用户">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10" cy="6" r="3" />
+        <path d="M4 18c0-4 2.7-6 6-6s6 2 6 6" />
+      </svg>
+      <span>用户</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <button class="sys-menu-btn" id="btnSettings" title="设置">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10" cy="10" r="3" />
+        <path d="M10 1v2M10 17v2M1 10h2M17 10h2M4.2 4.2l1.4 1.4M14.4 14.4l1.4 1.4M4.2 15.8l1.4-1.4M14.4 5.6l1.4-1.4" />
+      </svg>
+      <span>设置</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <button class="sys-menu-btn" id="btnExport" title="导出对话">
+      <svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 9h11M10 5l4 4-4 4M14 3v12" />
+      </svg>
+      <span>导出</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <button class="sys-menu-btn" id="btnTTS" title="语音朗读">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="4,14 2,14 2,6 4,6 9,2 9,18 4,14" />
+        <path d="M13 6a5 5 0 010 8M16 3a9 9 0 010 14" />
+      </svg>
+      <span>语音</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+
+    <button class="sys-menu-btn" id="btnToggleDebug" title="调试面板">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="14" height="14" rx="2" />
+        <path d="M7 8l3 3-3 3M11 14h3" />
+      </svg>
+      <span>调试</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <button class="sys-menu-btn" id="btnToggleInfoPanel" title="场景面板">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="16" height="16" rx="2" />
+        <line x1="12" y1="2" x2="12" y2="18" />
+      </svg>
+      <span>场景</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <!-- 移动端入口：点击切换到移动端界面（public/mobile.html） -->
+    <button class="sys-menu-btn" id="btnDevMobile" title="切换到移动端（手机/平板界面）">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="2" width="8" height="16" rx="2" />
+        <line x1="9" y1="15" x2="11" y2="15" />
+      </svg>
+      <span>移动</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <!-- Token / Stability Indicator -->
+    <div class="token-stability" id="tokenStability" title="时空稳定性">
+      <svg class="stability-icon" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"
+        stroke-width="1.5">
+        <path d="M7 1v4M7 9v4M1 7h4M9 7h4" />
+        <circle cx="7" cy="7" r="2" />
+      </svg>
+      <span class="stability-text"><b id="tokenContext">0</b> / <b id="tokenTotal">0</b></span>
+      <div class="stability-bar">
+        <div class="stability-fill" id="stabilityFill"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Layout -->
+  <div class="main-layout" data-component="MainLayout">
+
+    <!-- Left Sidebar -->
+    <aside class="left-sidebar" id="leftSidebar" data-component="CharacterSidebar">
+      <div class="sidebar-strip" id="sidebarStrip">
+        <button class="strip-toggle" id="btnExpandSidebar" title="展开游戏列表">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round">
+            <polyline points="6,3 11,8 6,13" />
+          </svg>
+        </button>
+        <div class="strip-avatars" id="stripAvatars"></div>
+        <button class="strip-add" id="btnNewCharacterStrip" title="新建角色卡">+</button>
+        <button class="strip-add" id="btnRestart" title="重启对话" style="margin-top:4px">
+          <svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 9a6 6 0 0111.47-2.5M15 9a6 6 0 01-11.47 2.5" />
+            <polyline points="3,3 3,6.5 6.5,6.5" />
+            <polyline points="15,15 15,11.5 11.5,11.5" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="sidebar-panel" id="sidebarPanel">
+        <div class="sidebar-header">
+          <h3>游戏列表</h3>
+          <div class="sidebar-actions">
+            <button class="icon-btn-sm" id="btnNewCharacter" title="新建角色卡">+</button>
+            <button class="icon-btn-sm" id="btnImportCharacter" title="导入角色卡">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M7 2v7" />
+                <path d="M10 6l-3 3-3-3" />
+                <path d="M3 2h8a1 1 0 011 1v12" />
+              </svg>
+            </button>
+            <button class="icon-btn-sm" id="btnCollapseSidebar" title="收起侧栏">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round">
+                <polyline points="9,3 4,7 9,11" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="character-tags-bar" id="characterTagsBar" style="display:none"></div>
+        <div class="character-list" id="characterList">
+          <div class="empty-state">
+            <p>暂无角色</p>
+            <button class="btn btn-sm" id="btnImportCharacterEmpty">导入角色卡</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Chat Area -->
+    <main class="chat-area" id="chatArea" data-component="ChatArea">
+      <div class="welcome-screen" id="welcomeScreen" data-component="WelcomeScreen">
+        <div class="welcome-content">
+          <div class="welcome-emblem">
+            <img src="logo.png" alt="logo"
+              style="width:120px;height:120px;border-radius:50%;border:none;display:block;">
+          </div>
+          <h1>AI-GAL</h1>
+          <p>选择或创建一个角色，开始你的角色扮演对话。</p>
+          <div class="welcome-tips">
+            <h3>使用提示</h3>
+            <ul>
+              <li>点击左侧竖条展开角色列表</li>
+              <li>支持导入 SillyTavern 角色卡</li>
+              <li>AI 会输出带动作和情绪的格式化回复</li>
+              <li>在设置中配置 API 供应商</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="chat-container hidden" id="chatContainer">
+        <div class="chat-tab-bar" id="chatTabBar">
+          <button class="chat-tab-btn active" data-tab="chat">对话</button>
+        </div>
+
+        <div class="chat-tab-content active" id="chatTabContent" data-tab="chat">
+          <div class="messages-area" id="messagesArea"></div>
+          <div class="scroll-float-btns" id="scrollFloatBtns">
+            <button class="scroll-float-btn" id="btnScrollTop" title="直达顶端">&#9650;</button>
+            <button class="scroll-float-btn" id="btnScrollRound" title="跳到最后一条消息开头">&#9632;</button>
+            <button class="scroll-float-btn" id="btnScrollEnd" title="跳到最后一条消息末尾">&#9660;</button>
+            <button class="scroll-float-btn" id="btnTTSListFloat" title="待播放音频列表" aria-label="待播放音频列表">🎧</button>
+          </div>
+        </div>
+
+        <!-- TTS player bar removed (2026-07-09): playback is controlled via the 🎧 floating list popup -->
+
+        <div class="input-area">
+          <textarea id="messageInput" placeholder="输入消息... (Ctrl+Enter 发送)" rows="1" autofocus></textarea>
+          <div class="input-actions">
+            <button class="btn btn-sm" id="btnResetPhonePos" title="复位悬浮按钮和手机界面">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="2" width="14" height="20" rx="3" ry="3" />
+                <line x1="12" y1="18" x2="12.01" y2="18" />
+              </svg>
+            </button>
+            <button class="btn btn-primary" id="btnSend" disabled>发送</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Debug Drawer (Slide-out from right, hidden by default) -->
+    <div class="debug-drawer hidden" id="debugDrawer">
+      <div class="debug-drawer-header">
+        <h4>幕后控制台</h4>
+        <button class="modal-close" id="btnCloseDebugDrawer">&times;</button>
+      </div>
+      <div class="debug-drawer-body">
+        <div class="debug-toolbar">
+          <div class="debug-sub-tabs">
+            <button class="debug-sub-tab-btn active" data-subtab="mainAgent"
+              onclick="switchDebugSubTab('mainAgent')">主Agent</button>
+            <button class="debug-sub-tab-btn" data-subtab="butler" onclick="switchDebugSubTab('butler')">管家AI</button>
+          </div>
+          <span class="debug-toolbar-sep">|</span>
+          <span style="font-size:12px;color:var(--text-muted)">字体:</span>
+          <button class="btn btn-xs" onclick="setDebugFontSize(-1)" title="缩小">A-</button>
+          <button class="btn btn-xs" onclick="setDebugFontSize(1)" title="放大">A+</button>
+        </div>
+        <div class="debug-content debug-subtab-content active" id="debugMainAgentContent">
+          <div class="debug-empty">主Agent 输出将在此显示（含思维链、完整输出等）</div>
+        </div>
+        <div class="debug-content debug-subtab-content" id="debugButlerContent">
+          <div class="debug-empty">管家AI 处理记录将在此显示（含思维链、portrait/CG判定等）</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MVU 世界状态抽屉 (Tier 3 闭环) -->
+    <div class="world-state-drawer hidden" id="worldStateDrawer">
+      <div class="world-state-drawer-header">
+        <h4>🌐 世界状态 (MVU)</h4>
+        <button class="modal-close" id="btnCloseWorldStateDrawer">&times;</button>
+      </div>
+      <div class="world-state-toolbar">
+        <button class="btn btn-xs ws-act" data-ws-action="seed" title="从开场白重新播种初始变量">↺ 重新读取初始变量</button>
+        <button class="btn btn-xs ws-act" data-ws-action="reprocess" title="按全部消息重放所有补丁">⟳ 重新处理变量</button>
+        <button class="btn btn-xs ws-act" data-ws-action="clear" title="清空楼层变量">🗑 清除楼层变量</button>
+        <button class="btn btn-xs ws-act" data-ws-action="add" title="手动新增变量">＋ 新增</button>
+      </div>
+      <div class="world-state-body" id="worldStateBody">
+        <div class="ws-empty">当前角色不是 engine 卡，无 MVU 世界状态。</div>
+      </div>
+    </div>
+
+    <!-- Right Info Panel -->
+    <aside class="info-panel" id="infoPanel" data-component="InfoPanel">
+      <div class="multimedia-bar" id="multimediaBar">
+        <div class="audio-visualizer-mini" id="audioVisualizer">
+          <div class="audio-bar"></div>
+          <div class="audio-bar"></div>
+          <div class="audio-bar"></div>
+          <div class="audio-bar"></div>
+          <div class="audio-bar"></div>
+        </div>
+        <button class="icon-btn-sm audio-toggle-btn" id="btnToggleAudio" title="开关 BGM">
+          <span id="audioIcon">🔇</span>
+        </button>
+        <input type="range" id="bgmVolume" min="0" max="100" value="30" class="bgm-volume-slider" title="音量">
+        <button class="icon-btn-sm" id="btnImageGenSettings" title="图像生成设置">🖼</button>
+      </div>
+      <div class="gallery-section">
+        <div class="gallery-header">
+          <h4>场景画片</h4>
+          <div class="gallery-controls">
+            <button class="icon-btn-sm" id="btnPrevImage" title="上一张" disabled>&#8249;</button>
+            <span class="gallery-counter" id="galleryCounter">0 / 0</span>
+            <button class="icon-btn-sm" id="btnNextImage" title="下一张" disabled>&#8250;</button>
+          </div>
+        </div>
+        <div class="gallery-viewport" id="galleryViewport">
+          <div class="gallery-empty" id="galleryEmpty">
+            <p>暂无场景画片</p>
+            <p class="hint">AI 生成图片后将在此显示</p>
+          </div>
+          <img class="gallery-image hidden" id="galleryImage" alt="场景画片">
+          <div class="gallery-atmosphere" id="galleryAtmosphere"></div>
+        </div>
+      </div>
+        </div>
+      </div>
+
+  <!-- 消息编辑弹窗：搬出隐藏区，保持可用 -->
+    </aside>
+
+    <!-- Modal: Edit Message -->
+    <div class="modal hidden" id="editModal" data-component="EditModal">
+      <div class="modal-overlay" id="editModalOverlay"></div>
+      <div class="modal-content" style="width:90vw;max-width:900px;max-height:85vh">
+        <div class="modal-header">
+          <h3>编辑消息（原始文本）</h3>
+          <button class="modal-close" id="editModalClose">&times;</button>
+        </div>
+        <div class="modal-body" style="overflow-y:auto;max-height:calc(85vh - 100px)">
+          <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">下方是AI输出的原始文本，包含 ### mood / ### story / ###
+            dialog 等标记。直接修改文本后保存即可。</p>
+          <textarea id="editTextarea" rows="20"
+            style="width:100%;min-height:400px;resize:vertical;font-family:Consolas,'Courier New',monospace;font-size:13px;line-height:1.5;tab-size:2"></textarea>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+            <button class="btn btn-sm" id="btnEditCancel">取消</button>
+            <button class="btn btn-sm" id="btnEditSave"
+              style="background:var(--color-accent-500);color:#fff">保存</button>
+          </div>
+
+    </div>
+
+    <!-- Phone Popup Trigger Button -->
+    <button class="phone-float-btn" id="btnPhoneFloat" title="数据中心">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="2" width="14" height="20" rx="3" ry="3" />
+        <line x1="12" y1="18" x2="12.01" y2="18" />
+      </svg>
+    </button>
+
+    <!-- MVU World State Floating Button (engine / MVU cards only; draggable, opens the right drawer) -->
+    <button class="ws-float-btn hidden" id="btnWorldStateFloat" title="世界状态 (MVU)">
+      <span style="font-size:22px;line-height:1;">📊</span>
+    </button>
+
+    <!-- Phone Popup Menu -->
+    <div class="phone-popup hidden" id="phonePopup">
+      <div class="phone-body">
+        <!-- Title Bar -->
+        <div class="phone-statusbar">
+          <span class="phone-icons" id="phoneIcons">⚔ 数据中心</span>
+          <span class="phone-time" id="phoneTime">第 0 轮</span>
+        </div>
+
+        <!-- Tab Bar -->
+        <div class="rpg-tab-container">
+          <button class="rpg-tab-btn active" data-tab="status">主要状态</button>
+          <button class="rpg-tab-btn" data-tab="roster">角色名册</button>
+          <button class="rpg-tab-btn" data-tab="memory">记忆表格</button>
+          <button class="rpg-tab-btn" data-tab="gallery">CG画廊</button>
+        </div>
+
+        <!-- Status Page -->
+        <div class="phone-page" id="phoneStatusPage">
+          <div class="phone-page-inner">
+            <div class="status-popup-body" id="statusPopupBody">
+              <div class="phone-empty">选择角色后显示状态</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Roster Page -->
+        <div class="phone-page hidden" id="phoneRosterPage">
+          <div class="phone-page-inner">
+            <div class="phone-list" id="rosterList">
+              <div class="phone-empty">暂无角色记录</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Memory Page -->
+        <div class="phone-page hidden" id="phoneMemoryPage">
+          <div class="phone-page-inner">
+            <div class="phone-list" id="memoryList">
+              <div class="phone-empty">暂无记忆数据</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Gallery Page -->
+        <div class="phone-page hidden" id="phoneGalleryPage">
+          <div class="phone-page-inner">
+            <div class="phone-gallery-grid" id="phoneGalleryGrid">
+              <div class="phone-empty">暂无CG图片</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Character Detail Page -->
+        <div class="phone-page hidden" id="phoneCharDetailPage">
+          <div class="phone-page-inner" id="charDetailContent"></div>
+        </div>
+
+        <!-- Memory Edit Modal -->
+        <div class="memory-edit-overlay hidden" id="memoryEditOverlay">
+          <div class="memory-edit-modal">
+            <div class="memory-edit-header">
+              <span id="memoryEditKey" style="font-weight:700;color:var(--accent)"></span>
+              <button class="memory-edit-close" onclick="closeMemoryEdit()">&times;</button>
+            </div>
+            <textarea id="memoryEditValue" rows="8" placeholder="编辑记忆内容..."></textarea>
+            <div class="memory-edit-actions">
+              <button class="memory-edit-btn memory-edit-save" onclick="saveMemoryEdit()">保存</button>
+              <button class="memory-edit-btn" onclick="closeMemoryEdit()">取消</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+  <!-- Modal: Game Settings -->
+  <div class="modal hidden" id="gameSettingsModal" data-component="GameSettingsModal">
+    <div class="modal-overlay" id="gameSettingsOverlay"></div>
+    <div class="modal-content modal-settings">
+      <div class="modal-header">
+        <h3>用户</h3>
+        <button class="modal-close" id="gameSettingsClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-shell">
+          <!-- 用户弹窗：只剩身份（提示词编辑功能已失效，入口已移除） -->
+          <nav class="settings-nav" id="userSettingsNav">
+            <button class="settings-nav-btn on" data-pane="identity"><span class="sn-ic">🙋</span><span class="sn-tx"><b>身份</b><small>头像 · 姓名 · 扮演身份</small></span></button>
+          </nav>
+          <div class="settings-panes">
+            <section class="settings-pane on" data-pane="identity">
+              <section class="settings-section">
+                <h4>用户设定</h4>
+                <div class="user-avatar-upload">
+                  <div class="user-avatar-preview" id="userAvatarPreview"></div>
+                  <input type="file" id="userAvatarFile" accept="image/*" style="display:none">
+                  <button class="btn btn-sm" id="btnUploadAvatar">上传头像</button>
+                </div>
+                <div class="form-group">
+                  <label for="userName">姓名</label>
+                  <input type="text" id="userName" placeholder="你的名字（用于替换 {{user}}）">
+                </div>
+                <div class="form-group">
+                  <label for="userIntro">简要介绍</label>
+                  <textarea id="userIntro" rows="2" placeholder="介绍你自己的背景..."></textarea>
+                </div>
+                <div class="form-group persona-box">
+                  <label for="personaName">游戏内身份（扮演角色名）</label>
+                  <input type="text" id="personaName" placeholder="如：勇者亚瑟（留空表示不扮演）">
+                  <p class="form-hint">
+                    复杂游戏中主角扮演其它角色时，填写该角色名，对话将以该身份头像显示，且不会被误生成头像。
+                  </p>
+                  <div class="user-avatar-upload persona-avatar-row">
+                    <div class="user-avatar-preview" id="personaAvatarPreview"></div>
+                    <input type="file" id="personaAvatarFile" accept="image/*" style="display:none">
+                    <button class="btn btn-sm" id="btnUploadPersonaAvatar">上传扮演角色头像</button>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label>切换用户</label>
+                  <select id="userSwitcher" class="setting-select"></select>
+                </div>
+                <div class="btn-row">
+                  <button class="btn btn-sm btn-primary" id="btnSaveUser">保存</button>
+                  <button class="btn btn-sm" id="btnNewUser">新建用户</button>
+                  <button class="btn btn-sm btn-danger" id="btnDeleteUser">删除</button>
+                </div>
+              </section>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Settings -->
+  <div class="modal hidden" id="settingsModal" data-component="SettingsModal">
+    <div class="modal-overlay" id="settingsModalOverlay"></div>
+    <div class="modal-content modal-settings">
+      <div class="modal-header">
+        <h3>设置</h3>
+        <button class="modal-close" id="settingsModalClose">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-shell">
+          <!-- 分类导航：把原来堆成一列的一大堆设置按功能分组（纯前端分组，表单 id 全部不变） -->
+          <nav class="settings-nav" id="settingsNav">
+            <button class="settings-nav-btn on" data-pane="ai"><span class="sn-ic">🔌</span><span class="sn-tx"><b>AI 与供应商</b><small>主 / 管家 / 画家 · 接口</small></span></button>
+            <button class="settings-nav-btn" data-pane="image"><span class="sn-ic">🎨</span><span class="sn-tx"><b>图像生成</b><small>画风 · 供应商 · 参数</small></span></button>
+            <button class="settings-nav-btn" data-pane="look"><span class="sn-ic">🎛</span><span class="sn-tx"><b>外观与界面</b><small>主题 · 移动端</small></span></button>
+          </nav>
+          <div class="settings-panes">
+        <section class="settings-pane on" data-pane="ai">
+        <section class="settings-section">
+          <h4>AI 分工 · 谁用哪个模型</h4>
+          <div class="settings-tabs">
+            <button class="settings-tab active" data-tab="mainAI" onclick="switchSettingsTab('mainAI')">主 AI</button>
+            <button class="settings-tab" data-tab="butlerAI" onclick="switchSettingsTab('butlerAI')">管家 AI</button>
+            <button class="settings-tab" data-tab="painterAI" onclick="switchSettingsTab('painterAI')">画家 AI</button>
+            <button class="settings-tab" data-tab="proxy" onclick="switchSettingsTab('proxy')">代理</button>
+          </div>
+          <div class="settings-tab-content" id="tabMainAI" style="display:block">
+            <div class="form-group">
+              <label>供应商</label>
+              <select id="mainAIProvider" class="setting-select">
+                <option value="">默认供应商</option>
+              </select>
+              <div id="mainAIProviderInfo" class="provider-info-hint"></div>
+            </div>
+            <div class="form-group">
+              <label>ST 预设</label>
+              <select id="mainAIPreset" class="setting-select">
+                <option value="">不使用预设</option>
+              </select>
+              <div style="display:flex;gap:6px;margin-top:6px">
+                <button class="btn btn-sm" id="btnImportMainAIPreset">导入预设</button>
+                <button class="btn btn-sm" id="btnEditMainAIPreset">编辑预设参数</button>
+              </div>
+            </div>
+            <input type="file" id="mainAIPresetFile" accept=".json" style="display:none">
+          </div>
+          <div class="settings-tab-content" id="tabButlerAI" style="display:none">
+            <div class="form-group">
+              <label>供应商</label>
+              <select id="butlerAIProvider" class="setting-select">
+                <option value="">与主 AI 相同</option>
+              </select>
+              <div id="butlerAIProviderInfo" class="provider-info-hint"></div>
+            </div>
+            <div class="form-group">
+              <label>ST 预设</label>
+              <select id="butlerAIPreset" class="setting-select">
+                <option value="">不使用预设</option>
+              </select>
+              <div style="display:flex;gap:6px;margin-top:6px">
+                <button class="btn btn-sm" id="btnImportButlerAIPreset">导入预设</button>
+                <button class="btn btn-sm" id="btnEditButlerAIPreset">编辑预设参数</button>
+              </div>
+            </div>
+            <input type="file" id="butlerAIPresetFile" accept=".json" style="display:none">
+          </div>
+          <div class="settings-tab-content" id="tabPainterAI" style="display:none">
+            <div class="form-group">
+              <label>生图开关</label>
+              <div style="display:flex;align-items:center;gap:10px">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="imageEnabledToggle" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <span id="imageEnabledLabel" style="font-size:13px;color:var(--text-secondary)">已开启</span>
+              </div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">关闭后不再生成头像和CG，需要头像时读取默认资源</div>
+            </div>
+            <div class="form-group">
+              <label>供应商</label>
+              <select id="painterAIProvider" class="setting-select">
+                <option value="">与管家 AI 相同</option>
+              </select>
+              <div id="painterAIProviderInfo" class="provider-info-hint"></div>
+            </div>
+          </div>
+          <div class="settings-tab-content" id="tabProxy" style="display:none">
+            <div class="form-group">
+              <label style="display:flex;align-items:center;gap:10px">
+                <span>启用代理</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="proxyEnabledToggle">
+                  <span class="toggle-slider"></span>
+                </label>
+              </label>
+            </div>
+            <div class="form-group">
+              <label>代理地址</label>
+              <input type="text" id="proxyHost" class="setting-input" placeholder="127.0.0.1">
+            </div>
+            <div class="form-group">
+              <label>代理端口</label>
+              <input type="number" id="proxyPort" class="setting-input" placeholder="9567" value="9567">
+            </div>
+            <div class="form-group">
+              <label>认证 (user:pass，可选)</label>
+              <input type="text" id="proxyAuth" class="setting-input" placeholder="留空无需认证">
+            </div>
+            <button class="btn btn-sm" id="btnSaveProxy">保存代理设置</button>
+            <span id="proxyStatus" style="margin-left:8px;font-size:12px;color:var(--text-muted)"></span>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h4>API 供应商管理</h4>
+          <div id="providerList"></div>
+          <button class="btn btn-sm" id="btnAddProvider">添加供应商</button>
+        </section>
+        </section>
+
+        <!-- ============ 图像生成 ============ -->
+        <section class="settings-pane" data-pane="image">
+          <section class="settings-section">
+            <h4>图像生成</h4>
+            <div id="imageSettings"></div>
+          </section>
+        </section>
+
+        <!-- ============ 外观与界面 ============ -->
+        <section class="settings-pane" data-pane="look">
+          <section class="settings-section">
+            <h4>主题</h4>
+            <div id="themeSettings"></div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-sm" id="btnResetTheme">重置为默认</button>
+              <button class="btn btn-sm" id="btnSetDefaultTheme">设为默认</button>
+              <button class="btn btn-sm" id="btnExportTheme">导出主题</button>
+              <button class="btn btn-sm" id="btnImportTheme">导入主题</button>
+            </div>
+            <input type="file" id="themeFileInput" accept=".json" style="display:none">
+          </section>
+          <section class="settings-section">
+            <h4>移动端界面</h4>
+            <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">
+              手机 / 平板访问时会自动进入移动端（GAL 视觉小说）界面。这里可以手动切换，或恢复自动跳转。
+            </p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-sm" onclick="switchToMobile()">切到移动端界面</button>
+              <button class="btn btn-sm" onclick="restoreMobileFrontend()">恢复移动端自动跳转</button>
+            </div>
+          </section>
+        </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: API Presets -->
+  <div class="modal hidden" id="apiPresetsModal">
+    <div class="modal-overlay" id="apiPresetsOverlay"></div>
+    <div class="modal-content" style="max-width:600px">
+      <div class="modal-header">
+        <h3>API 预设管理</h3>
+        <button class="modal-close" id="apiPresetsClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>聊天预设</label>
+          <select id="chatPresetSelect" class="setting-select"></select>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <button class="btn btn-sm" id="btnImportSTPreset">导入 ST 预设</button>
+            <button class="btn btn-sm" id="btnDefaultChatPreset">设为默认</button>
+            <button class="btn btn-sm btn-danger" id="btnDeleteChatPreset">删除</button>
+          </div>
+          <input type="file" id="stPresetFile" accept=".json" style="display:none">
+        </div>
+        <div class="form-group">
+          <label>参数控制（勾选 = 生效）</label>
+          <div id="presetParams"></div>
+        </div>
+        <hr>
+        <h4>图像生成</h4>
+        <div id="imageGenSettings"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Slide-out Panel: System Prompt Editor -->
+  <div class="slide-panel hidden" id="spEditorPanel" data-component="SlidePanel">
+    <div class="slide-panel-header">
+      <h4 id="spEditorTitle">编辑系统提示词</h4>
+      <button class="modal-close" onclick="closeSpEditor()">✕</button>
+    </div>
+    <div class="slide-panel-body">
+      <div class="form-group">
+        <label>名称</label>
+        <input type="text" id="spEditorName" class="setting-input" placeholder="提示词名称">
+      </div>
+      <div class="form-group">
+        <label>内容</label>
+        <textarea id="spEditorContent" class="setting-input" rows="20"
+          style="width:100%;font-family:var(--font-mono);font-size:13px;resize:vertical"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-sm" onclick="closeSpEditor()">取消</button>
+        <button class="btn btn-sm" onclick="saveSpFromPanel()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: New/Edit Character -->
+  <div class="modal hidden" id="characterModal" data-component="CharacterModal">
+    <div class="modal-overlay" id="characterModalOverlay"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="characterModalTitle">新建角色</h3>
+        <button class="modal-close" id="characterModalClose">×</button>
+      </div>
+      <div class="modal-body">
+        <form id="characterForm">
+          <div class="form-group">
+            <label for="charName">角色名称 *</label>
+            <input type="text" id="charName" required placeholder="角色名称">
+          </div>
+          <div class="form-group">
+            <label for="charAvatar">头像 URL</label>
+            <input type="text" id="charAvatar" placeholder="https://...">
+          </div>
+          <div class="form-group">
+            <label for="charPersonality">性格描述 *</label>
+            <textarea id="charPersonality" required rows="4" placeholder="描述角色的性格特点..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="charDescription">详细设定</label>
+            <textarea id="charDescription" rows="6" placeholder="角色的详细描述（外貌、背景、能力等）..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="charScenario">场景设定</label>
+            <textarea id="charScenario" rows="3" placeholder="对话发生的场景..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="charFirstMessage">开场白</label>
+            <textarea id="charFirstMessage" rows="2" placeholder="角色对第一条消息的回复..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="charAssetBasePath">立绘资源基路径（Tier 2）</label>
+            <input type="text" id="charAssetBasePath" placeholder="如 D:/games/扣扣审判/SFW 或留空">
+            <small class="field-hint">仅 engine 卡需要：存放 &lt;pic&gt; 立绘的本地文件夹。&lt;pic&gt;SFW/希罗/通常1&lt;/pic&gt; 会在此目录下查找 SFW/希罗/通常1.{png,jpg,webp}。</small>
+          </div>
+          <div class="form-group">
+            <label for="charSystemPrompt">系统提示词</label>
+            <textarea id="charSystemPrompt" rows="4" placeholder="自定义系统提示词（覆盖默认提示）..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="charPostHistory">历史后置指令</label>
+            <textarea id="charPostHistory" rows="3" placeholder="在对话历史之后注入的指令（如格式约束、行为指引）..."></textarea>
+          </div>
+          <div class="form-group">
+            <label>世界书总开关</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label class="wb-entry-switch" style="position:relative;display:inline-flex;align-items:center">
+                <input type="checkbox" id="charBookActivation" onchange="toggleBookActivation(this.checked)">
+                <span class="slider"></span>
+              </label>
+              <span id="bookActivationLabel" style="color:var(--text-muted);font-size:12px">关闭</span>
+              <span style="color:var(--text-muted);font-size:12px;margin-left:8px">总开关关闭时，所有世界书条目（含常驻）均不注入</span>
+            </div>
+          </div>
+          <div class="form-group" id="worldBookSection" style="display:none">
+            <div class="wb-header">
+              <label>世界书条目</label>
+              <div class="wb-header-actions">
+                <span class="wb-count" id="wbEntryCount">0 条</span>
+                <button type="button" class="btn btn-xs" id="btnAddWBEntry" title="新增条目">+ 新增</button>
+              </div>
+            </div>
+            <!-- 注入轮次（原在系统设置里，但服务端读的是「角色卡的 book.cooldown」，
+                 系统设置那个框没人读 —— 移到这儿，app.js 本来就在找 #wbCooldown） -->
+            <div class="wb-cooldown-row">
+              <label for="wbCooldown">注入间隔（轮）</label>
+              <input type="number" id="wbCooldown" min="1" max="20" value="4"
+                onchange="var n=parseInt(this.value,10); if(isNaN(n)) n=4; AppState._worldBookCooldown = Math.min(20, Math.max(1, n)); this.value = AppState._worldBookCooldown;">
+              <span class="wb-cooldown-hint">同一世界书条目在 N 轮对话内不重复注入（每张角色卡单独设置）</span>
+            </div>
+            <div class="wb-entries" id="wbEntriesList"></div>
+          </div>
+          <div class="form-group">
+            <label for="charTags">标签 (逗号分隔)</label>
+            <input type="text" id="charTags" placeholder="魔法, 中世纪, 冒险">
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="btnCancelCharacter">取消</button>
+        <button class="btn btn-warning" id="btnFixCharacter" title="AI 优化角色卡格式">一键修卡</button>
+        <button class="btn btn-primary" id="btnSaveCharacter">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: New/Edit Provider -->
+  <div class="modal hidden" id="providerModal">
+    <div class="modal-overlay" id="providerModalOverlay"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="providerModalTitle">添加供应商</h3>
+        <button class="modal-close" id="providerModalClose">×</button>
+      </div>
+      <div class="modal-body">
+        <form id="providerForm">
+          <div class="form-group">
+            <label for="providerName">名称 *</label>
+            <input type="text" id="providerName" required placeholder="My API">
+          </div>
+          <div class="form-group">
+            <label for="providerType">类型 *</label>
+            <select id="providerType" required>
+              <option value="openai">OpenAI 兼容</option>
+              <option value="ollama">Ollama</option>
+              <option value="xai">X.AI (Grok)</option>
+              <option value="gemini">Google Gemini</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="providerUrl">API URL *</label>
+            <input type="text" id="providerUrl" required placeholder="https://api.openai.com">
+          </div>
+          <div class="form-group">
+            <label for="providerApiKey">API Key</label>
+            <input type="password" id="providerApiKey" placeholder="sk-...">
+          </div>
+          <div class="form-group">
+            <label for="providerModel">默认模型</label>
+            <div style="display:flex;gap:6px;align-items:flex-end">
+              <input type="text" id="providerModel" placeholder="gpt-4o-mini" style="flex:1">
+              <button class="btn btn-sm" id="btnFetchModels" type="button">获取模型</button>
+            </div>
+            <select id="providerModelSelect" style="display:none;margin-top:4px;width:100%"></select>
+          </div>
+          <div class="form-group">
+            <label for="providerHeaders">自定义请求头 (JSON)</label>
+            <textarea id="providerHeaders" rows="3" placeholder='{"X-Custom-Header": "value"}'
+              style="font-family:var(--font-mono);font-size:12px"></textarea>
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="providerIsDefault"> 设为默认供应商
+            </label>
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="providerThinking" checked> 启用思考模式 (thinking)
+            </label>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+              本地 Qwen3 等思考模型若只返回思维链、正文为空，请取消勾选，让其直接输出正文
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="btnCancelProvider">取消</button>
+        <button class="btn btn-primary" id="btnSaveProvider">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: TTS Voice -->
+  <div class="modal hidden" id="ttsModal">
+    <div class="modal-overlay" id="ttsModalOverlay"></div>
+    <div class="modal-content" style="max-width:520px">
+      <div class="modal-header">
+        <h3>🔊 语音朗读</h3>
+        <button class="modal-close" id="ttsModalClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <!-- TTS Switches (master / autoplay / narration) -->
+        <div class="tts-switches">
+          <div class="tts-switch-row">
+            <span class="tts-switch-label">启用语音朗读</span>
+            <label class="tts-toggle">
+              <input type="checkbox" id="ttsMasterEnabled">
+              <span class="tts-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="tts-switch-row">
+            <span class="tts-switch-label">AI回复自动朗读</span>
+            <label class="tts-toggle">
+              <input type="checkbox" id="ttsAutoPlay" checked>
+              <span class="tts-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="tts-switch-row">
+            <span class="tts-switch-label">朗读旁白</span>
+            <label class="tts-toggle">
+              <input type="checkbox" id="ttsNarrateNarration">
+              <span class="tts-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="tts-switch-row" style="flex-direction:column;align-items:flex-start;gap:4px">
+            <div style="display:flex;align-items:center;gap:8px;width:100%">
+              <span class="tts-switch-label" style="flex:1">云平台保活心跳</span>
+              <label class="tts-toggle">
+                <input type="checkbox" id="ttsHeartbeat" checked>
+                <span class="tts-toggle-slider"></span>
+              </label>
+            </div>
+            <span style="font-size:10px;color:var(--text-muted);line-height:1.4">仅在使用「Qwen TTS 云平台」时启用，定期轻量请求防云端实例休眠（会持续消耗云端流量）</span>
+          </div>
+        </div>
+
+        <!-- TTS Provider List -->
+        <h4 style="margin:0 0 8px">语音供应商</h4>
+        <div id="ttsProviderList" style="margin-bottom:12px"></div>
+        <button class="btn btn-sm" id="btnAddTTSProvider" style="margin-bottom:12px">+ 添加供应商</button>
+
+        <!-- Add/Edit Provider Form (hidden by default) -->
+        <div id="ttsProviderForm"
+          style="display:none;border:1px solid var(--border-color);padding:12px;border-radius:8px;margin-bottom:12px;background:var(--bg-secondary)">
+          <h5 id="ttsProviderFormTitle" style="margin:0 0 8px">添加供应商</h5>
+          <input type="hidden" id="ttsProviderId">
+          <div class="form-group">
+            <label>名称</label>
+            <input type="text" id="ttsProviderName" class="setting-input" placeholder="如: 阶跃TTS">
+          </div>
+          <div class="form-group">
+            <label>API 格式</label>
+            <select id="ttsApiFormat" class="setting-select" onchange="ttsToggleFormatFields()">
+              <option value="openai" selected>OpenAI 兼容 (/audio/speech, JSON)</option>
+              <option value="nvidia">NVIDIA NIM (/audio/synthesize, multipart)</option>
+              <option value="volcengine">火山豆包 v3 (/api/v3/tts, NDJSON流)</option>
+              <option value="qwenapi">QwenAPI TTS 云平台 (/qwenapi/v1/custom-voice)</option>
+              <option value="qwenapi_local">Qwen3-TTS 本机 (/qwenapi/v1/custom-voice)</option>
+              <option value="comfyui">本机 ComfyUI (Qwen3-TTS 工作流)</option>
+              <option value="bailian">阿里云百炼 TTS (DashScope)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>API 地址 <span style="font-size:10px;color:var(--text-muted)">(只填到 /v1)</span></label>
+            <input type="text" id="ttsProviderUrl" class="setting-input" placeholder="https://api.stepfun.ai/v1">
+          </div>
+          <div class="form-group">
+            <label>API Key <span id="ttsKeyHint" style="font-size:10px;color:var(--text-muted)"></span></label>
+            <input type="password" id="ttsProviderKey" class="setting-input" placeholder="sk-...">
+          </div>
+          <div class="form-group" style="display:flex;gap:16px">
+            <div style="flex:1">
+              <label>模型 <button type="button" class="btn btn-sm" id="btnFetchTTSModels"
+                  style="font-size:10px;padding:1px 4px;margin-left:4px">从API拉取</button> <span id="ttsModelCount"
+                  style="font-size:10px;color:#34C759;display:none"></span></label>
+              <select id="ttsProviderModel" class="setting-select">
+                <option value="">（点「从API拉取」获取模型列表）</option>
+              </select>
+              <input type="text" id="ttsProviderModelCustom" class="setting-input" style="margin-top:4px;width:100%" placeholder="可选：手动填模型名以覆盖下拉所选（留空则用上方下拉）">
+            </div>
+            <div style="flex:1">
+              <label>音色 <span style="font-size:10px;color:var(--text-muted)">(预设)</span> <button type="button"
+                  class="btn btn-sm" id="btnFetchTTSVoices"
+                  style="font-size:10px;padding:1px 4px;margin-left:4px">刷新</button></label>
+              <select id="ttsProviderVoice" class="setting-select">
+                <option value="alloy">Alloy</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>语速 (0.5-2.0)</label>
+            <input type="number" id="ttsProviderSpeed" class="setting-input" value="1.0" min="0.5" max="2.0" step="0.1"
+              style="width:80px">
+          </div>
+          <div class="form-group" id="ttsLanguageGroup" style="display:none">
+            <label>语言代码 <span style="font-size:10px;color:var(--text-muted)">(NVIDIA NIM 需要)</span></label>
+            <select id="ttsProviderLanguage" class="setting-select" style="width:auto">
+              <option value="zh-CN" selected>zh-CN (中文)</option>
+              <option value="en-US">en-US (英语)</option>
+              <option value="ja-JP">ja-JP (日语)</option>
+              <option value="es-US">es-US (西班牙语)</option>
+              <option value="fr-FR">fr-FR (法语)</option>
+              <option value="de-DE">de-DE (德语)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>全局情绪指导 <span style="font-size:10px;color:var(--text-muted)">(StepAudio 2.5 专用, 最多200字)</span></label>
+            <input type="text" id="ttsProviderInstruction" class="setting-input" placeholder="如: 语气温柔，语速偏慢 / 留空则不传">
+          </div>
+          <!-- Character Voice Mapping (per-provider) -->
+          <details style="margin-top:8px">
+            <summary style="cursor:pointer;font-size:12px;font-weight:600">角色音色映射（按性别+年龄）</summary>
+            <div style="margin-top:6px;font-size:10px;color:var(--text-muted)">从名册抓取性别/年龄自动匹配。点「刷新音色」拉取列表。</div>
+            <div id="ttsVoiceMapContainer" style="margin-top:6px">
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">旁白</label>
+                <select id="ttsVm_narrator" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="narrator"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">女-少女(&lt;18)</label>
+                <select id="ttsVm_female_teen" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="female_teen"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">女-青年(18-30)</label>
+                <select id="ttsVm_female_young" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="female_young"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">女-成熟(30+)</label>
+                <select id="ttsVm_female_mature" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="female_mature"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">男-少年(&lt;18)</label>
+                <select id="ttsVm_male_teen" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="male_teen"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">男-青年(18-30)</label>
+                <select id="ttsVm_male_young" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="male_young"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">男-成熟(30+)</label>
+                <select id="ttsVm_male_mature" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="male_mature"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+            </div>
+          </details>
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" id="ttsProviderDefault"> 设为默认
+            </label>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-sm" id="btnSaveTTSProvider">保存</button>
+            <button class="btn btn-sm" id="btnCancelTTSProvider">取消</button>
+          </div>
+        </div>
+
+        <!-- Quick Presets -->
+        <details style="margin-bottom:12px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">快速预设</summary>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn btn-sm" onclick="ttsAddPreset('stepfun')">阶跃 StepAudio</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('openai')">OpenAI TTS</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('siliconflow')">硅基流动</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('nvidia')">NVIDIA Magpie</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('volcengine')">火山豆包</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('volink')">Volink</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('qwenapi')">Qwen TTS 云平台</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('qwenapi_local')">Qwen TTS 本机</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('comfyui')">Qwen3-TTS 本机工作流</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('bailian')">阿里云百炼</button>
+          </div>
+        </details>
+
+        <hr style="border-color:var(--border-color);margin:12px 0">
+
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-sm" id="btnTTSTest">测试朗读</button>
+          <button class="btn btn-sm" id="btnSaveTTSSettings">保存设置</button>
+          <button class="btn btn-sm" id="btnTTSStop" style="display:none;background:var(--danger);color:#fff">⏹
+            停止</button>
+          <span id="ttsStatus" style="font-size:12px;color:var(--text-muted)"></span>
+          <span id="ttsSaveStatus" style="font-size:12px;color:var(--accent);display:none">已保存!</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <input type="file" id="characterFileInput" accept=".json,.png" style="display:none">
+
+  <script src="js/api.js?v=20260709a"></script>
+  <script src="js/stscript.js?v=20260709a"></script>
+  <script src="js/app.js?v=20260917j"></script>
+  <script>
+    // === Theater Enhancement: UI Logic ===
+    (function () {
+      // Debug Drawer Toggle
+      const btnDebug = document.getElementById('btnToggleDebug');
+      const drawer = document.getElementById('debugDrawer');
+      const closeDrawer = document.getElementById('btnCloseDebugDrawer');
+      if (btnDebug && drawer) {
+        btnDebug.addEventListener('click', function () { drawer.classList.toggle('hidden'); });
+      }
+      if (closeDrawer && drawer) {
+        closeDrawer.addEventListener('click', function () { drawer.classList.add('hidden'); });
+      }
+
+      // Info Panel Toggle
+      const btnInfo = document.getElementById('btnToggleInfoPanel');
+      const infoPanel = document.getElementById('infoPanel');
+      if (btnInfo && infoPanel) {
+        btnInfo.addEventListener('click', function () {
+          infoPanel.classList.toggle('panel-collapsed');
+          btnInfo.classList.toggle('active');
+        });
+      }
+
+      // Token Stability Bar Update
+      function updateStability() {
+        var ctx = document.getElementById('tokenContext');
+        var total = document.getElementById('tokenTotal');
+        var fill = document.getElementById('stabilityFill');
+        if (ctx && total && fill) {
+          var c = parseInt(ctx.textContent) || 0;
+          var t = parseInt(total.textContent) || 0;
+          var ratio = t > 0 ? c / t : 0;
+          fill.style.width = (ratio * 100) + '%';
+          if (ratio > 0.85) { fill.setAttribute('data-level', 'danger'); }
+          else if (ratio > 0.65) { fill.setAttribute('data-level', 'warning'); }
+          else { fill.setAttribute('data-level', 'safe'); }
+        }
+      }
+      setInterval(updateStability, 2000);
+      updateStability();
+
+      // Audio Visualizer Sync
+      var audioIcon = document.getElementById('audioIcon');
+      var visualizer = document.getElementById('audioVisualizer');
+      if (audioIcon && visualizer) {
+        var observer = new MutationObserver(function () {
+          var isPlaying = audioIcon.textContent !== '🔇';
+          visualizer.classList.toggle('playing', isPlaying);
+        });
+        observer.observe(audioIcon, { childList: true, characterData: true, subtree: true });
+        // Initial state
+        visualizer.classList.toggle('playing', audioIcon.textContent !== '🔇');
+      }
+    })();
+  </script>
+
+  <!-- TTS pending-playback list (floating popup, viewport-anchored so the header never clips off-screen) -->
+  <div id="ttsListPopup" class="tts-list-popup hidden">
+    <div class="tts-list-popup-header">
+      <span>🎧 本存档待播放音频</span>
+      <div class="tts-list-popup-actions">
+        <button id="ttsListPopupStop" class="tts-icon-btn stop" title="停止播放">&#9209;</button>
+        <button id="ttsListPopupClose" class="tts-icon-btn close" title="关闭列表">&#10005;</button>
+      </div>
+    </div>
+    <div id="ttsListPopupBody" class="tts-list-popup-body"></div>
+  </div>
+  <script src="js/desktop/vn-shell.js?v=20260917j"></script>
+</body>
+
+</html>

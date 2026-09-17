@@ -1,0 +1,124 @@
+================================================================================
+                    角色名册生成规范 (Roster Generation Spec)
+================================================================================
+
+当你在角色扮演剧情中需要创建新的角色名册条目时，必须严格按以下格式输出。
+每个角色一条记录，字段顺序和取值规范如下：
+
+--------------------------------------------------------------------------------
+字段定义
+--------------------------------------------------------------------------------
+
+角色ID：按登场顺序分配的三位数编号，从001开始递增（如001、002、003）
+角色姓名：角色的中文名（或常用称呼）
+种族性别：格式 种族_性别，如 human_girl / human_boy / elf_girl / cat_furry_futa。默认 human_girl，奇幻题材用 elf_girl / dwarf_boy / orc_girl，修仙题材用 cat_furry_girl / dog_furry_boy
+年龄段：little / youth / adult / middle_age（只能四选一，必须用英文）
+发色：danbooru标准tag格式（如 black_hair, blonde_hair, silver_hair, pink_hair）
+发长：long_hair / short_hair / very_long_hair（标准danbooru tag）
+发型：danbooru标准tag（如 ponytail, twintails, side_ponytail, braid, long_braid, twin_braids, crown_braid, braided_bun, hair_bun, bob_cut, ahoge 等）
+刘海：danbooru标准tag（如 blunt_bangs, side_blunt_bangs, swept_bangs, hair_intakes, parted_bangs, asymmetric_bangs, air_bangs 等）
+瞳色：danbooru标准tag（如 blue_eyes, red_eyes, golden_eyes, green_eyes, purple_eyes, brown_eyes, heterochromia 等）
+身高：short_stature / medium_stature / tall_stature
+身材：petite / slender / muscular / plump
+罩杯：small_breasts / medium_breasts / big_breasts / huge_breasts（男性填 none）
+上衣：danbooru标准tag描述上衣（如 school_uniform, hanfu, suit, white_shirt, dress 等）
+
+--- 以下字段不参与头像生图tag提取，仅用于CG生图和角色上下文 ---
+
+下装：danbooru标准tag描述下装（如 skirt, pants, jeans, shorts 等。仅在CG生成时读取，头像生成时无视此项）
+
+--- 以下字段使用中文描述，属于【登场角色信息】范围，代码会提取注入到上下文中 ---
+
+性经验：处 / 非处（会随剧情更新）
+贞操观：低 / 中 / 高（会随剧情变化，但不会剧烈变化）
+社交性：冷淡 / 中等 / 活泼 / 主动
+智商：聪慧 / 平庸 / 天然呆
+道德：高尚 / 中立 / 冷漠 / 邪恶
+简要介绍：一句话用中文概括角色身份、性格与外貌特点（如"来自北境的剑士，性格刚烈，剑术超群"或"现代都市的高中女生，开朗活泼"）
+
+--------------------------------------------------------------------------------
+输出格式（JSON）
+--------------------------------------------------------------------------------
+
+当你需要输出 portrait 数据时，按以下JSON格式输出：
+
+女性角色范例：
+{
+  "name": "角色姓名",
+  "id": "001",
+  "种族性别": "human_girl",
+  "年龄段": "youth",
+  "发色": "black_hair",
+  "发长": "long_hair",
+  "发型": "ponytail",
+  "刘海": "blunt_bangs",
+  "瞳色": "blue_eyes",
+  "身高": "medium_stature",
+  "身材": "slender",
+  "罩杯": "medium_breasts",
+  "上衣": "school_uniform",
+  "下装": "pleated_skirt",
+  "性经验": "非处",
+  "贞操观": "低",
+  "社交性": "活泼",
+  "智商": "聪慧",
+  "道德": "中立",
+  "简要介绍": "来自现代都市的高中女生，性格开朗活泼，成绩优异"
+}
+
+男性角色范例：
+{
+  "name": "角色姓名",
+  "id": "002",
+  "种族性别": "human_boy",
+  "年龄段": "youth",
+  "发色": "black_hair",
+  "发长": "short_hair",
+  "发型": "slicked_back",
+  "刘海": "swept_bangs",
+  "瞳色": "brown_eyes",
+  "身高": "tall_stature",
+  "身材": "muscular",
+  "罩杯": "none",
+  "上衣": "suit",
+  "下装": "pants",
+  "性经验": "处",
+  "贞操观": "中",
+  "社交性": "中等",
+  "智商": "聪慧",
+  "道德": "中立",
+  "简要介绍": "来自北境的年轻剑士，沉稳寡言，剑术精湛"
+}
+
+注意：
+- 不要输出 prompt 字段！头像生图的prompt会由系统代码自动从"种族性别"到"上衣"的字段中提取tag拼接生成
+- 不要输出 appearance / body / clothing / temperament / relationship 等旧字段
+- "种族性别"到"上衣"字段必须使用 danbooru 标准 tag，用英文下划线格式
+- "下装"到"简要介绍"字段使用中文自然语言描述
+- 不得使用中文描述或自创tag来填写"种族性别"到"上衣"字段
+- 如果某个字段信息不足，留空字符串 ""
+- 种族性别 格式：种族_性别，如 human_girl / elf_boy / cat_furry_futa。其中种族部分默认 human，性别部分只能是 girl / boy / futa
+
+--------------------------------------------------------------------------------
+头像自动生成规则（由代码执行，AI不需要关心）
+--------------------------------------------------------------------------------
+
+系统会自动从名册的"种族性别"到"上衣"字段提取所有非空tag，按顺序拼接，
+并在前面添加固定艺术风格和质量前缀，生成最终的生图prompt。
+
+固定前缀：{artist:kousaki_ruri},+[artist:wlop],+artist:ciloranko,+year_2023,masterpiece,+best_quality,+ultra_detailed,,
+
+示例（女性角色）：
+  种族性别: human_girl → 1girl
+  发色: black_hair → black_hair
+  发型: ponytail → ponytail
+  ...
+  最终prompt: {artist:kousaki_ruri},+[artist:wlop],+artist:ciloranko,+year_2023,masterpiece,+best_quality,+ultra_detailed,,1girl,black_hair,long_hair,ponytail,blunt_bangs,blue_eyes,medium_stature,slender,medium_breasts,school_uniform
+
+示例（男性角色）：
+  种族性别: human_boy → 1boy
+  罩杯: none → 跳过
+  ...
+  最终prompt: {artist:kousaki_ruri},+[artist:wlop],+artist:ciloranko,+year_2023,masterpiece,+best_quality,+ultra_detailed,,1boy,black_hair,short_hair,slicked_back,swept_bangs,brown_eyes,tall_stature,muscular,suit
+
+================================================================================

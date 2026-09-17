@@ -1,0 +1,42 @@
+# ---- Runtime & user data (never share) ----
+node_modules/
+
+# SQLite database + WAL sidecars + per-install encryption secret
+server/db/data.db
+server/db/data.db-shm
+server/db/data.db-wal
+server/db/.crypto_secret
+*.db
+*.db-shm
+*.db-wal
+
+# Player saves, generated images, audio cache, uploads
+saves/
+data/generated_images/
+data/tts-cache/
+data/tts-cache-bak/
+data/tts-queue.json
+server/generated_images/
+public/uploads/
+
+# Copyrighted music: folder structure ships, mp3 files are NOT distributed
+BGM/**/*.mp3
+
+# Character profile art / NPC portraits
+profile/
+
+# Design dev screenshots (capture real app sessions — never share)
+design/_shots/
+design/preview/
+
+# ---- Logs & scratch ----
+*.log
+*.out
+*.err
+.probe-tmp/
+
+# ---- OS / editor ----
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.lnk

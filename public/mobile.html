@@ -1,0 +1,1602 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-GAL</title>
+  <!-- [移动端前端临时屏蔽 2026-09-11]
+       下面的「移动端自动跳转」脚本已停用：无论 UA 还是屏幕宽度，局域网访问一律停留在桌面版 index.html。
+       恢复方法：删掉本注释包裹（保留 script），并放开 server/index.js 里的 DISABLE_MOBILE_FRONTEND。
+  <script>
+    // Auto-redirect mobile/tablet visitors to the mobile-optimized page.
+    (function () {
+      try {
+        if (location.search.indexOf('desktop=1') !== -1) {
+          localStorage.setItem('forceDesktop', '1'); // remember preference
+        }
+        if (localStorage.getItem('forceDesktop') === '1') return; // user opted into desktop
+        if (/mobile\.html/.test(location.pathname)) return;        // already on mobile page
+        var ua = navigator.userAgent || '';
+        var isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua);
+        var w = Math.min(window.innerWidth, (window.screen && window.screen.width) ? window.screen.width : window.innerWidth);
+        var isTouchSmall = (navigator.maxTouchPoints > 0 || ('ontouchstart' in window)) && w < 1024;
+        if (isMobileUA || isTouchSmall) {
+          location.replace('mobile.html');
+        }
+      } catch (e) {}
+    })();
+  </script>
+  -->
+  <link rel="stylesheet" href="css/ai-rp-tool-redesign.css?v=20260905a">
+  <link rel="stylesheet" href="css/theater-enhance.css">
+  <style>
+    #btnTTSStop {
+      background: var(--danger);
+      color: #fff;
+    }
+
+    /* TTS player bar removed (2026-07-09): playback is controlled via the 🎧 floating list popup */
+
+    /* Recorder button active state (popup open) */
+    #btnTTSListFloat.active {
+      background: var(--color-accent-600);
+      color: var(--text-primary);
+    }
+
+    /* TTS list popup (floating, opened from recorder button) */
+    .tts-list-popup {
+      position: fixed;
+      right: 52px;
+      bottom: 84px;
+      width: 320px;
+      max-height: min(62vh, calc(100vh - 96px));
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-secondary, #1c1c1e);
+      border: 1px solid var(--border-color, #333);
+      border-radius: 10px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+      z-index: 200;
+      overflow: hidden;
+    }
+
+    .tts-list-popup.hidden {
+      display: none;
+    }
+
+    .tts-list-popup-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-color, #333);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary, #eee);
+    }
+
+    .tts-list-popup-close {
+      background: transparent;
+      border: none;
+      color: var(--text-muted, #888);
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+
+    .tts-list-popup-close:hover {
+      color: var(--text-primary, #eee);
+    }
+
+    /* Small icon action buttons in header (Stop + Close) */
+    .tts-list-popup-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+
+    .tts-icon-btn {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      border: 1px solid var(--border-color, #444);
+      background: var(--bg-tertiary, #2c2c2e);
+      color: var(--text-primary, #eee);
+      font-size: 13px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      transition: background 0.15s, transform 0.12s, border-color 0.15s;
+    }
+
+    .tts-icon-btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .tts-icon-btn.stop:hover {
+      background: #FF3B30;
+      border-color: #FF3B30;
+      color: #fff;
+    }
+
+    .tts-icon-btn.close:hover {
+      background: var(--accent, #007aff);
+      border-color: var(--accent, #007aff);
+      color: #fff;
+    }
+
+    .tts-list-popup-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    /* Slim scrollbar for the audio list */
+    .tts-list-popup-body::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .tts-list-popup-body::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .tts-list-popup-body::-webkit-scrollbar-thumb {
+      background: var(--border-color, #444);
+      border-radius: 4px;
+    }
+
+    .tts-list-popup-body::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted, #888);
+    }
+
+    .tts-list-popup-body .tts-pl-empty {
+      padding: 18px 10px;
+      text-align: center;
+      color: var(--text-muted, #888);
+      font-size: 12px;
+    }
+
+    .tts-list-popup-body .tts-pl-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-secondary, #ccc);
+      transition: background 0.15s;
+    }
+
+    .tts-list-popup-body .tts-pl-item:hover {
+      background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+    }
+
+    .tts-list-popup-body .tts-pl-item.active {
+      background: var(--accent, #007aff);
+      color: #fff;
+    }
+
+    .tts-list-popup-body .tts-pl-item.loading {
+      opacity: 0.5;
+    }
+
+    .tts-list-popup-body .tts-pl-item .tts-pl-icon {
+      width: 16px;
+      text-align: center;
+      font-size: 10px;
+    }
+
+    .tts-list-popup-body .tts-pl-item .tts-pl-text {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tts-list-popup-body .tts-pl-item .tts-pl-dur {
+      font-size: 10px;
+      color: var(--text-muted, #666);
+      min-width: 32px;
+      text-align: right;
+    }
+
+    @keyframes tts-pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.3;
+      }
+    }
+  </style>
+
+  <!-- ===== 移动端（GAL）样式：置于桌面样式之后以覆盖 ===== -->
+  <link rel="stylesheet" href="css/mobile/vn.css?v=20260913b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#060B18">
+  <script>
+    /* 首屏前确定主题与字号，避免闪烁。
+       注意：app.js 的 applyThemeVars() 会 removeAttribute('style') 清掉 html 行内样式，
+       所以字号用「注入 <style>」承载（写在行内 --fs 会被抹掉）。 */
+    (function () {
+      try {
+        document.documentElement.setAttribute('data-theme', localStorage.getItem('mobile-theme') || 'dark');
+        var fs = parseFloat(localStorage.getItem('mobile-font-scale')) || 1;
+        var q = new URLSearchParams(location.search).get('fs');
+        if (q) fs = parseFloat(q) || 1;
+        fs = Math.min(1.6, Math.max(0.85, fs));
+        window.__vnFs = fs;
+        document.documentElement.setAttribute('data-fs', fs >= 1.3 ? 'xl' : (fs >= 1.15 ? 'lg' : 'md'));
+        var st = document.createElement('style');
+        st.id = 'vnFsStyle';
+        st.textContent = ':root{--fs:' + fs + '}';
+        (document.head || document.documentElement).appendChild(st);
+      } catch (e) { }
+    })();
+  </script>
+</head>
+<body>
+  <!-- ============================================================
+       移动端（GAL / 视觉小说）外壳
+       业务逻辑复用 js/app.js：通过隐藏的桌面 DOM 契约驱动
+       ============================================================ -->
+  <div id="vnRoot">
+
+    <!-- 顶部 HUD -->
+    <div class="vn-top">
+      <span class="vn-brand"><i></i>AI-GAL</span>
+      <span class="vn-rounds" id="vnRounds">准备开始</span>
+      <span id="vnTitle" hidden></span>
+      <button class="icbtn" id="vnBtnTheme" title="切换明 / 暗">☾</button>
+      <button class="icbtn" id="vnBtnAuto" title="自动推进">◐</button>
+      <button class="icbtn" id="vnBtnSkip" title="快速跳过">⏩</button>
+      <button class="icbtn gold" id="vnBtnDrawer" title="菜单">☰</button>
+    </div>
+
+    <!-- 页面容器 -->
+    <div id="vnPages">
+
+      <!-- ============ 对话（GAL 舞台） ============ -->
+      <section class="vn-page show" data-page="chat">
+        <div class="vn-stage" id="vnStage">
+          <div class="vn-stage-bg" id="vnStageBg"></div>
+          <div class="vn-stage-art"><img id="vnArtImg" alt="立绘" style="display:none"></div>
+          <div class="vn-stage-veil"></div>
+          <div class="vn-loc" id="vnLoc"><i></i>等待开始</div>
+          <div class="vn-cast" id="vnCast"></div>
+
+          <!-- 未选择角色时的欢迎引导 -->
+          <div class="vn-welcome" id="vnWelcome">
+            <div class="emblem">🎬</div>
+            <h2>选择一个角色开始</h2>
+            <p>选好角色卡后，故事会以视觉小说的方式逐段推进：<br>对白显示说话者头像，旁白用另一种字体呈现。</p>
+            <div class="acts">
+              <button class="btn btn-primary" id="vnWelcomePick">选择角色卡</button>
+              <button class="btn" id="vnWelcomeImport">导入角色卡</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 唯一主对话框：GAL 式逐段演出（对白 / 旁白轮流，永不并存） -->
+        <div class="vn-dlg by-left" id="vnDlg">
+          <span class="vn-spk-av left" id="vnAvLeft"></span>
+          <span class="vn-spk-av right" id="vnAvRight"></span>
+
+          <div class="vn-dlg-stage" id="vnDlgStage">
+            <!-- 对白段 -->
+            <div class="vn-dlg-dialog">
+              <div class="vn-plate-row" id="vnPlateRow">
+                <span class="vn-plate"><b id="vnSpkName">—</b><em id="vnSpkRomaji"></em></span>
+                <span class="vn-aff" id="vnAff">
+                  <span class="h">♥</span>
+                  <span class="bar"><i></i></span>
+                  <b>0</b>
+                </span>
+              </div>
+              <div class="vn-dlg-text" id="vnDlgText"></div>
+            </div>
+            <!-- 旁白段 -->
+            <div class="vn-dlg-narr" id="vnDlgNarr"></div>
+          </div>
+
+          <div class="vn-narr-hint" id="vnNarrHint">↕ 本段较长，可滚动</div>
+
+          <div class="vn-dlg-tools">
+            <button class="vn-tool" id="vnBtnHistory">▾ 回顾</button>
+            <button class="vn-tool" id="vnBtnTTS">🔊 朗读</button>
+            <span class="vn-seg-info">
+              <span class="vn-seg-dots" id="vnSegDots"></span>
+              <span class="vn-seg-badge" id="vnSegBadge">0 / 0</span>
+            </span>
+            <span class="vn-seg-ctrl">
+              <button class="vn-tool" id="vnBtnPrev" title="上一自然段">‹ 上一段</button>
+              <button class="vn-tool primary" id="vnBtnNext" title="推进到下一段">下一段 ›</button>
+            </span>
+            <button class="vn-tool icon" id="vnBtnHideUI" title="隐藏界面（全屏看 CG）">⛶</button>
+          </div>
+        </div>
+
+        <!-- 未读完最新内容时的返回提示 -->
+        <button class="vn-back-latest hidden" id="vnBackLatest">⟲ 回到最新进度</button>
+
+        <!-- 行动选项（管家 AI 生成） -->
+        <div class="vn-choices" id="vnChoices"></div>
+
+        <!-- 指令条：#messageInput / #btnSend 为 app.js 契约 -->
+        <div class="vn-cmd">
+          <button class="plus" id="vnBtnPlus" title="导入角色卡">＋</button>
+          <textarea id="messageInput" rows="1" placeholder="说点什么…"></textarea>
+          <button id="btnSend" disabled>➤</button>
+        </div>
+      </section>
+
+      <!-- ============ 状态 ============ -->
+      <section class="vn-page" data-page="status">
+        <div class="vn-page-head">
+          <h3>主要状态</h3>
+          <span class="sub">MVU 变量 / 数值</span>
+          <button class="icbtn" data-refresh="status">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnStatusBody"></div>
+      </section>
+
+      <!-- ============ 名册 ============ -->
+      <section class="vn-page" data-page="roster">
+        <div class="vn-page-head">
+          <h3>角色名册</h3>
+          <span class="sub">性别 · 年龄 · 关系</span>
+          <button class="icbtn" data-refresh="roster">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnRosterBody"></div>
+      </section>
+
+      <!-- ============ CG 画廊 ============ -->
+      <section class="vn-page" data-page="gallery">
+        <div class="vn-page-head">
+          <h3>CG 画廊</h3>
+          <span class="sub">点按看大图</span>
+          <button class="icbtn" data-refresh="gallery">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnGalleryBody"></div>
+      </section>
+
+      <!-- ============ 记忆 ============ -->
+      <section class="vn-page" data-page="memory">
+        <div class="vn-page-head">
+          <h3>记忆表格</h3>
+          <span class="sub">键值摘要</span>
+          <button class="icbtn" data-refresh="memory">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnMemoryBody"></div>
+      </section>
+
+      <!-- ============ 世界状态 ============ -->
+      <section class="vn-page" data-page="world">
+        <div class="vn-page-head">
+          <h3>世界状态 (MVU)</h3>
+          <span class="sub">engine 卡变量</span>
+          <button class="icbtn" data-refresh="world">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnWorldBody"></div>
+      </section>
+
+      <!-- ============ 幕后控制台 ============ -->
+      <section class="vn-page" data-page="console">
+        <div class="vn-page-head">
+          <h3>幕后控制台</h3>
+          <span class="sub">主 Agent / 管家 AI</span>
+          <button class="icbtn" data-refresh="console">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnConsoleBody"></div>
+      </section>
+    </div>
+
+    <!-- 底部标签 -->
+    <nav class="vn-tabs">
+      <button class="vn-tab active" data-page="chat"><span class="ic">💬</span>对话</button>
+      <button class="vn-tab" data-page="status"><span class="ic">📊</span>状态</button>
+      <button class="vn-tab" data-page="roster"><span class="ic">👥</span>名册</button>
+      <button class="vn-tab" data-page="gallery"><span class="ic">🖼</span>画廊</button>
+      <button class="vn-tab menu" data-page="menu"><span class="ic">☰</span>菜单</button>
+    </nav>
+
+    <!-- 遮罩 -->
+    <div class="vn-scrim" id="vnScrim"></div>
+
+    <!-- 侧滑抽屉：全量功能菜单 -->
+    <aside class="vn-drawer" id="vnDrawer">
+      <div class="vn-dr-id">
+        <div class="av" id="vnUserAv">我</div>
+        <div>
+          <h4 id="vnUserName">我</h4>
+          <p id="vnUserSub">点击可切换用户</p>
+        </div>
+      </div>
+
+      <div class="vn-dr-scroll">
+        <div class="vn-dr-group">故 事</div>
+        <button class="vn-dr-item" data-act="characters"><span class="ic">⚑</span><span class="tx">游戏列表<small>角色卡 · 标签 · 切换</small></span></button>
+        <button class="vn-dr-item" data-act="saves"><span class="ic">⌛</span><span class="tx">游戏存档<small>同一角色的多份存档 · 新建 / 导出 / 删除</small></span></button>
+
+        <div class="vn-dr-group">数 据 中 心</div>
+        <button class="vn-dr-item" data-act="status"><span class="ic">📊</span><span class="tx">主要状态<small>MVU 变量 / 数值条</small></span></button>
+        <button class="vn-dr-item" data-act="roster"><span class="ic">👥</span><span class="tx">角色名册<small>性别 · 年龄 · 关系 · 立绘</small></span></button>
+        <button class="vn-dr-item" data-act="gallery"><span class="ic">🖼</span><span class="tx">CG 画廊<small>全屏看图</small></span></button>
+        <button class="vn-dr-item" data-act="memory"><span class="ic">🧠</span><span class="tx">记忆表格<small>键值摘要</small></span></button>
+        <button class="vn-dr-item" data-act="world"><span class="ic">🌐</span><span class="tx">世界状态 (MVU)<small>播种 / 重放 / 清除</small></span></button>
+
+        <div class="vn-dr-group">声 音 与 外 观</div>
+        <button class="vn-dr-item" data-act="tts"><span class="ic">🔊</span><span class="tx">语音朗读<small>供应商 · 音色映射 · 试听</small></span></button>
+        <button class="vn-dr-item" data-act="bgm"><span class="ic">🎵</span><span class="tx">BGM 开关</span></button>
+        <div class="vn-fs-row">
+          <span class="vn-fs-label">字号</span>
+          <button class="vn-fs-btn" id="vnFsMinus" title="缩小字号">A−</button>
+          <button class="vn-fs-val" id="vnFsVal" title="点击重置为 100%">100%</button>
+          <button class="vn-fs-btn" id="vnFsPlus" title="放大字号">A＋</button>
+        </div>
+
+        <div class="vn-dr-group">管 理 与 调 试</div>
+        <button class="vn-dr-item" data-act="providers"><span class="ic">🔀</span><span class="tx">切换 AI 供应商<small>主 / 管家 / 画家 AI</small></span></button>
+        <button class="vn-dr-item" data-act="settings"><span class="ic">⚙</span><span class="tx">AI 供应商与预设<small>供应商增删改 · ST 预设</small></span></button>
+        <button class="vn-dr-item" data-act="user"><span class="ic">👤</span><span class="tx">用户设定<small>多用户 · 扮演身份</small></span></button>
+        <button class="vn-dr-item" data-act="import"><span class="ic">📥</span><span class="tx">导入角色卡<small>.json / .png</small></span></button>
+        <button class="vn-dr-item" data-act="export"><span class="ic">📤</span><span class="tx">导出对话</span></button>
+        <button class="vn-dr-item" data-act="console"><span class="ic">🐞</span><span class="tx">幕后控制台<small>主 Agent / 管家 AI 输出</small></span></button>
+      </div>
+
+      <div class="vn-dr-foot">
+        <button class="vn-switch-desktop" id="vnSwitchDesktop">
+          <span class="ic" style="width:30px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(232,200,120,.12);border:1px solid rgba(232,200,120,.3)">🖥</span>
+          <span class="tx">切换到普通版（桌面）<small>记住偏好，下次直接进桌面版</small></span>
+        </button>
+        <div class="vn-dr-ver">AI-GAL · 移动端</div>
+      </div>
+    </aside>
+
+    <!-- 通用 Sheet（角色列表等，从右侧滑入） -->
+    <section class="vn-drawer" id="vnSheet">
+      <div class="vn-dr-id">
+        <h4 id="vnSheetTitle" style="margin:0">列表</h4>
+        <button class="icbtn" id="vnSheetClose" style="margin-left:auto">✕</button>
+      </div>
+      <div class="vn-dr-scroll" id="vnSheetBody"></div>
+    </section>
+
+    <!-- 历史记录浮层（回顾） -->
+    <section class="vn-drawer" id="vnHistorySheet">
+      <div class="vn-dr-id">
+        <h4 id="vnHistoryTitle" style="margin:0">历史记录</h4>
+        <button class="icbtn" id="vnHistoryClose" style="margin-left:auto">✕</button>
+      </div>
+      <div class="vn-dr-scroll" id="vnHistoryBody"></div>
+    </section>
+
+    <!-- 大图查看（CG / 头像，保持原比例） -->
+    <div class="vn-viewer" id="vnViewer">
+      <img id="vnViewerImg" alt="大图">
+      <div class="cap"><span id="vnViewerName"></span><small id="vnViewerSub">轻点任意处关闭</small></div>
+      <button class="close" id="vnViewerClose">✕</button>
+    </div>
+
+    <div class="vn-toast" id="vnToast"></div>
+  </div>
+
+  <!-- ===== app.js 所需的隐藏 DOM 契约（桌面结构，移动端由 vn.css 隐藏） ===== -->
+  <div id="vnLegacyDom" style="display:none" aria-hidden="true">
+<nav class="top-bar" data-component="TopBar">
+    <div class="top-bar-accent-line"></div>
+    <div class="top-bar-left">
+      <span class="app-title">AI-GAL</span>
+    </div>
+    <div class="top-bar-center">
+      <span class="conversation-title" id="conversationTitle">选择角色开始对话</span>
+    </div>
+    <div class="top-bar-right">
+      <button class="theme-mode-toggle" id="themeModeToggle" title="切换亮/暗模式">
+        <span class="mode-icon mode-icon-dark">🌙</span>
+        <span class="mode-icon mode-icon-light">☀️</span>
+      </button>
+      <div class="theme-preset-wrap">
+        <span class="tp-label">🎨</span>
+        <select class="theme-preset-select" id="themePresetSelect" title="切换主题方案">
+          <option value="default">默认深色</option>
+          <option value="ios">☁️ iOS</option>
+          <option value="parchment">📜 羊皮卷</option>
+          <option value="pink">🌸 粉红</option>
+        </select>
+      </div>
+      <button class="ws-toggle-btn" id="btnWorldState" title="世界状态 (MVU)">
+        <span>🌐</span>
+      </button>
+    </div>
+  </nav>
+
+  
+<div class="system-menu-bar" id="systemMenuBar">
+    <button class="sys-menu-btn" id="btnGameSettings" title="用户">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10" cy="6" r="3" />
+        <path d="M4 18c0-4 2.7-6 6-6s6 2 6 6" />
+      </svg>
+      <span>用户</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <button class="sys-menu-btn" id="btnSettings" title="设置">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10" cy="10" r="3" />
+        <path d="M10 1v2M10 17v2M1 10h2M17 10h2M4.2 4.2l1.4 1.4M14.4 14.4l1.4 1.4M4.2 15.8l1.4-1.4M14.4 5.6l1.4-1.4" />
+      </svg>
+      <span>设置</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <button class="sys-menu-btn" id="btnExport" title="导出对话">
+      <svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 9h11M10 5l4 4-4 4M14 3v12" />
+      </svg>
+      <span>导出</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <button class="sys-menu-btn" id="btnTTS" title="语音朗读">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="4,14 2,14 2,6 4,6 9,2 9,18 4,14" />
+        <path d="M13 6a5 5 0 010 8M16 3a9 9 0 010 14" />
+      </svg>
+      <span>语音</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+
+    <button class="sys-menu-btn" id="btnToggleDebug" title="调试面板">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="14" height="14" rx="2" />
+        <path d="M7 8l3 3-3 3M11 14h3" />
+      </svg>
+      <span>调试</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <button class="sys-menu-btn" id="btnToggleInfoPanel" title="场景面板">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="16" height="16" rx="2" />
+        <line x1="12" y1="2" x2="12" y2="18" />
+      </svg>
+      <span>场景</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <!-- 移动端入口：点击切换到移动端界面（public/mobile.html） -->
+    <button class="sys-menu-btn" id="btnDevMobile" title="切换到移动端（手机/平板界面）">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="2" width="8" height="16" rx="2" />
+        <line x1="9" y1="15" x2="11" y2="15" />
+      </svg>
+      <span>移动</span>
+    </button>
+    <div class="sys-menu-sep"></div>
+    <!-- Token / Stability Indicator -->
+    <div class="token-stability" id="tokenStability" title="时空稳定性">
+      <svg class="stability-icon" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"
+        stroke-width="1.5">
+        <path d="M7 1v4M7 9v4M1 7h4M9 7h4" />
+        <circle cx="7" cy="7" r="2" />
+      </svg>
+      <span class="stability-text"><b id="tokenContext">0</b> / <b id="tokenTotal">0</b></span>
+      <div class="stability-bar">
+        <div class="stability-fill" id="stabilityFill"></div>
+      </div>
+    </div>
+  </div>
+
+  
+<div class="main-layout" data-component="MainLayout">
+
+    <!-- Left Sidebar -->
+    <aside class="left-sidebar" id="leftSidebar" data-component="CharacterSidebar">
+      <div class="sidebar-strip" id="sidebarStrip">
+        <button class="strip-toggle" id="btnExpandSidebar" title="展开游戏列表">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round">
+            <polyline points="6,3 11,8 6,13" />
+          </svg>
+        </button>
+        <div class="strip-avatars" id="stripAvatars"></div>
+        <button class="strip-add" id="btnNewCharacterStrip" title="新建角色卡">+</button>
+        <button class="strip-add" id="btnRestart" title="重启对话" style="margin-top:4px">
+          <svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 9a6 6 0 0111.47-2.5M15 9a6 6 0 01-11.47 2.5" />
+            <polyline points="3,3 3,6.5 6.5,6.5" />
+            <polyline points="15,15 15,11.5 11.5,11.5" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="sidebar-panel" id="sidebarPanel">
+        <div class="sidebar-header">
+          <h3>游戏列表</h3>
+          <div class="sidebar-actions">
+            <button class="icon-btn-sm" id="btnNewCharacter" title="新建角色卡">+</button>
+            <button class="icon-btn-sm" id="btnImportCharacter" title="导入角色卡">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M7 2v7" />
+                <path d="M10 6l-3 3-3-3" />
+                <path d="M3 2h8a1 1 0 011 1v12" />
+              </svg>
+            </button>
+            <button class="icon-btn-sm" id="btnCollapseSidebar" title="收起侧栏">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round">
+                <polyline points="9,3 4,7 9,11" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="character-tags-bar" id="characterTagsBar" style="display:none"></div>
+        <div class="character-list" id="characterList">
+          <div class="empty-state">
+            <p>暂无角色</p>
+            <button class="btn btn-sm" id="btnImportCharacterEmpty">导入角色卡</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Chat Area -->
+    <main class="chat-area" id="chatArea" data-component="ChatArea">
+      <div class="welcome-screen" id="welcomeScreen" data-component="WelcomeScreen">
+        <div class="welcome-content">
+          <div class="welcome-emblem">
+            <img src="logo.png" alt="logo"
+              style="width:120px;height:120px;border-radius:50%;border:none;display:block;">
+          </div>
+          <h1>AI-GAL</h1>
+          <p>选择或创建一个角色，开始你的角色扮演对话。</p>
+          <div class="welcome-tips">
+            <h3>使用提示</h3>
+            <ul>
+              <li>点击左侧竖条展开角色列表</li>
+              <li>支持导入 SillyTavern 角色卡</li>
+              <li>AI 会输出带动作和情绪的格式化回复</li>
+              <li>在设置中配置 API 供应商</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="chat-container hidden" id="chatContainer">
+        <div class="chat-tab-bar" id="chatTabBar">
+          <button class="chat-tab-btn active" data-tab="chat">对话</button>
+        </div>
+
+        <div class="chat-tab-content active" id="chatTabContent" data-tab="chat">
+          <div class="messages-area" id="messagesArea"></div>
+          <div class="scroll-float-btns" id="scrollFloatBtns">
+            <button class="scroll-float-btn" id="btnScrollTop" title="直达顶端">&#9650;</button>
+            <button class="scroll-float-btn" id="btnScrollRound" title="跳到最后一条消息开头">&#9632;</button>
+            <button class="scroll-float-btn" id="btnScrollEnd" title="跳到最后一条消息末尾">&#9660;</button>
+            <button class="scroll-float-btn" id="btnTTSListFloat" title="待播放音频列表" aria-label="待播放音频列表">🎧</button>
+          </div>
+        </div>
+
+        <!-- TTS player bar removed (2026-07-09): playback is controlled via the 🎧 floating list popup -->
+
+        <div class="input-area">
+          <textarea id="messageInput" placeholder="输入消息... (Ctrl+Enter 发送)" rows="1" autofocus></textarea>
+          <div class="input-actions">
+            <button class="btn btn-sm" id="btnResetPhonePos" title="复位悬浮按钮和手机界面">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="2" width="14" height="20" rx="3" ry="3" />
+                <line x1="12" y1="18" x2="12.01" y2="18" />
+              </svg>
+            </button>
+            <button class="btn btn-primary" id="btnSend" disabled>发送</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Debug Drawer (Slide-out from right, hidden by default) -->
+    <div class="debug-drawer hidden" id="debugDrawer">
+      <div class="debug-drawer-header">
+        <h4>幕后控制台</h4>
+        <button class="modal-close" id="btnCloseDebugDrawer">&times;</button>
+      </div>
+      <div class="debug-drawer-body">
+        <div class="debug-toolbar">
+          <div class="debug-sub-tabs">
+            <button class="debug-sub-tab-btn active" data-subtab="mainAgent"
+              onclick="switchDebugSubTab('mainAgent')">主Agent</button>
+            <button class="debug-sub-tab-btn" data-subtab="butler" onclick="switchDebugSubTab('butler')">管家AI</button>
+          </div>
+          <span class="debug-toolbar-sep">|</span>
+          <span style="font-size:12px;color:var(--text-muted)">字体:</span>
+          <button class="btn btn-xs" onclick="setDebugFontSize(-1)" title="缩小">A-</button>
+          <button class="btn btn-xs" onclick="setDebugFontSize(1)" title="放大">A+</button>
+        </div>
+        <div class="debug-content debug-subtab-content active" id="debugMainAgentContent">
+          <div class="debug-empty">主Agent 输出将在此显示（含思维链、完整输出等）</div>
+        </div>
+        <div class="debug-content debug-subtab-content" id="debugButlerContent">
+          <div class="debug-empty">管家AI 处理记录将在此显示（含思维链、portrait/CG判定等）</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MVU 世界状态抽屉 (Tier 3 闭环) -->
+    <div class="world-state-drawer hidden" id="worldStateDrawer">
+      <div class="world-state-drawer-header">
+        <h4>🌐 世界状态 (MVU)</h4>
+        <button class="modal-close" id="btnCloseWorldStateDrawer">&times;</button>
+      </div>
+      <div class="world-state-toolbar">
+        <button class="btn btn-xs ws-act" data-ws-action="seed" title="从开场白重新播种初始变量">↺ 重新读取初始变量</button>
+        <button class="btn btn-xs ws-act" data-ws-action="reprocess" title="按全部消息重放所有补丁">⟳ 重新处理变量</button>
+        <button class="btn btn-xs ws-act" data-ws-action="clear" title="清空楼层变量">🗑 清除楼层变量</button>
+        <button class="btn btn-xs ws-act" data-ws-action="add" title="手动新增变量">＋ 新增</button>
+      </div>
+      <div class="world-state-body" id="worldStateBody">
+        <div class="ws-empty">当前角色不是 engine 卡，无 MVU 世界状态。</div>
+      </div>
+    </div>
+
+    <!-- Right Info Panel -->
+    <aside class="info-panel" id="infoPanel" data-component="InfoPanel">
+      <div class="multimedia-bar" id="multimediaBar">
+        <div class="audio-visualizer-mini" id="audioVisualizer">
+          <div class="audio-bar"></div>
+          <div class="audio-bar"></div>
+          <div class="audio-bar"></div>
+          <div class="audio-bar"></div>
+          <div class="audio-bar"></div>
+        </div>
+        <button class="icon-btn-sm audio-toggle-btn" id="btnToggleAudio" title="开关 BGM">
+          <span id="audioIcon">🔇</span>
+        </button>
+        <input type="range" id="bgmVolume" min="0" max="100" value="30" class="bgm-volume-slider" title="音量">
+        <button class="icon-btn-sm" id="btnImageGenSettings" title="图像生成设置">🖼</button>
+      </div>
+      <div class="gallery-section">
+        <div class="gallery-header">
+          <h4>场景画片</h4>
+          <div class="gallery-controls">
+            <button class="icon-btn-sm" id="btnPrevImage" title="上一张" disabled>&#8249;</button>
+            <span class="gallery-counter" id="galleryCounter">0 / 0</span>
+            <button class="icon-btn-sm" id="btnNextImage" title="下一张" disabled>&#8250;</button>
+          </div>
+        </div>
+        <div class="gallery-viewport" id="galleryViewport">
+          <div class="gallery-empty" id="galleryEmpty">
+            <p>暂无场景画片</p>
+            <p class="hint">AI 生成图片后将在此显示</p>
+          </div>
+          <img class="gallery-image hidden" id="galleryImage" alt="场景画片">
+          <div class="gallery-atmosphere" id="galleryAtmosphere"></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Modal: Edit Message -->
+    <div class="modal hidden" id="editModal" data-component="EditModal">
+      <div class="modal-overlay" id="editModalOverlay"></div>
+      <div class="modal-content" style="width:90vw;max-width:900px;max-height:85vh">
+        <div class="modal-header">
+          <h3>编辑消息（原始文本）</h3>
+          <button class="modal-close" id="editModalClose">&times;</button>
+        </div>
+        <div class="modal-body" style="overflow-y:auto;max-height:calc(85vh - 100px)">
+          <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">下方是AI输出的原始文本，包含 ### mood / ### story / ###
+            dialog 等标记。直接修改文本后保存即可。</p>
+          <textarea id="editTextarea" rows="20"
+            style="width:100%;min-height:400px;resize:vertical;font-family:Consolas,'Courier New',monospace;font-size:13px;line-height:1.5;tab-size:2"></textarea>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+            <button class="btn btn-sm" id="btnEditCancel">取消</button>
+            <button class="btn btn-sm" id="btnEditSave"
+              style="background:var(--color-accent-500);color:#fff">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phone Popup Trigger Button -->
+    <button class="phone-float-btn" id="btnPhoneFloat" title="数据中心">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="2" width="14" height="20" rx="3" ry="3" />
+        <line x1="12" y1="18" x2="12.01" y2="18" />
+      </svg>
+    </button>
+
+    <!-- MVU World State Floating Button (engine / MVU cards only; draggable, opens the right drawer) -->
+    <button class="ws-float-btn hidden" id="btnWorldStateFloat" title="世界状态 (MVU)">
+      <span style="font-size:22px;line-height:1;">📊</span>
+    </button>
+
+    <!-- Phone Popup Menu -->
+    <div class="phone-popup hidden" id="phonePopup">
+      <div class="phone-body">
+        <!-- Title Bar -->
+        <div class="phone-statusbar">
+          <span class="phone-icons" id="phoneIcons">⚔ 数据中心</span>
+          <span class="phone-time" id="phoneTime">第 0 轮</span>
+        </div>
+
+        <!-- Tab Bar -->
+        <div class="rpg-tab-container">
+          <button class="rpg-tab-btn active" data-tab="status">主要状态</button>
+          <button class="rpg-tab-btn" data-tab="roster">角色名册</button>
+          <button class="rpg-tab-btn" data-tab="memory">记忆表格</button>
+          <button class="rpg-tab-btn" data-tab="gallery">CG画廊</button>
+        </div>
+
+        <!-- Status Page -->
+        <div class="phone-page" id="phoneStatusPage">
+          <div class="phone-page-inner">
+            <div class="status-popup-body" id="statusPopupBody">
+              <div class="phone-empty">选择角色后显示状态</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Roster Page -->
+        <div class="phone-page hidden" id="phoneRosterPage">
+          <div class="phone-page-inner">
+            <div class="phone-list" id="rosterList">
+              <div class="phone-empty">暂无角色记录</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Memory Page -->
+        <div class="phone-page hidden" id="phoneMemoryPage">
+          <div class="phone-page-inner">
+            <div class="phone-list" id="memoryList">
+              <div class="phone-empty">暂无记忆数据</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Gallery Page -->
+        <div class="phone-page hidden" id="phoneGalleryPage">
+          <div class="phone-page-inner">
+            <div class="phone-gallery-grid" id="phoneGalleryGrid">
+              <div class="phone-empty">暂无CG图片</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Character Detail Page -->
+        <div class="phone-page hidden" id="phoneCharDetailPage">
+          <div class="phone-page-inner" id="charDetailContent"></div>
+        </div>
+
+        <!-- Memory Edit Modal -->
+        <div class="memory-edit-overlay hidden" id="memoryEditOverlay">
+          <div class="memory-edit-modal">
+            <div class="memory-edit-header">
+              <span id="memoryEditKey" style="font-weight:700;color:var(--accent)"></span>
+              <button class="memory-edit-close" onclick="closeMemoryEdit()">&times;</button>
+            </div>
+            <textarea id="memoryEditValue" rows="8" placeholder="编辑记忆内容..."></textarea>
+            <div class="memory-edit-actions">
+              <button class="memory-edit-btn memory-edit-save" onclick="saveMemoryEdit()">保存</button>
+              <button class="memory-edit-btn" onclick="closeMemoryEdit()">取消</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  
+    <div id="statusContent"></div>
+    <div id="debugTabContent"></div>
+    <div id="tokenCounter" hidden></div>
+  </div>
+
+<!-- Modal: Game Settings -->
+  <div class="modal hidden" id="gameSettingsModal" data-component="GameSettingsModal">
+    <div class="modal-overlay" id="gameSettingsOverlay"></div>
+    <div class="modal-content modal-settings">
+      <div class="modal-header">
+        <h3>用户</h3>
+        <button class="modal-close" id="gameSettingsClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <section class="settings-section">
+          <h4>用户设定</h4>
+          <div class="user-avatar-upload">
+            <div class="user-avatar-preview" id="userAvatarPreview"></div>
+            <input type="file" id="userAvatarFile" accept="image/*" style="display:none">
+            <button class="btn btn-sm" id="btnUploadAvatar">上传头像</button>
+          </div>
+          <div class="form-group">
+            <label for="userName">姓名</label>
+            <input type="text" id="userName" placeholder="你的名字（用于替换 {{user}}）">
+          </div>
+          <div class="form-group">
+            <label for="userIntro">简要介绍</label>
+            <textarea id="userIntro" rows="2" placeholder="介绍你自己的背景..."></textarea>
+          </div>
+          <div class="form-group persona-box" style="margin-top:10px;border-top:1px dashed var(--border-color);padding-top:10px">
+            <label for="personaName">游戏内身份（扮演角色名）</label>
+            <input type="text" id="personaName" placeholder="如：勇者亚瑟（留空表示不扮演）">
+            <p class="form-hint" style="font-size:11px;color:var(--text-muted);margin:4px 0 0">
+              复杂游戏中主角扮演其它角色时，填写该角色名，对话将以该身份头像显示，且不会被误生成头像。
+            </p>
+            <div class="user-avatar-upload" style="margin-top:8px">
+              <div class="user-avatar-preview" id="personaAvatarPreview" style="width:64px;height:64px;border-radius:10px"></div>
+              <input type="file" id="personaAvatarFile" accept="image/*" style="display:none">
+              <button class="btn btn-sm" id="btnUploadPersonaAvatar">上传扮演角色头像</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>切换用户</label>
+            <select id="userSwitcher" class="setting-select"></select>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button class="btn btn-sm" id="btnSaveUser">保存</button>
+            <button class="btn btn-sm" id="btnNewUser">新建用户</button>
+            <button class="btn btn-sm" id="btnDeleteUser" style="color:#DC143C">删除</button>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h4>主 AI 提示词</h4>
+          <div class="form-group">
+            <label>全局系统提示词（仅负责叙事。格式和属性整理由管家AI完成）</label>
+            <textarea id="systemPromptEditor" rows="10" placeholder="点击【读取当前】加载..."
+              style="font-family:Consolas,monospace;font-size:12px;line-height:1.4"></textarea>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <button class="btn btn-sm" id="btnLoadSystemPrompt">读取当前</button>
+            <button class="btn btn-sm btn-primary" id="btnSaveSystemPrompt">保存</button>
+            <button class="btn btn-sm" id="btnResetSystemPrompt"
+              style="color:var(--color-danger);border-color:var(--color-danger)">重置默认</button>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h4>一键修卡提示词</h4>
+          <div class="form-group">
+            <label>角色卡优化助手的系统提示词</label>
+            <textarea id="cardFixerPromptEditor" rows="6" placeholder="修卡 AI 的提示词..."></textarea>
+          </div>
+          <button class="btn btn-sm" id="btnSaveCardFixerPrompt">保存</button>
+        </section>
+        <section class="settings-section">
+          <h4>管家 AI 提示词</h4>
+          <div class="form-group">
+            <label>管家AI负责：分析氛围(BGM)、提取角色属性、生成行动选项、记忆摘要、触发生图</label>
+            <textarea id="memoryAgentPromptEditor" rows="8" placeholder="管家AI的后处理提示词..."
+              style="font-family:Consolas,monospace;font-size:12px;line-height:1.4"></textarea>
+          </div>
+          <button class="btn btn-sm" id="btnSaveMemoryAgentPrompt">保存</button>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Settings -->
+  <div class="modal hidden" id="settingsModal" data-component="SettingsModal">
+    <div class="modal-overlay" id="settingsModalOverlay"></div>
+    <div class="modal-content modal-settings">
+      <div class="modal-header">
+        <h3>设置</h3>
+        <button class="modal-close" id="settingsModalClose">×</button>
+      </div>
+      <div class="modal-body">
+        <section class="settings-section">
+          <div class="settings-tabs">
+            <button class="settings-tab active" data-tab="mainAI" onclick="switchSettingsTab('mainAI')">主 AI</button>
+            <button class="settings-tab" data-tab="butlerAI" onclick="switchSettingsTab('butlerAI')">管家 AI</button>
+            <button class="settings-tab" data-tab="painterAI" onclick="switchSettingsTab('painterAI')">画家 AI</button>
+            <button class="settings-tab" data-tab="proxy" onclick="switchSettingsTab('proxy')">代理</button>
+          </div>
+          <div class="settings-tab-content" id="tabMainAI" style="display:block">
+            <div class="form-group">
+              <label>供应商</label>
+              <select id="mainAIProvider" class="setting-select">
+                <option value="">默认供应商</option>
+              </select>
+              <div id="mainAIProviderInfo" class="provider-info-hint"></div>
+            </div>
+            <div class="form-group">
+              <label>ST 预设</label>
+              <select id="mainAIPreset" class="setting-select">
+                <option value="">不使用预设</option>
+              </select>
+              <div style="display:flex;gap:6px;margin-top:6px">
+                <button class="btn btn-sm" id="btnImportMainAIPreset">导入预设</button>
+                <button class="btn btn-sm" id="btnEditMainAIPreset">编辑预设参数</button>
+              </div>
+            </div>
+            <input type="file" id="mainAIPresetFile" accept=".json" style="display:none">
+          </div>
+          <div class="settings-tab-content" id="tabButlerAI" style="display:none">
+            <div class="form-group">
+              <label>供应商</label>
+              <select id="butlerAIProvider" class="setting-select">
+                <option value="">与主 AI 相同</option>
+              </select>
+              <div id="butlerAIProviderInfo" class="provider-info-hint"></div>
+            </div>
+            <div class="form-group">
+              <label>ST 预设</label>
+              <select id="butlerAIPreset" class="setting-select">
+                <option value="">不使用预设</option>
+              </select>
+              <div style="display:flex;gap:6px;margin-top:6px">
+                <button class="btn btn-sm" id="btnImportButlerAIPreset">导入预设</button>
+                <button class="btn btn-sm" id="btnEditButlerAIPreset">编辑预设参数</button>
+              </div>
+            </div>
+            <input type="file" id="butlerAIPresetFile" accept=".json" style="display:none">
+          </div>
+          <div class="settings-tab-content" id="tabPainterAI" style="display:none">
+            <div class="form-group">
+              <label>生图开关</label>
+              <div style="display:flex;align-items:center;gap:10px">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="imageEnabledToggle" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <span id="imageEnabledLabel" style="font-size:13px;color:var(--text-secondary)">已开启</span>
+              </div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">关闭后不再生成头像和CG，需要头像时读取默认资源</div>
+            </div>
+            <div class="form-group">
+              <label>供应商</label>
+              <select id="painterAIProvider" class="setting-select">
+                <option value="">与管家 AI 相同</option>
+              </select>
+              <div id="painterAIProviderInfo" class="provider-info-hint"></div>
+            </div>
+          </div>
+          <div class="settings-tab-content" id="tabProxy" style="display:none">
+            <div class="form-group">
+              <label style="display:flex;align-items:center;gap:10px">
+                <span>启用代理</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="proxyEnabledToggle">
+                  <span class="toggle-slider"></span>
+                </label>
+              </label>
+            </div>
+            <div class="form-group">
+              <label>代理地址</label>
+              <input type="text" id="proxyHost" class="setting-input" placeholder="127.0.0.1">
+            </div>
+            <div class="form-group">
+              <label>代理端口</label>
+              <input type="number" id="proxyPort" class="setting-input" placeholder="9567" value="9567">
+            </div>
+            <div class="form-group">
+              <label>认证 (user:pass，可选)</label>
+              <input type="text" id="proxyAuth" class="setting-input" placeholder="留空无需认证">
+            </div>
+            <button class="btn btn-sm" id="btnSaveProxy">保存代理设置</button>
+            <span id="proxyStatus" style="margin-left:8px;font-size:12px;color:var(--text-muted)"></span>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h4>API 供应商管理</h4>
+          <div id="providerList"></div>
+          <button class="btn btn-sm" id="btnAddProvider">添加供应商</button>
+        </section>
+        <section class="settings-section">
+          <h4>主题</h4>
+          <div id="themeSettings"></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-sm" id="btnResetTheme">重置为默认</button>
+            <button class="btn btn-sm" id="btnSetDefaultTheme">设为默认</button>
+            <button class="btn btn-sm" id="btnExportTheme">导出主题</button>
+            <button class="btn btn-sm" id="btnImportTheme">导入主题</button>
+          </div>
+          <input type="file" id="themeFileInput" accept=".json" style="display:none">
+        </section>
+        <section class="settings-section">
+          <h4>移动端界面</h4>
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">
+            手机 / 平板访问时会自动进入移动端（GAL 视觉小说）界面。这里可以手动切换，或恢复自动跳转。
+          </p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-sm" onclick="switchToMobile()">切到移动端界面</button>
+            <button class="btn btn-sm" onclick="restoreMobileFrontend()">恢复移动端自动跳转</button>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h4>世界书</h4>
+          <div class="form-group">
+            <label for="worldbookCooldown">触发间隔（轮数）</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="worldbookCooldown" min="1" max="20" value="4"
+                style="width:60px;text-align:center">
+              <span style="color:var(--text-muted);font-size:12px">同一世界书条目在 N 轮对话内不重复注入</span>
+            </div>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h4>记忆表格</h4>
+          <button class="btn btn-sm" id="btnViewEventLog">查看记忆表格</button>
+          <div id="eventLogPreview" style="display:none;margin-top:8px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <span id="eventLogCountdown" style="color:var(--text-accent);font-size:12px"></span>
+              <div style="display:flex;gap:4px">
+                <button class="btn btn-sm" id="btnEditEventLog">编辑</button>
+                <button class="btn btn-sm" id="btnSaveEventLog" style="display:none">保存</button>
+                <button class="btn btn-sm" id="btnCancelEditEventLog" style="display:none">取消</button>
+              </div>
+            </div>
+            <div id="eventLogContent"
+              style="background:var(--bg-input);border:1px solid var(--glass-border);border-radius:8px;padding:10px;max-height:200px;overflow-y:auto;font-size:11px;font-family:var(--font-mono);white-space:pre-wrap;color:var(--text-primary)">
+            </div>
+            <textarea id="eventLogEditor"
+              style="display:none;width:100%;background:var(--bg-input);border:1px solid var(--glass-border);border-radius:8px;padding:10px;font-size:11px;font-family:var(--font-mono);color:var(--text-primary);min-height:150px"
+              rows="8"></textarea>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h4>图像生成</h4>
+          <div id="imageSettings"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: API Presets -->
+  <div class="modal hidden" id="apiPresetsModal">
+    <div class="modal-overlay" id="apiPresetsOverlay"></div>
+    <div class="modal-content" style="max-width:600px">
+      <div class="modal-header">
+        <h3>API 预设管理</h3>
+        <button class="modal-close" id="apiPresetsClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>聊天预设</label>
+          <select id="chatPresetSelect" class="setting-select"></select>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <button class="btn btn-sm" id="btnImportSTPreset">导入 ST 预设</button>
+            <button class="btn btn-sm" id="btnDefaultChatPreset">设为默认</button>
+            <button class="btn btn-sm btn-danger" id="btnDeleteChatPreset">删除</button>
+          </div>
+          <input type="file" id="stPresetFile" accept=".json" style="display:none">
+        </div>
+        <div class="form-group">
+          <label>参数控制（勾选 = 生效）</label>
+          <div id="presetParams"></div>
+        </div>
+        <hr>
+        <h4>图像生成</h4>
+        <div id="imageGenSettings"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Slide-out Panel: System Prompt Editor -->
+  <div class="slide-panel hidden" id="spEditorPanel" data-component="SlidePanel">
+    <div class="slide-panel-header">
+      <h4 id="spEditorTitle">编辑系统提示词</h4>
+      <button class="modal-close" onclick="closeSpEditor()">✕</button>
+    </div>
+    <div class="slide-panel-body">
+      <div class="form-group">
+        <label>名称</label>
+        <input type="text" id="spEditorName" class="setting-input" placeholder="提示词名称">
+      </div>
+      <div class="form-group">
+        <label>内容</label>
+        <textarea id="spEditorContent" class="setting-input" rows="20"
+          style="width:100%;font-family:var(--font-mono);font-size:13px;resize:vertical"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-sm" onclick="closeSpEditor()">取消</button>
+        <button class="btn btn-sm" onclick="saveSpFromPanel()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: New/Edit Character -->
+  <div class="modal hidden" id="characterModal" data-component="CharacterModal">
+    <div class="modal-overlay" id="characterModalOverlay"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="characterModalTitle">新建角色</h3>
+        <button class="modal-close" id="characterModalClose">×</button>
+      </div>
+      <div class="modal-body">
+        <form id="characterForm">
+          <div class="form-group">
+            <label for="charName">角色名称 *</label>
+            <input type="text" id="charName" required placeholder="角色名称">
+          </div>
+          <div class="form-group">
+            <label for="charAvatar">头像 URL</label>
+            <input type="text" id="charAvatar" placeholder="https://...">
+          </div>
+          <div class="form-group">
+            <label for="charPersonality">性格描述 *</label>
+            <textarea id="charPersonality" required rows="4" placeholder="描述角色的性格特点..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="charDescription">详细设定</label>
+            <textarea id="charDescription" rows="6" placeholder="角色的详细描述（外貌、背景、能力等）..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="charScenario">场景设定</label>
+            <textarea id="charScenario" rows="3" placeholder="对话发生的场景..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="charFirstMessage">开场白</label>
+            <textarea id="charFirstMessage" rows="2" placeholder="角色对第一条消息的回复..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="charAssetBasePath">立绘资源基路径（Tier 2）</label>
+            <input type="text" id="charAssetBasePath" placeholder="如 D:/games/扣扣审判/SFW 或留空">
+            <small class="field-hint">仅 engine 卡需要：存放 &lt;pic&gt; 立绘的本地文件夹。&lt;pic&gt;SFW/希罗/通常1&lt;/pic&gt; 会在此目录下查找 SFW/希罗/通常1.{png,jpg,webp}。</small>
+          </div>
+          <div class="form-group">
+            <label for="charSystemPrompt">系统提示词</label>
+            <textarea id="charSystemPrompt" rows="4" placeholder="自定义系统提示词（覆盖默认提示）..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="charPostHistory">历史后置指令</label>
+            <textarea id="charPostHistory" rows="3" placeholder="在对话历史之后注入的指令（如格式约束、行为指引）..."></textarea>
+          </div>
+          <div class="form-group">
+            <label>世界书总开关</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label class="wb-entry-switch" style="position:relative;display:inline-flex;align-items:center">
+                <input type="checkbox" id="charBookActivation" onchange="toggleBookActivation(this.checked)">
+                <span class="slider"></span>
+              </label>
+              <span id="bookActivationLabel" style="color:var(--text-muted);font-size:12px">关闭</span>
+              <span style="color:var(--text-muted);font-size:12px;margin-left:8px">总开关关闭时，所有世界书条目（含常驻）均不注入</span>
+            </div>
+          </div>
+          <div class="form-group" id="worldBookSection" style="display:none">
+            <div class="wb-header">
+              <label>世界书条目</label>
+              <div class="wb-header-actions">
+                <span class="wb-count" id="wbEntryCount">0 条</span>
+                <button type="button" class="btn btn-xs" id="btnAddWBEntry" title="新增条目">+ 新增</button>
+              </div>
+            </div>
+            <div class="wb-entries" id="wbEntriesList"></div>
+          </div>
+          <div class="form-group">
+            <label for="charTags">标签 (逗号分隔)</label>
+            <input type="text" id="charTags" placeholder="魔法, 中世纪, 冒险">
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="btnCancelCharacter">取消</button>
+        <button class="btn btn-warning" id="btnFixCharacter" title="AI 优化角色卡格式">一键修卡</button>
+        <button class="btn btn-primary" id="btnSaveCharacter">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: New/Edit Provider -->
+  <div class="modal hidden" id="providerModal">
+    <div class="modal-overlay" id="providerModalOverlay"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="providerModalTitle">添加供应商</h3>
+        <button class="modal-close" id="providerModalClose">×</button>
+      </div>
+      <div class="modal-body">
+        <form id="providerForm">
+          <div class="form-group">
+            <label for="providerName">名称 *</label>
+            <input type="text" id="providerName" required placeholder="My API">
+          </div>
+          <div class="form-group">
+            <label for="providerType">类型 *</label>
+            <select id="providerType" required>
+              <option value="openai">OpenAI 兼容</option>
+              <option value="ollama">Ollama</option>
+              <option value="xai">X.AI (Grok)</option>
+              <option value="gemini">Google Gemini</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="providerUrl">API URL *</label>
+            <input type="text" id="providerUrl" required placeholder="https://api.openai.com">
+          </div>
+          <div class="form-group">
+            <label for="providerApiKey">API Key</label>
+            <input type="password" id="providerApiKey" placeholder="sk-...">
+          </div>
+          <div class="form-group">
+            <label for="providerModel">默认模型</label>
+            <div style="display:flex;gap:6px;align-items:flex-end">
+              <input type="text" id="providerModel" placeholder="gpt-4o-mini" style="flex:1">
+              <button class="btn btn-sm" id="btnFetchModels" type="button">获取模型</button>
+            </div>
+            <select id="providerModelSelect" style="display:none;margin-top:4px;width:100%"></select>
+          </div>
+          <div class="form-group">
+            <label for="providerHeaders">自定义请求头 (JSON)</label>
+            <textarea id="providerHeaders" rows="3" placeholder='{"X-Custom-Header": "value"}'
+              style="font-family:var(--font-mono);font-size:12px"></textarea>
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="providerIsDefault"> 设为默认供应商
+            </label>
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="providerThinking" checked> 启用思考模式 (thinking)
+            </label>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+              本地 Qwen3 等思考模型若只返回思维链、正文为空，请取消勾选，让其直接输出正文
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="btnCancelProvider">取消</button>
+        <button class="btn btn-primary" id="btnSaveProvider">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: TTS Voice -->
+  <div class="modal hidden" id="ttsModal">
+    <div class="modal-overlay" id="ttsModalOverlay"></div>
+    <div class="modal-content" style="max-width:520px">
+      <div class="modal-header">
+        <h3>🔊 语音朗读</h3>
+        <button class="modal-close" id="ttsModalClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <!-- TTS Switches (master / autoplay / narration) -->
+        <div class="tts-switches">
+          <div class="tts-switch-row">
+            <span class="tts-switch-label">启用语音朗读</span>
+            <label class="tts-toggle">
+              <input type="checkbox" id="ttsMasterEnabled">
+              <span class="tts-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="tts-switch-row">
+            <span class="tts-switch-label">AI回复自动朗读</span>
+            <label class="tts-toggle">
+              <input type="checkbox" id="ttsAutoPlay" checked>
+              <span class="tts-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="tts-switch-row">
+            <span class="tts-switch-label">朗读旁白</span>
+            <label class="tts-toggle">
+              <input type="checkbox" id="ttsNarrateNarration">
+              <span class="tts-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="tts-switch-row" style="flex-direction:column;align-items:flex-start;gap:4px">
+            <div style="display:flex;align-items:center;gap:8px;width:100%">
+              <span class="tts-switch-label" style="flex:1">云平台保活心跳</span>
+              <label class="tts-toggle">
+                <input type="checkbox" id="ttsHeartbeat" checked>
+                <span class="tts-toggle-slider"></span>
+              </label>
+            </div>
+            <span style="font-size:10px;color:var(--text-muted);line-height:1.4">仅在使用「Qwen TTS 云平台」时启用，定期轻量请求防云端实例休眠（会持续消耗云端流量）</span>
+          </div>
+        </div>
+
+        <!-- TTS Provider List -->
+        <h4 style="margin:0 0 8px">语音供应商</h4>
+        <div id="ttsProviderList" style="margin-bottom:12px"></div>
+        <button class="btn btn-sm" id="btnAddTTSProvider" style="margin-bottom:12px">+ 添加供应商</button>
+
+        <!-- Add/Edit Provider Form (hidden by default) -->
+        <div id="ttsProviderForm"
+          style="display:none;border:1px solid var(--border-color);padding:12px;border-radius:8px;margin-bottom:12px;background:var(--bg-secondary)">
+          <h5 id="ttsProviderFormTitle" style="margin:0 0 8px">添加供应商</h5>
+          <input type="hidden" id="ttsProviderId">
+          <div class="form-group">
+            <label>名称</label>
+            <input type="text" id="ttsProviderName" class="setting-input" placeholder="如: 阶跃TTS">
+          </div>
+          <div class="form-group">
+            <label>API 格式</label>
+            <select id="ttsApiFormat" class="setting-select" onchange="ttsToggleFormatFields()">
+              <option value="openai" selected>OpenAI 兼容 (/audio/speech, JSON)</option>
+              <option value="nvidia">NVIDIA NIM (/audio/synthesize, multipart)</option>
+              <option value="volcengine">火山豆包 v3 (/api/v3/tts, NDJSON流)</option>
+              <option value="qwenapi">QwenAPI TTS 云平台 (/qwenapi/v1/custom-voice)</option>
+              <option value="qwenapi_local">Qwen3-TTS 本机 (/qwenapi/v1/custom-voice)</option>
+              <option value="comfyui">本机 ComfyUI (Qwen3-TTS 工作流)</option>
+              <option value="bailian">阿里云百炼 TTS (DashScope)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>API 地址 <span style="font-size:10px;color:var(--text-muted)">(只填到 /v1)</span></label>
+            <input type="text" id="ttsProviderUrl" class="setting-input" placeholder="https://api.stepfun.ai/v1">
+          </div>
+          <div class="form-group">
+            <label>API Key <span id="ttsKeyHint" style="font-size:10px;color:var(--text-muted)"></span></label>
+            <input type="password" id="ttsProviderKey" class="setting-input" placeholder="sk-...">
+          </div>
+          <div class="form-group" style="display:flex;gap:16px">
+            <div style="flex:1">
+              <label>模型 <button type="button" class="btn btn-sm" id="btnFetchTTSModels"
+                  style="font-size:10px;padding:1px 4px;margin-left:4px">从API拉取</button> <span id="ttsModelCount"
+                  style="font-size:10px;color:#34C759;display:none"></span></label>
+              <select id="ttsProviderModel" class="setting-select">
+                <option value="">（点「从API拉取」获取模型列表）</option>
+              </select>
+              <input type="text" id="ttsProviderModelCustom" class="setting-input" style="margin-top:4px;width:100%" placeholder="可选：手动填模型名以覆盖下拉所选（留空则用上方下拉）">
+            </div>
+            <div style="flex:1">
+              <label>音色 <span style="font-size:10px;color:var(--text-muted)">(预设)</span> <button type="button"
+                  class="btn btn-sm" id="btnFetchTTSVoices"
+                  style="font-size:10px;padding:1px 4px;margin-left:4px">刷新</button></label>
+              <select id="ttsProviderVoice" class="setting-select">
+                <option value="alloy">Alloy</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>语速 (0.5-2.0)</label>
+            <input type="number" id="ttsProviderSpeed" class="setting-input" value="1.0" min="0.5" max="2.0" step="0.1"
+              style="width:80px">
+          </div>
+          <div class="form-group" id="ttsLanguageGroup" style="display:none">
+            <label>语言代码 <span style="font-size:10px;color:var(--text-muted)">(NVIDIA NIM 需要)</span></label>
+            <select id="ttsProviderLanguage" class="setting-select" style="width:auto">
+              <option value="zh-CN" selected>zh-CN (中文)</option>
+              <option value="en-US">en-US (英语)</option>
+              <option value="ja-JP">ja-JP (日语)</option>
+              <option value="es-US">es-US (西班牙语)</option>
+              <option value="fr-FR">fr-FR (法语)</option>
+              <option value="de-DE">de-DE (德语)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>全局情绪指导 <span style="font-size:10px;color:var(--text-muted)">(StepAudio 2.5 专用, 最多200字)</span></label>
+            <input type="text" id="ttsProviderInstruction" class="setting-input" placeholder="如: 语气温柔，语速偏慢 / 留空则不传">
+          </div>
+          <!-- Character Voice Mapping (per-provider) -->
+          <details style="margin-top:8px">
+            <summary style="cursor:pointer;font-size:12px;font-weight:600">角色音色映射（按性别+年龄）</summary>
+            <div style="margin-top:6px;font-size:10px;color:var(--text-muted)">从名册抓取性别/年龄自动匹配。点「刷新音色」拉取列表。</div>
+            <div id="ttsVoiceMapContainer" style="margin-top:6px">
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">旁白</label>
+                <select id="ttsVm_narrator" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="narrator"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">女-少女(&lt;18)</label>
+                <select id="ttsVm_female_teen" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="female_teen"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">女-青年(18-30)</label>
+                <select id="ttsVm_female_young" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="female_young"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">女-成熟(30+)</label>
+                <select id="ttsVm_female_mature" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="female_mature"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">男-少年(&lt;18)</label>
+                <select id="ttsVm_male_teen" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="male_teen"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">男-青年(18-30)</label>
+                <select id="ttsVm_male_young" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="male_young"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+              <div class="form-group" style="display:flex;gap:6px;align-items:center">
+                <label style="width:90px;margin:0;font-size:11px">男-成熟(30+)</label>
+                <select id="ttsVm_male_mature" class="setting-select tts-vm-select" style="flex:1;font-size:11px">
+                  <option value="">(默认)</option>
+                </select>
+                <button type="button" class="btn btn-sm tts-vm-test" data-vm="male_mature"
+                  style="font-size:10px;padding:1px 6px">试听</button>
+              </div>
+            </div>
+          </details>
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" id="ttsProviderDefault"> 设为默认
+            </label>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-sm" id="btnSaveTTSProvider">保存</button>
+            <button class="btn btn-sm" id="btnCancelTTSProvider">取消</button>
+          </div>
+        </div>
+
+        <!-- Quick Presets -->
+        <details style="margin-bottom:12px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--text-muted)">快速预设</summary>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn btn-sm" onclick="ttsAddPreset('stepfun')">阶跃 StepAudio</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('openai')">OpenAI TTS</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('siliconflow')">硅基流动</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('nvidia')">NVIDIA Magpie</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('volcengine')">火山豆包</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('volink')">Volink</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('qwenapi')">Qwen TTS 云平台</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('qwenapi_local')">Qwen TTS 本机</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('comfyui')">Qwen3-TTS 本机工作流</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('bailian')">阿里云百炼</button>
+          </div>
+        </details>
+
+        <hr style="border-color:var(--border-color);margin:12px 0">
+
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-sm" id="btnTTSTest">测试朗读</button>
+          <button class="btn btn-sm" id="btnSaveTTSSettings">保存设置</button>
+          <button class="btn btn-sm" id="btnTTSStop" style="display:none;background:var(--danger);color:#fff">⏹
+            停止</button>
+          <span id="ttsStatus" style="font-size:12px;color:var(--text-muted)"></span>
+          <span id="ttsSaveStatus" style="font-size:12px;color:var(--accent);display:none">已保存!</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  
+
+  <input type="file" id="characterFileInput" accept=".json,.png" style="display:none">
+
+  <script src="js/api.js?v=20260709a"></script>
+  <script src="js/stscript.js?v=20260709a"></script>
+  <script src="js/app.js?v=20260905a"></script>
+  <script src="js/mobile/vn-shell.js?v=20260913b"></script>
+  <script src="js/mobile/vn-pages.js?v=20260913b"></script>
+  <script src="js/mobile/vn-stage.js?v=20260913b"></script>
+</body>
+
+</html>

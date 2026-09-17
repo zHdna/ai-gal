@@ -1,0 +1,51 @@
+{
+  "3": {
+    "inputs": {
+      "filename_prefix": "qwen3-tts-output",
+      "quality": "320k",
+      "audioUI": "/api/view?filename=qwen3-tts-output_00003.mp3&type=output&subfolder=&rand=0.1737603498544753",
+      "audio": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "SaveAudioMP3",
+    "_meta": {
+      "title": "保存音频 (MP3)"
+    }
+  },
+  "6": {
+    "inputs": {
+      "text": "你好，我是千问3",
+      "voice_description": "温暖治愈的女声",
+      "language": "Chinese",
+      "top_k": 50,
+      "top_p": 1,
+      "temperature": 0.1,
+      "repetition_penalty": 1,
+      "max_new_tokens": 2048,
+      "seed": 2222,
+      "model": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "FL_Qwen3TTS_VoiceDesign",
+    "_meta": {
+      "title": "FL Qwen3 TTS Voice Design"
+    }
+  },
+  "7": {
+    "inputs": {
+      "model_variant": "Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+      "device": "cuda",
+      "dtype": "bfloat16",
+      "attention": "sdpa",
+      "force_reload": false
+    },
+    "class_type": "FL_Qwen3TTS_ModelLoader",
+    "_meta": {
+      "title": "FL Qwen3 TTS Model Loader"
+    }
+  }
+}

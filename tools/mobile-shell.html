@@ -1,0 +1,245 @@
+<body>
+  <!-- ============================================================
+       移动端（GAL / 视觉小说）外壳
+       业务逻辑复用 js/app.js：通过隐藏的桌面 DOM 契约驱动
+       ============================================================ -->
+  <div id="vnRoot">
+
+    <!-- 顶部 HUD -->
+    <div class="vn-top">
+      <span class="vn-brand"><i></i>AI-GAL</span>
+      <span class="vn-rounds" id="vnRounds">准备开始</span>
+      <span id="vnTitle" hidden></span>
+      <button class="icbtn" id="vnBtnTheme" title="切换明 / 暗">☾</button>
+      <button class="icbtn" id="vnBtnAuto" title="自动推进">◐</button>
+      <button class="icbtn" id="vnBtnSkip" title="快速跳过">⏩</button>
+      <button class="icbtn gold" id="vnBtnDrawer" title="菜单">☰</button>
+    </div>
+
+    <!-- 页面容器 -->
+    <div id="vnPages">
+
+      <!-- ============ 对话（GAL 舞台） ============ -->
+      <section class="vn-page show" data-page="chat">
+        <div class="vn-stage" id="vnStage">
+          <div class="vn-stage-bg" id="vnStageBg"></div>
+          <div class="vn-stage-art"><img id="vnArtImg" alt="立绘" style="display:none"></div>
+          <div class="vn-stage-veil"></div>
+          <div class="vn-loc" id="vnLoc"><i></i>等待开始</div>
+          <div class="vn-cast" id="vnCast"></div>
+
+          <!-- 未选择角色时的欢迎引导 -->
+          <div class="vn-welcome" id="vnWelcome">
+            <div class="emblem">🎬</div>
+            <h2>选择一个角色开始</h2>
+            <p>选好角色卡后，故事会以视觉小说的方式逐段推进：<br>对白显示说话者头像，旁白用另一种字体呈现。</p>
+            <div class="acts">
+              <button class="btn btn-primary" id="vnWelcomePick">选择角色卡</button>
+              <button class="btn" id="vnWelcomeImport">导入角色卡</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 唯一主对话框：GAL 式逐段演出（对白 / 旁白轮流，永不并存） -->
+        <div class="vn-dlg by-left" id="vnDlg">
+          <span class="vn-spk-av left" id="vnAvLeft"></span>
+          <span class="vn-spk-av right" id="vnAvRight"></span>
+
+          <div class="vn-dlg-stage" id="vnDlgStage">
+            <!-- 对白段 -->
+            <div class="vn-dlg-dialog">
+              <div class="vn-plate-row" id="vnPlateRow">
+                <span class="vn-plate"><b id="vnSpkName">—</b><em id="vnSpkRomaji"></em></span>
+                <span class="vn-aff" id="vnAff">
+                  <span class="h">♥</span>
+                  <span class="bar"><i></i></span>
+                  <b>0</b>
+                </span>
+              </div>
+              <div class="vn-dlg-text" id="vnDlgText"></div>
+            </div>
+            <!-- 旁白段 -->
+            <div class="vn-dlg-narr" id="vnDlgNarr"></div>
+          </div>
+
+          <div class="vn-narr-hint" id="vnNarrHint">↕ 本段较长，可滚动</div>
+
+          <div class="vn-dlg-tools">
+            <button class="vn-tool" id="vnBtnHistory">▾ 回顾</button>
+            <button class="vn-tool" id="vnBtnTTS">🔊 朗读</button>
+            <span class="vn-seg-info">
+              <span class="vn-seg-dots" id="vnSegDots"></span>
+              <span class="vn-seg-badge" id="vnSegBadge">0 / 0</span>
+            </span>
+            <span class="vn-seg-ctrl">
+              <button class="vn-tool" id="vnBtnPrev" title="上一自然段">‹ 上一段</button>
+              <button class="vn-tool primary" id="vnBtnNext" title="推进到下一段">下一段 ›</button>
+            </span>
+            <button class="vn-tool icon" id="vnBtnHideUI" title="隐藏界面（全屏看 CG）">⛶</button>
+          </div>
+        </div>
+
+        <!-- 未读完最新内容时的返回提示 -->
+        <button class="vn-back-latest hidden" id="vnBackLatest">⟲ 回到最新进度</button>
+
+        <!-- 行动选项（管家 AI 生成） -->
+        <div class="vn-choices" id="vnChoices"></div>
+
+        <!-- 指令条：#messageInput / #btnSend 为 app.js 契约 -->
+        <div class="vn-cmd">
+          <button class="plus" id="vnBtnPlus" title="导入角色卡">＋</button>
+          <textarea id="messageInput" rows="1" placeholder="说点什么…"></textarea>
+          <button id="btnSend" disabled>➤</button>
+        </div>
+      </section>
+
+      <!-- ============ 状态 ============ -->
+      <section class="vn-page" data-page="status">
+        <div class="vn-page-head">
+          <h3>主要状态</h3>
+          <span class="sub">MVU 变量 / 数值</span>
+          <button class="icbtn" data-refresh="status">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnStatusBody"></div>
+      </section>
+
+      <!-- ============ 名册 ============ -->
+      <section class="vn-page" data-page="roster">
+        <div class="vn-page-head">
+          <h3>角色名册</h3>
+          <span class="sub">性别 · 年龄 · 关系</span>
+          <button class="icbtn" data-refresh="roster">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnRosterBody"></div>
+      </section>
+
+      <!-- ============ CG 画廊 ============ -->
+      <section class="vn-page" data-page="gallery">
+        <div class="vn-page-head">
+          <h3>CG 画廊</h3>
+          <span class="sub">点按看大图</span>
+          <button class="icbtn" data-refresh="gallery">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnGalleryBody"></div>
+      </section>
+
+      <!-- ============ 记忆 ============ -->
+      <section class="vn-page" data-page="memory">
+        <div class="vn-page-head">
+          <h3>记忆表格</h3>
+          <span class="sub">键值摘要</span>
+          <button class="icbtn" data-refresh="memory">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnMemoryBody"></div>
+      </section>
+
+      <!-- ============ 世界状态 ============ -->
+      <section class="vn-page" data-page="world">
+        <div class="vn-page-head">
+          <h3>世界状态 (MVU)</h3>
+          <span class="sub">engine 卡变量</span>
+          <button class="icbtn" data-refresh="world">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnWorldBody"></div>
+      </section>
+
+      <!-- ============ 幕后控制台 ============ -->
+      <section class="vn-page" data-page="console">
+        <div class="vn-page-head">
+          <h3>幕后控制台</h3>
+          <span class="sub">主 Agent / 管家 AI</span>
+          <button class="icbtn" data-refresh="console">↻</button>
+        </div>
+        <div class="vn-page-body" id="vnConsoleBody"></div>
+      </section>
+    </div>
+
+    <!-- 底部标签 -->
+    <nav class="vn-tabs">
+      <button class="vn-tab active" data-page="chat"><span class="ic">💬</span>对话</button>
+      <button class="vn-tab" data-page="status"><span class="ic">📊</span>状态</button>
+      <button class="vn-tab" data-page="roster"><span class="ic">👥</span>名册</button>
+      <button class="vn-tab" data-page="gallery"><span class="ic">🖼</span>画廊</button>
+      <button class="vn-tab menu" data-page="menu"><span class="ic">☰</span>菜单</button>
+    </nav>
+
+    <!-- 遮罩 -->
+    <div class="vn-scrim" id="vnScrim"></div>
+
+    <!-- 侧滑抽屉：全量功能菜单 -->
+    <aside class="vn-drawer" id="vnDrawer">
+      <div class="vn-dr-id">
+        <div class="av" id="vnUserAv">我</div>
+        <div>
+          <h4 id="vnUserName">我</h4>
+          <p id="vnUserSub">点击可切换用户</p>
+        </div>
+      </div>
+
+      <div class="vn-dr-scroll">
+        <div class="vn-dr-group">故 事</div>
+        <button class="vn-dr-item" data-act="characters"><span class="ic">⚑</span><span class="tx">游戏列表<small>角色卡 · 标签 · 切换</small></span></button>
+        <button class="vn-dr-item" data-act="saves"><span class="ic">⌛</span><span class="tx">游戏存档<small>同一角色的多份存档 · 新建 / 导出 / 删除</small></span></button>
+
+        <div class="vn-dr-group">数 据 中 心</div>
+        <button class="vn-dr-item" data-act="status"><span class="ic">📊</span><span class="tx">主要状态<small>MVU 变量 / 数值条</small></span></button>
+        <button class="vn-dr-item" data-act="roster"><span class="ic">👥</span><span class="tx">角色名册<small>性别 · 年龄 · 关系 · 立绘</small></span></button>
+        <button class="vn-dr-item" data-act="gallery"><span class="ic">🖼</span><span class="tx">CG 画廊<small>全屏看图</small></span></button>
+        <button class="vn-dr-item" data-act="memory"><span class="ic">🧠</span><span class="tx">记忆表格<small>键值摘要</small></span></button>
+        <button class="vn-dr-item" data-act="world"><span class="ic">🌐</span><span class="tx">世界状态 (MVU)<small>播种 / 重放 / 清除</small></span></button>
+
+        <div class="vn-dr-group">声 音 与 外 观</div>
+        <button class="vn-dr-item" data-act="tts"><span class="ic">🔊</span><span class="tx">语音朗读<small>供应商 · 音色映射 · 试听</small></span></button>
+        <button class="vn-dr-item" data-act="bgm"><span class="ic">🎵</span><span class="tx">BGM 开关</span></button>
+        <div class="vn-fs-row">
+          <span class="vn-fs-label">字号</span>
+          <button class="vn-fs-btn" id="vnFsMinus" title="缩小字号">A−</button>
+          <button class="vn-fs-val" id="vnFsVal" title="点击重置为 100%">100%</button>
+          <button class="vn-fs-btn" id="vnFsPlus" title="放大字号">A＋</button>
+        </div>
+
+        <div class="vn-dr-group">管 理 与 调 试</div>
+        <button class="vn-dr-item" data-act="providers"><span class="ic">🔀</span><span class="tx">切换 AI 供应商<small>主 / 管家 / 画家 AI</small></span></button>
+        <button class="vn-dr-item" data-act="settings"><span class="ic">⚙</span><span class="tx">AI 供应商与预设<small>供应商增删改 · ST 预设</small></span></button>
+        <button class="vn-dr-item" data-act="user"><span class="ic">👤</span><span class="tx">用户设定<small>多用户 · 扮演身份</small></span></button>
+        <button class="vn-dr-item" data-act="import"><span class="ic">📥</span><span class="tx">导入角色卡<small>.json / .png</small></span></button>
+        <button class="vn-dr-item" data-act="export"><span class="ic">📤</span><span class="tx">导出对话</span></button>
+        <button class="vn-dr-item" data-act="console"><span class="ic">🐞</span><span class="tx">幕后控制台<small>主 Agent / 管家 AI 输出</small></span></button>
+      </div>
+
+      <div class="vn-dr-foot">
+        <button class="vn-switch-desktop" id="vnSwitchDesktop">
+          <span class="ic" style="width:30px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(232,200,120,.12);border:1px solid rgba(232,200,120,.3)">🖥</span>
+          <span class="tx">切换到普通版（桌面）<small>记住偏好，下次直接进桌面版</small></span>
+        </button>
+        <div class="vn-dr-ver">AI-GAL · 移动端</div>
+      </div>
+    </aside>
+
+    <!-- 通用 Sheet（角色列表等，从右侧滑入） -->
+    <section class="vn-drawer" id="vnSheet">
+      <div class="vn-dr-id">
+        <h4 id="vnSheetTitle" style="margin:0">列表</h4>
+        <button class="icbtn" id="vnSheetClose" style="margin-left:auto">✕</button>
+      </div>
+      <div class="vn-dr-scroll" id="vnSheetBody"></div>
+    </section>
+
+    <!-- 历史记录浮层（回顾） -->
+    <section class="vn-drawer" id="vnHistorySheet">
+      <div class="vn-dr-id">
+        <h4 id="vnHistoryTitle" style="margin:0">历史记录</h4>
+        <button class="icbtn" id="vnHistoryClose" style="margin-left:auto">✕</button>
+      </div>
+      <div class="vn-dr-scroll" id="vnHistoryBody"></div>
+    </section>
+
+    <!-- 大图查看（CG / 头像，保持原比例） -->
+    <div class="vn-viewer" id="vnViewer">
+      <img id="vnViewerImg" alt="大图">
+      <div class="cap"><span id="vnViewerName"></span><small id="vnViewerSub">轻点任意处关闭</small></div>
+      <button class="close" id="vnViewerClose">✕</button>
+    </div>
+
+    <div class="vn-toast" id="vnToast"></div>
+  </div>
