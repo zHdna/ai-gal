@@ -6,6 +6,8 @@
 
 后端 Node.js + Express + SQLite（better-sqlite3），前端为原生 JS 游戏化 UI，无需构建、解压即用。
 
+![游戏界面演示](game01.jpg)
+
 ---
 
 ## 一、功能特性
@@ -24,7 +26,8 @@
   提示词标签按双层结构（Hard Tags + 自然语言）自动组合
 - **TTS 语音朗读**：支持火山引擎、阿里百炼、SiliconFlow、Volink 等云端 API 格式，
   以及 ComfyUI Qwen3-TTS（`qwen3-tts-01.json`）本地推理
-- **BGM 氛围联动**：按管家 AI 判定的 mood（battle / blue / ceremony / nomal / relaxed / suspense）自动切歌
+- **BGM 氛围联动**：按管家 AI 判定的 mood（battle / blue / ceremony / nomal / relaxed / suspense）自动切歌，
+  仓库自带 13 首 CC-BY 4.0 授权曲目，开箱即用
 - **主题系统**：内置多套主题 + 自定义 CSS 变量
 
 ### 存档与界面
@@ -102,9 +105,10 @@ npm install
 （使用云端服务需自备对应平台的 Key），以及 ComfyUI Qwen3-TTS 本地推理（工作流文件 `qwen3-tts-01.json`，
 需在 ComfyUI 中安装 FL_Qwen3TTS 相关节点）。
 
-### 4. BGM 背景音乐（可选）
+### 4. BGM 背景音乐（已内置）
 
-仓库**不随附任何 mp3**（版权原因），只保留情绪目录结构。把你自己的音乐放入对应子目录即可启用氛围联动：
+仓库自带 **13 首 CC-BY 4.0 授权背景音乐**（作者 Kevin MacLeod / incompetech.com），
+按管家 AI 判定的情绪自动切歌，无需配置。曲目清单与许可说明见 [`BGM/CREDITS.md`](BGM/CREDITS.md)：
 
 | 目录 | 情绪 |
 | --- | --- |
@@ -115,6 +119,8 @@ npm install
 | `BGM/relaxed/` | 放松 |
 | `BGM/suspense/` | 悬念 |
 
+替换曲目时把 mp3 放入对应目录即可，注意**文件名不要包含空格**（服务端路由限制），如 `mybgm01.mp3`。
+
 ---
 
 ## 四、目录结构
@@ -124,6 +130,7 @@ AI-GAL/
 ├─ start.bat / Start-LAN.bat      启动脚本
 ├─ package.json / package-lock.json
 ├─ README.md                      本文件
+├─ game01.jpg                     README 演示截图
 ├─ WORLDBOOK_ACTIVATION_GUIDE.md 世界书激活机制说明（用户文档）
 ├─ GALCG.json                     默认 CG 工作流（空占位，需自行填入）
 ├─ portrait_x.json                默认立绘工作流（空占位，需自行填入）
@@ -141,7 +148,7 @@ AI-GAL/
 │  ├─ index.html                  桌面 VN 界面
 │  ├─ mobile.html                 移动端界面
 │  └─ new/                        桌面界面（重设计版）
-├─ BGM/                           背景音乐（目录结构随仓库，mp3 需自行放入）
+├─ BGM/                           背景音乐（13 首 CC-BY 4.0 曲目，见 BGM/CREDITS.md）
 ├─ tools/                         构建 / 调试脚本
 └─ data/                          运行时数据（TTS 队列等）
 ```
@@ -182,6 +189,7 @@ Get-ChildItem -Recurse -File -Force |
 ## 六、声明
 
 - 本项目以 **MIT** 许可证开源，见 [LICENSE](LICENSE)。
-- 本项目具备成人向内容能力（可配置 NSFW 生图标签等），**仅供成年人**在本地使用。
+- 本项目含 AI 生成内容，用户对于 AI 生成的内容须自行负责。
+- 内置背景音乐以 **CC-BY 4.0** 授权使用，作者与曲目清单见 [`BGM/CREDITS.md`](BGM/CREDITS.md)。
 - 请遵守你所在地区的法律法规，以及你所调用的各模型服务商的条款；
   使用者需自行对其生成与存储的内容负责。

@@ -19,9 +19,6 @@ data/tts-queue.json
 server/generated_images/
 public/uploads/
 
-# Copyrighted music: folder structure ships, mp3 files are NOT distributed
-BGM/**/*.mp3
-
 # Character profile art / NPC portraits
 profile/
 
