@@ -65,12 +65,18 @@
   <div class="lan">
     <label class="check" for="lan">
       <input id="lan" type="checkbox">
-      <span>允许局域网访问（手机 / 平板也能打开）</span>
+      <span>以后每次启动都允许局域网访问</span>
     </label>
     <div class="warn">
-      开启后本机将在所有网卡上监听（<code>0.0.0.0</code>），同一 Wi-Fi 下的设备可以访问。<br>
+      默认<b>不开</b>：不开时只监听 <code>127.0.0.1</code>，只有本机能访问，最安全。<br>
+      开启后会在所有网卡上监听（<code>0.0.0.0</code>），同一 Wi-Fi 下的设备可以访问。<br>
       <b>注意</b>：局域网内任何人都能打开这个界面，包括你的 API Key 设置 —— 请只在可信网络里开启。<br>
+      <b>不想长期开启</b>：不要勾这里，改用开始菜单里的
+      「AI-GAL（局域网模式）」快捷方式 —— 它只在本次启动生效，关掉即恢复。<br>
       <b>首次开启</b>时 Windows 防火墙可能弹窗，请选「允许访问」；若误点了「取消」，其它设备会连不上。
+    </div>
+    <div id="flagNote" style="display:none;margin:10px 0 0;padding-left:24px;font-size:11.5px;color:#4ade80;">
+      本次是用启动参数 <code>--lan</code> 启动的，局域网访问已开启，<b>退出后自动恢复</b>为仅本机访问。
     </div>
     <div id="urls" style="display:none"></div>
   </div>
@@ -111,7 +117,9 @@
   async function init() {
     const info = await window.desktopAPI.get();
     $('port').value = info.port;
-    $('lan').checked = !!info.allowLan;
+    // 勾选框代表「配置里持久保存的值」，不等于「本次是否开着」
+    $('lan').checked = !!info.allowLanSaved;
+    if (info.forcedByFlag) $('flagNote').style.display = 'block';
     $('cfg').textContent = info.configPath;
     $('dataRoot').textContent = info.dataRoot;
     renderUrls(info.lanUrls, info.allowLan);
@@ -133,7 +141,8 @@
       const r = await window.desktopAPI.save({ port: port, allowLan: $('lan').checked });
       if (r.ok) {
         $('port').value = r.port;
-        $('lan').checked = !!r.allowLan;
+        $('lan').checked = !!r.allowLanSaved;
+        if (r.forcedByFlag) $('flagNote').style.display = 'block';
         renderUrls(r.lanUrls, r.allowLan);
         setStatus(r.message, 'ok');
       } else {

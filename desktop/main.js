@@ -57,6 +57,10 @@ function main() {
   const LOG_FILE = path.join(LOG_DIR, 'desktop.log');
   const ICON_PNG = path.join(PAYLOAD_ROOT, 'public', 'logo.png');
 
+  // 本次启动是否被 --lan 强制开启局域网（安装时创建的「局域网模式」快捷方式会传）。
+  // 只影响本次进程，不写配置。
+  const FORCE_LAN = desktopConfig.hasLanFlag(process.argv);
+
   const APP_NAME = 'AI-GAL';
   const WINDOW_TITLE = `${APP_NAME} — AI 视觉小说引擎`;
 
@@ -267,7 +271,11 @@ function main() {
     const port = actualPort || desktopConfig.resolveConfiguredPort();
     return {
       port,
-      allowLan: desktopConfig.resolveConfiguredHost() === '0.0.0.0',
+      allowLan: FORCE_LAN || desktopConfig.resolveConfiguredHost() === '0.0.0.0',
+      // 由启动参数开启时，界面要说明「这只是本次启动」
+      forcedByFlag: FORCE_LAN,
+      // 配置里持久保存的值（勾选框代表这个，而不是「本次是否开着」）
+      allowLanSaved: desktopConfig.resolveConfiguredHost() === '0.0.0.0',
       lanUrls: lanUrls(port),
       dataRoot: DATA_ROOT,
       configPath: desktopConfig.CONFIG_PATH,
@@ -286,11 +294,15 @@ function main() {
     return {
       ok: true,
       port: newPort,
-      allowLan: desktopConfig.resolveConfiguredHost() === '0.0.0.0',
+      allowLan: FORCE_LAN || desktopConfig.resolveConfiguredHost() === '0.0.0.0',
+      forcedByFlag: FORCE_LAN,
+      allowLanSaved: desktopConfig.resolveConfiguredHost() === '0.0.0.0',
       lanUrls: lanUrls(newPort),
-      message: allowLan
-        ? `已开启局域网访问：其它设备可访问本机 ${newPort} 端口`
-        : `已改为仅本机访问（端口 ${newPort}）`,
+      message: FORCE_LAN
+        ? `端口已改为 ${newPort}。本次是用启动参数 --lan 开启的局域网模式，会一直保持到退出`
+        : (allowLan
+          ? `已开启局域网访问：其它设备可访问本机 ${newPort} 端口`
+          : `已改为仅本机访问（端口 ${newPort}）`),
     };
   });
 
@@ -321,7 +333,8 @@ function main() {
     // 用 resolveConfigured*（只看配置文件）：桌面版以界面里的设置为准，
     // 不被偶然继承来的 PORT/HOST 环境变量盖掉。
     const desired = desktopConfig.resolveConfiguredPort();
-    const host = desktopConfig.resolveConfiguredHost();
+    // --lan 优先于配置（该次启动显式要求开放局域网），但同样不落盘
+    const host = FORCE_LAN ? '0.0.0.0' : desktopConfig.resolveConfiguredHost();
     const port = await pickFreePort(desired, host);
     if (port !== desired) {
       writeLog(`[desktop] port ${desired} busy, using ${port}\n`);

@@ -62,14 +62,27 @@ function resolveDesiredPort() {
 }
 
 /**
- * 取「期望监听地址」：env HOST > 配置 allowLan > 127.0.0.1（仅本机）。
+ * 命令行是否显式带了 --lan / --allow-lan。
  *
- * allowLan 为 true 时绑定 0.0.0.0，局域网内其它设备（手机、平板）也能打开。
- * 绿色版仍可用 Start-LAN.bat 的 HOST=0.0.0.0 覆盖，行为不变。
+ * 桌面版由安装时创建的「AI-GAL（局域网模式）」快捷方式传入；
+ * 绿色版也可以直接 `runtime\node.exe server\index.js --lan`。
+ * 这个开关**只在本次启动生效，不写配置** —— 关掉即恢复仅本机访问。
+ */
+function hasLanFlag(argv) {
+  const args = argv || process.argv || [];
+  return args.some((a) => a === '--lan' || a === '--allow-lan' || a === '-lan');
+}
+
+/**
+ * 取「期望监听地址」：env HOST > --lan 参数 > 配置 allowLan > 127.0.0.1（仅本机）。
+ *
+ * 默认**不开**局域网。开放到局域网有安全代价（同网络内任何人都能打开界面、
+ * 看到 API Key 设置），所以必须是用户显式选择的结果。
  */
 function resolveDesiredHost() {
   const fromEnv = process.env.HOST;
   if (fromEnv && String(fromEnv).trim()) return String(fromEnv).trim();
+  if (hasLanFlag()) return '0.0.0.0';
   const cfg = readConfig();
   return cfg.allowLan === true ? '0.0.0.0' : '127.0.0.1';
 }
@@ -108,5 +121,6 @@ module.exports = {
   resolveAllowLan,
   resolveConfiguredPort,
   resolveConfiguredHost,
+  hasLanFlag,
   CONFIG_PATH: paths.DESKTOP_CONFIG_PATH,
 };
