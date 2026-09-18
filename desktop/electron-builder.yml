@@ -48,6 +48,7 @@ win:
   artifactName: AI-GAL-Setup-${version}.exe
 
 nsis:
+  include: installer.nsh               # 补删卸载后残留的空安装目录（见该文件注释）
   oneClick: false                     # 显示安装向导，用户可自选安装目录
   perMachine: false                   # 每用户安装，默认不弹 UAC；用户仍可手动装到 Program Files
   allowElevation: true                # 允许在需要时提权
