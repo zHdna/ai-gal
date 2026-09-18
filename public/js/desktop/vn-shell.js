@@ -1668,6 +1668,63 @@
     this.classList.toggle('on', anyClosed);
   });
 
+  /* ---------------- 12.5 「回顾」里删除当前对话/存档 ----------------
+     用途：生成出错（格式崩了、内容废了）时，直接把这个对话整个删掉重新生成，
+     而不是在坏记录上继续接。删的是【当前存档】：对话记录 + 该存档的缓存文件都会删掉，
+     等价于左侧游戏列表里那个 ✕。删除后回到「选角色卡开始」的状态。 */
+  function currentSaveRef() {
+    var conv = App.currentConversation || {};
+    var saveId = App._currentSaveId || conv.save_id || '';
+    var convId = conv.id || '';
+    var label = saveId || conv.title || (App.currentCharacter && App.currentCharacter.name) || '当前对话';
+    return { saveId: saveId, convId: convId, label: label };
+  }
+  function resetAfterDelete() {
+    try {
+      App.currentConversation = null;
+      App.messages = [];
+      App.totalMessages = 0;
+      App._messagesFullyLoaded = false;
+      App.userStatus = {};
+      App.galleryImages = [];
+      App.cgGallery = [];
+      App._currentSaveId = '';
+    } catch (e) { }
+    var area = messagesArea();
+    if (area) area.innerHTML = '';
+    var ws = byId('welcomeScreen'), cc = byId('chatContainer');
+    if (ws) ws.classList.remove('hidden');
+    if (cc) cc.classList.add('hidden');
+    var t = byId('conversationTitle');
+    if (t) t.textContent = '选择角色开始对话';
+    S.blockId = null; S.segs = []; S.cur = 0; S.reviewBlockId = null;
+    try { if (typeof renderStatusBar === 'function') renderStatusBar(); } catch (e) { }
+    try { if (typeof renderGallery === 'function') renderGallery(); } catch (e) { }
+    try { if (typeof renderCharacterList === 'function') renderCharacterList(); } catch (e) { }
+    render();
+    updateHeader();
+  }
+  on(byId('histDeleteConv'), 'click', function () {
+    var ref = currentSaveRef();
+    if (!ref.saveId && !ref.convId) { toast('当前没有可删除的对话'); return; }
+    if (!confirm('确定删除当前对话「' + ref.label + '」？\n对话记录与缓存文件会被永久删除（不可恢复），用于重新生成。')) return;
+    var btn = this;
+    btn.disabled = true;
+    var done = function () { btn.disabled = false; };
+    var p = ref.saveId
+      ? fetch('/api/saves/' + encodeURIComponent(ref.saveId), { method: 'DELETE' })
+      : fetch('/api/conversations/' + encodeURIComponent(ref.convId), { method: 'DELETE' });
+    p.then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      toast('对话已删除，可从左侧重新选卡开始');
+      closeSheets();
+      resetAfterDelete();
+      if (typeof loadConversations === 'function') { try { loadConversations(); } catch (e) { } }
+    }).catch(function (e) {
+      toast('删除失败：' + (e && e.message ? e.message : e));
+    }).then(done, done);
+  });
+
   /* ---------------- 13. 控制台：真实调试卡片逐条展开 ---------------- */
   function debugCards(container) {
     if (!container) return [];

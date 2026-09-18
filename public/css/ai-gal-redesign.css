@@ -136,616 +136,6 @@
 }
 
 /* ------------------------------------------------------------
-   1.2  Parchment Theme (Dark)
-   ------------------------------------------------------------ */
-[data-theme="parchment"] {
-  --color-blue-50: #F5E6C8;
-  --color-blue-100: #ECDBB4;
-  --color-blue-200: #D4BC8E;
-  --color-blue-300: #C8A24E;
-  --color-blue-400: #B8923A;
-  --color-blue-500: #8B5E3C;
-  --color-blue-600: #6D4C2A;
-  --color-blue-700: #5A3D22;
-  --color-blue-800: #3E2723;
-  --color-blue-900: #2A1A14;
-  --color-accent-300: #C8A24E;
-  --color-accent-400: #B8923A;
-  --color-accent-500: #8B5E3C;
-  --color-accent-600: #6D4C2A;
-  --color-accent-700: #5A3D22;
-  --color-accent-800: #3E2723;
-  --page-glow-a: rgba(200, 162, 78, 0.06);
-  --page-glow-b: rgba(139, 94, 60, 0.04);
-  --glass-heavy: rgba(30, 22, 14, 0.78);
-  --glass-mid: rgba(35, 26, 16, 0.65);
-  --glass-soft: rgba(200, 162, 78, 0.04);
-  --glass-bg-card: rgba(40, 30, 18, 0.78);
-  --glass-bg-card-hover: rgba(50, 38, 22, 0.82);
-  --glass-border: rgba(200, 162, 78, 0.14);
-  --glass-border-strong: rgba(200, 162, 78, 0.22);
-  --glass-shadow: 0 4px 16px rgba(30, 22, 14, 0.6);
-  --glass-outline: inset 0 1px 0 rgba(200, 162, 78, 0.08);
-  --bg-primary: rgba(30, 22, 14, 0.85);
-  --bg-secondary: rgba(35, 26, 16, 0.80);
-  --bg-tertiary: rgba(40, 30, 18, 0.76);
-  --bg-card: rgba(40, 30, 18, 0.78);
-  --bg-card-hover: rgba(50, 38, 22, 0.82);
-  --bg-input: rgba(25, 18, 10, 0.85);
-  --bg-modal-overlay: rgba(0, 0, 0, 0.80);
-  --toggle-track-bg: rgba(140, 110, 70, 0.30);
-  --toggle-track-border: rgba(180, 140, 80, 0.45);
-  --toggle-thumb-bg: #C8A878;
-  --toggle-thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --text-primary: #E8D8B8;
-  --text-secondary: #C8A878;
-  --text-muted: #8D6E4A;
-  --text-accent: #C8A24E;
-  --accent: #8B5E3C;
-  --border-color: rgba(140, 110, 70, 0.5);
-  --border-accent: rgba(200, 162, 78, 0.45);
-  --border-glow: rgba(200, 162, 78, 0.18);
-  --shadow-sm: 0 2px 6px rgba(20, 14, 8, 0.4);
-  --shadow-md: 0 4px 12px rgba(20, 14, 8, 0.5);
-  --shadow-lg: 0 8px 24px rgba(20, 14, 8, 0.6);
-  --shadow-glow: 0 0 20px rgba(200, 162, 78, 0.10);
-  --theme-dialog-bg: rgba(30, 22, 14, 0.85);
-  --theme-dialog-text: #E8D8B8;
-  --theme-dialog-name: #C8A24E;
-  --theme-main-bg: #1A1208;
-  --theme-input-bg: rgba(25, 18, 10, 0.85);
-  --theme-background-image: none;
-  --body-bg-color: #1A1208;
-  --font-sans: 'Georgia', 'STSong', 'SimSun', serif;
-  --accent-08: rgba(200, 162, 78, 0.08);
-  --accent-10: rgba(200, 162, 78, 0.10);
-  --accent-15: rgba(200, 162, 78, 0.15);
-  --accent-25: rgba(200, 162, 78, 0.25);
-  --accent-30: rgba(200, 162, 78, 0.30);
-  --accent-40: rgba(200, 162, 78, 0.40);
-  --accent-50: rgba(200, 162, 78, 0.50);
-  --panel-dark-bg: rgba(30, 22, 14, 0.65);
-  --strip-bg: rgba(30, 22, 14, 0.72);
-  --overlay-dark-a: rgba(20, 14, 8, 0.55);
-  --overlay-dark-b: rgba(30, 22, 14, 0.45);
-  --btn-hover-glow: rgba(200, 162, 78, 0.25);
-  --btn-primary-text: #E8D8B8;
-  --separator-color: rgba(140, 110, 70, 0.4);
-  --color-red: #B8342A;
-}
-
-/* Parchment GAL (dark) */
-[data-theme="parchment"] {
-  --gal-blue-50: rgba(45, 35, 22, 0.95);
-  --gal-blue-100: rgba(50, 40, 26, 0.92);
-  --gal-blue-200: rgba(60, 48, 30, 0.88);
-  --gal-blue-300: rgba(75, 60, 38, 0.82);
-  --gal-blue-400: rgba(120, 95, 55, 0.55);
-  --gal-blue-500: rgba(160, 130, 70, 0.65);
-  --gal-blue-600: rgba(190, 160, 90, 0.75);
-  --gal-blue-700: rgba(210, 185, 120, 0.85);
-  --gal-text-name: #f5e8c8;
-  --gal-text-dia: #fff0d8;
-  --gal-line: rgba(160, 130, 78, 0.35);
-  --gal-dot: rgba(180, 150, 90, 0.4);
-  --gal-shadow: 0 8px 32px rgba(20, 14, 8, 0.45);
-  --gal-glow: 0 0 40px rgba(200, 162, 78, 0.08);
-  --gal-border-out: rgba(160, 130, 78, 0.50);
-  --gal-av-b1: rgba(100, 80, 45, 0.40);
-  --gal-av-b2: rgba(140, 110, 65, 0.25);
-  --gal-av-b3: rgba(180, 150, 90, 0.35);
-  --gal-body-grad: linear-gradient(175deg, rgba(35, 26, 16, 0.94) 0%, rgba(42, 32, 20, 0.92) 3%, rgba(50, 38, 24, 0.90) 15%, rgba(38, 28, 18, 0.93) 40%, rgba(45, 34, 22, 0.91) 60%, rgba(35, 26, 16, 0.93) 85%, rgba(28, 20, 12, 0.95) 100%);
-  --gal-avatar-bg: #2a1f14;
-  --gal-inset-high: rgba(200, 162, 78, 0.05);
-  --gal-inset-low: rgba(0, 0, 0, 0.35);
-  --gal-inset-side: rgba(200, 162, 78, 0.03);
-  --gal-inset-side-opp: rgba(0, 0, 0, 0.25);
-  --gal-text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
-}
-
-/* Parchment Light - GAL */
-[data-theme="parchment"] body[theme-mode="light"] {
-  --gal-blue-50: #f5e6c8;
-  --gal-blue-100: #ecdbb4;
-  --gal-blue-200: #d4bc8e;
-  --gal-blue-300: #c4a870;
-  --gal-blue-400: #a88a50;
-  --gal-blue-500: #8b6e3c;
-  --gal-blue-600: #6d5228;
-  --gal-blue-700: #5a3d1e;
-  --gal-text-name: #1a0e08;
-  --gal-text-dia: #2a1a10;
-  --gal-line: rgba(139, 94, 60, 0.40);
-  --gal-dot: rgba(139, 94, 60, 0.50);
-  --gal-shadow: 0 8px 32px rgba(62, 39, 35, 0.18);
-  --gal-glow: 0 0 40px rgba(200, 162, 78, 0.12);
-  --gal-border-out: rgba(100, 70, 35, 0.55);
-  --gal-av-b1: #d4bc8e;
-  --gal-av-b2: #f5e6c8;
-  --gal-av-b3: #c4a870;
-  --gal-body-grad: linear-gradient(175deg, #f5e6c8 0%, #ecdbb4 3%, #f0e0be 15%, #f5e8cc 40%, #f0dfc0 60%, #ecdbb4 85%, #e6d4aa 100%);
-  --gal-avatar-bg: #d4bc8e;
-  --gal-inset-high: rgba(255, 255, 255, 0.40);
-  --gal-inset-low: rgba(180, 150, 100, 0.20);
-  --gal-inset-side: rgba(255, 255, 255, 0.30);
-  --gal-inset-side-opp: rgba(180, 150, 100, 0.15);
-  --gal-text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
-}
-
-/* Parchment Light - Core */
-[data-theme="parchment"] body[theme-mode="light"] {
-  --page-glow-a: rgba(200, 162, 78, 0.08);
-  --page-glow-b: rgba(139, 94, 60, 0.04);
-  --glass-heavy: rgba(245, 230, 200, 0.80);
-  --glass-mid: rgba(245, 230, 200, 0.70);
-  --glass-soft: rgba(0, 0, 0, 0.04);
-  --glass-bg-card: rgba(248, 238, 218, 0.85);
-  --glass-bg-card-hover: rgba(238, 225, 200, 0.90);
-  --glass-border: rgba(139, 94, 60, 0.18);
-  --glass-border-strong: rgba(139, 94, 60, 0.26);
-  --glass-shadow: 0 4px 16px rgba(62, 39, 35, 0.12);
-  --glass-shadow-panel: 0 12px 40px rgba(62, 39, 35, 0.15);
-  --glass-outline: inset 0 1px 0 rgba(255, 255, 255, 0.5);
-  --bg-primary: rgba(248, 238, 218, 0.85);
-  --bg-secondary: rgba(245, 232, 208, 0.82);
-  --bg-tertiary: rgba(242, 228, 202, 0.78);
-  --bg-card: rgba(250, 240, 222, 0.85);
-  --bg-card-hover: rgba(240, 228, 205, 0.90);
-  --bg-input: rgba(250, 240, 222, 0.88);
-  --bg-modal-overlay: rgba(0, 0, 0, 0.35);
-  --toggle-track-bg: rgba(139, 94, 60, 0.18);
-  --toggle-track-border: rgba(139, 94, 60, 0.25);
-  --toggle-thumb-bg: #FFFFFF;
-  --toggle-thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-  --text-primary: #3E2723;
-  --text-secondary: #5A3D22;
-  --text-muted: #8D6E4A;
-  --text-accent: #6D4C2A;
-  --accent: #8B5E3C;
-  --border-color: rgba(139, 94, 60, 0.30);
-  --border-accent: rgba(139, 94, 60, 0.40);
-  --border-glow: rgba(139, 94, 60, 0.18);
-  --shadow-glow: 0 0 20px rgba(200, 162, 78, 0.10);
-  --theme-dialog-bg: rgba(248, 238, 218, 0.90);
-  --theme-dialog-text: #3E2723;
-  --theme-dialog-name: #6D4C2A;
-  --theme-main-bg: #F5E6C8;
-  --theme-input-bg: rgba(250, 240, 222, 0.88);
-  --body-bg-color: #F5E6C8;
-  --color-accent-300: #C8A24E;
-  --color-accent-400: #B8923A;
-  --color-accent-500: #8B5E3C;
-  --color-accent-600: #6D4C2A;
-  --color-accent-700: #5A3D22;
-  --color-accent-800: #3E2723;
-  --accent-08: rgba(200, 162, 78, 0.08);
-  --accent-10: rgba(200, 162, 78, 0.10);
-  --accent-15: rgba(200, 162, 78, 0.15);
-  --accent-25: rgba(200, 162, 78, 0.25);
-  --accent-30: rgba(200, 162, 78, 0.30);
-  --accent-40: rgba(200, 162, 78, 0.40);
-  --accent-50: rgba(200, 162, 78, 0.50);
-  --panel-dark-bg: rgba(235, 220, 190, 0.75);
-  --strip-bg: rgba(240, 228, 200, 0.82);
-  --overlay-dark-a: rgba(200, 162, 78, 0.08);
-  --overlay-dark-b: rgba(139, 94, 60, 0.06);
-  --btn-hover-glow: rgba(139, 94, 60, 0.20);
-  --btn-primary-text: #3E2723;
-  --separator-color: rgba(139, 94, 60, 0.25);
-}
-
-/* Parchment Light - Accent */
-[data-theme="parchment"] body[theme-mode="light"] {
-  --accent-08: rgba(139, 94, 60, 0.08);
-  --accent-10: rgba(139, 94, 60, 0.10);
-  --accent-15: rgba(139, 94, 60, 0.15);
-  --accent-25: rgba(139, 94, 60, 0.25);
-  --accent-30: rgba(139, 94, 60, 0.30);
-  --accent-40: rgba(139, 94, 60, 0.40);
-  --accent-50: rgba(139, 94, 60, 0.50);
-  --panel-dark-bg: rgba(248, 238, 218, 0.75);
-  --strip-bg: rgba(245, 232, 208, 0.82);
-  --overlay-dark-a: rgba(200, 162, 78, 0.06);
-  --overlay-dark-b: rgba(139, 94, 60, 0.04);
-  --btn-hover-glow: rgba(139, 94, 60, 0.20);
-  --btn-primary-text: #3E2723;
-  --separator-color: rgba(139, 94, 60, 0.30);
-  --color-red: #B8342A;
-}
-
-/* ------------------------------------------------------------
-   1.3  iOS Theme (Dark)
-   ------------------------------------------------------------ */
-[data-theme="ios"] {
-  --theme-background-image: none;
-  --body-bg-color: #0E0E12;
-  --page-glow-a: rgba(100, 100, 120, 0.04);
-  --page-glow-b: rgba(80, 80, 100, 0.02);
-  --glass-heavy: rgba(14, 14, 18, 0.78);
-  --glass-mid: rgba(20, 20, 26, 0.65);
-  --glass-soft: rgba(255, 255, 255, 0.03);
-  --glass-bg-card: rgba(22, 22, 30, 0.78);
-  --glass-bg-card-hover: rgba(28, 28, 38, 0.82);
-  --glass-border: rgba(100, 100, 120, 0.12);
-  --glass-border-strong: rgba(100, 100, 120, 0.18);
-  --glass-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-  --bg-primary: rgba(14, 14, 18, 0.85);
-  --bg-secondary: rgba(20, 20, 26, 0.80);
-  --bg-tertiary: rgba(26, 26, 34, 0.76);
-  --bg-card: rgba(22, 22, 30, 0.78);
-  --bg-card-hover: rgba(28, 28, 38, 0.82);
-  --bg-input: rgba(16, 16, 22, 0.85);
-  --bg-modal-overlay: rgba(0, 0, 0, 0.78);
-  --toggle-track-bg: rgba(100, 100, 120, 0.30);
-  --toggle-track-border: rgba(120, 120, 150, 0.45);
-  --toggle-thumb-bg: #A0A0B0;
-  --toggle-thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --text-primary: #E8E8EC;
-  --text-secondary: #A0A0B0;
-  --text-muted: #6E6E80;
-  --text-accent: #0A84FF;
-  --accent: #0A84FF;
-  --border-color: rgba(80, 80, 100, 0.40);
-  --border-accent: rgba(10, 132, 255, 0.35);
-  --border-glow: rgba(10, 132, 255, 0.15);
-  --shadow-glow: 0 0 20px rgba(10, 132, 255, 0.08);
-  --theme-dialog-bg: rgba(14, 14, 18, 0.85);
-  --theme-dialog-text: #E8E8EC;
-  --theme-dialog-name: #0A84FF;
-  --theme-main-bg: #0E0E12;
-  --theme-input-bg: rgba(16, 16, 22, 0.85);
-  --color-accent-300: #64D2FF;
-  --color-accent-400: #0A84FF;
-  --color-accent-500: #0A84FF;
-  --color-accent-600: #0070E0;
-  --color-accent-700: #005BBF;
-  --color-accent-800: #004499;
-  --accent-08: rgba(10, 132, 255, 0.08);
-  --accent-10: rgba(10, 132, 255, 0.10);
-  --accent-15: rgba(10, 132, 255, 0.15);
-  --accent-25: rgba(10, 132, 255, 0.25);
-  --accent-30: rgba(10, 132, 255, 0.30);
-  --accent-40: rgba(10, 132, 255, 0.40);
-  --accent-50: rgba(10, 132, 255, 0.50);
-  --panel-dark-bg: rgba(20, 20, 26, 0.65);
-  --strip-bg: rgba(16, 16, 22, 0.72);
-  --overlay-dark-a: rgba(8, 8, 12, 0.55);
-  --overlay-dark-b: rgba(14, 14, 18, 0.45);
-  --separator-color: rgba(80, 80, 100, 0.30);
-  --btn-hover-glow: rgba(10, 132, 255, 0.25);
-  --btn-primary-text: #fff;
-  --color-red: #FF453A;
-  /* GAL dialog iOS dark */
-  --gal-blue-50: rgba(28, 28, 36, 0.95);
-  --gal-blue-100: rgba(32, 32, 42, 0.92);
-  --gal-blue-200: rgba(38, 38, 50, 0.88);
-  --gal-blue-300: rgba(48, 48, 62, 0.82);
-  --gal-blue-400: rgba(70, 70, 90, 0.55);
-  --gal-blue-500: rgba(90, 90, 115, 0.65);
-  --gal-blue-600: rgba(115, 115, 145, 0.75);
-  --gal-blue-700: rgba(150, 150, 180, 0.85);
-  --gal-text-name: #ececf5;
-  --gal-text-dia: #f2f2fc;
-  --gal-line: rgba(90, 90, 120, 0.35);
-  --gal-dot: rgba(120, 120, 155, 0.4);
-  --gal-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-  --gal-glow: 0 0 40px rgba(10, 132, 255, 0.05);
-  --gal-border-out: rgba(80, 80, 110, 0.45);
-  --gal-av-b1: rgba(60, 60, 80, 0.35);
-  --gal-av-b2: rgba(80, 80, 100, 0.20);
-  --gal-av-b3: rgba(110, 110, 140, 0.30);
-  --gal-body-grad: linear-gradient(175deg, rgba(18, 18, 24, 0.94) 0%, rgba(22, 22, 30, 0.92) 3%, rgba(26, 26, 36, 0.90) 15%, rgba(20, 20, 28, 0.93) 40%, rgba(24, 24, 34, 0.91) 60%, rgba(18, 18, 26, 0.93) 85%, rgba(16, 16, 22, 0.95) 100%);
-  --gal-avatar-bg: #1e1e2a;
-  --gal-inset-high: rgba(255, 255, 255, 0.04);
-  --gal-inset-low: rgba(0, 0, 0, 0.3);
-  --gal-inset-side: rgba(255, 255, 255, 0.03);
-  --gal-inset-side-opp: rgba(0, 0, 0, 0.2);
-  --gal-text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
-}
-
-/* iOS Light */
-[data-theme="ios"] body[theme-mode="light"] {
-  --page-glow-a: rgba(59, 130, 246, 0.06);
-  --page-glow-b: rgba(37, 99, 235, 0.03);
-  --glass-heavy: rgba(255, 255, 255, 0.82);
-  --glass-mid: rgba(248, 248, 252, 0.72);
-  --glass-soft: rgba(0, 0, 0, 0.03);
-  --glass-bg-card: rgba(255, 255, 255, 0.88);
-  --glass-bg-card-hover: rgba(242, 242, 247, 0.92);
-  --glass-border: rgba(0, 0, 0, 0.08);
-  --glass-border-strong: rgba(0, 0, 0, 0.12);
-  --glass-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
-  --glass-shadow-panel: 0 8px 32px rgba(0, 0, 0, 0.08);
-  --glass-outline: inset 0 1px 0 rgba(255, 255, 255, 0.8);
-  --bg-primary: rgba(255, 255, 255, 0.88);
-  --bg-secondary: rgba(248, 248, 252, 0.85);
-  --bg-tertiary: rgba(242, 242, 247, 0.82);
-  --bg-card: rgba(255, 255, 255, 0.90);
-  --bg-card-hover: rgba(242, 242, 247, 0.94);
-  --bg-input: rgba(255, 255, 255, 0.92);
-  --bg-modal-overlay: rgba(0, 0, 0, 0.25);
-  --toggle-track-bg: rgba(120, 120, 128, 0.16);
-  --toggle-track-border: rgba(60, 60, 67, 0.18);
-  --toggle-thumb-bg: #FFFFFF;
-  --toggle-thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-  --text-primary: #1C1C1E;
-  --text-secondary: #3C3C43;
-  --text-muted: #8E8E93;
-  --text-accent: #007AFF;
-  --accent: #007AFF;
-  --border-color: rgba(60, 60, 67, 0.12);
-  --border-accent: rgba(0, 122, 255, 0.30);
-  --border-glow: rgba(0, 122, 255, 0.15);
-  --shadow-glow: 0 0 20px rgba(0, 122, 255, 0.06);
-  --theme-dialog-bg: rgba(255, 255, 255, 0.92);
-  --theme-dialog-text: #1C1C1E;
-  --theme-dialog-name: #007AFF;
-  --theme-main-bg: #F2F2F7;
-  --theme-input-bg: rgba(255, 255, 255, 0.92);
-  --theme-background-image: none;
-  --body-bg-color: #F2F2F7;
-  --color-accent-300: #5AC8FA;
-  --color-accent-400: #007AFF;
-  --color-accent-500: #007AFF;
-  --color-accent-600: #0056CC;
-  --color-accent-700: #003D99;
-  --color-accent-800: #002966;
-  /* GAL iOS light */
-  --gal-blue-50: #f2f6fc;
-  --gal-blue-100: #e4edf9;
-  --gal-blue-200: #c8ddf4;
-  --gal-blue-300: #a0c4ec;
-  --gal-blue-400: #6da4de;
-  --gal-blue-500: #3b82f6;
-  --gal-blue-600: #2563eb;
-  --gal-blue-700: #1d4ed8;
-  --gal-text-name: #000000;
-  --gal-text-dia: #1a1a1e;
-  --gal-line: rgba(60, 60, 67, 0.25);
-  --gal-dot: rgba(0, 122, 255, 0.35);
-  --gal-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
-  --gal-glow: 0 0 40px rgba(0, 122, 255, 0.06);
-  --gal-border-out: rgba(60, 60, 67, 0.18);
-  --gal-av-b1: #d1d5db;
-  --gal-av-b2: #f3f4f6;
-  --gal-av-b3: #9ca3af;
-  --gal-body-grad: linear-gradient(175deg, #ffffff 0%, #fafbfc 3%, #f8f9fb 15%, #ffffff 40%, #f8f9fb 60%, #f2f6fc 85%, #eef2f7 100%);
-  --gal-avatar-bg: #e5e7eb;
-  --gal-inset-high: rgba(255, 255, 255, 0.70);
-  --gal-inset-low: rgba(200, 200, 210, 0.15);
-  --gal-inset-side: rgba(255, 255, 255, 0.50);
-  --gal-inset-side-opp: rgba(200, 200, 210, 0.10);
-  --gal-text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
-}
-
-/* iOS Light - Accent */
-[data-theme="ios"] body[theme-mode="light"] {
-  --accent-08: rgba(0, 122, 255, 0.08);
-  --accent-10: rgba(0, 122, 255, 0.10);
-  --accent-15: rgba(0, 122, 255, 0.15);
-  --accent-25: rgba(0, 122, 255, 0.25);
-  --accent-30: rgba(0, 122, 255, 0.30);
-  --accent-40: rgba(0, 122, 255, 0.40);
-  --accent-50: rgba(0, 122, 255, 0.50);
-  --panel-dark-bg: rgba(248, 248, 252, 0.75);
-  --strip-bg: rgba(245, 245, 250, 0.82);
-  --overlay-dark-a: rgba(59, 130, 246, 0.06);
-  --overlay-dark-b: rgba(37, 99, 235, 0.04);
-  --btn-hover-glow: rgba(0, 122, 255, 0.20);
-  --btn-primary-text: #fff;
-  --separator-color: rgba(60, 60, 67, 0.15);
-  --color-red: #FF3B30;
-}
-
-/* ------------------------------------------------------------
-   1.4  Pink Theme (Dark)
-   ------------------------------------------------------------ */
-[data-theme="pink"] {
-  --color-blue-50: #FFF0F5;
-  --color-blue-100: #FFE0EB;
-  --color-blue-200: #FFCCE0;
-  --color-blue-300: #FD79A8;
-  --color-blue-400: #E84393;
-  --color-blue-500: #D63384;
-  --color-blue-600: #B52870;
-  --color-blue-700: #8E1F58;
-  --color-blue-800: #5A1438;
-  --color-blue-900: #3D0E26;
-  --color-accent-300: #FD79A8;
-  --color-accent-400: #E84393;
-  --color-accent-500: #D63384;
-  --color-accent-600: #B52870;
-  --color-accent-700: #8E1F58;
-  --color-accent-800: #5A1438;
-  --page-glow-a: rgba(232, 67, 147, 0.05);
-  --page-glow-b: rgba(253, 121, 168, 0.03);
-  --glass-heavy: rgba(30, 14, 22, 0.78);
-  --glass-mid: rgba(35, 18, 28, 0.65);
-  --glass-soft: rgba(253, 121, 168, 0.04);
-  --glass-bg-card: rgba(40, 20, 32, 0.78);
-  --glass-bg-card-hover: rgba(50, 26, 40, 0.82);
-  --glass-border: rgba(232, 67, 147, 0.14);
-  --glass-border-strong: rgba(232, 67, 147, 0.22);
-  --glass-shadow: 0 4px 16px rgba(30, 14, 22, 0.55);
-  --glass-outline: inset 0 1px 0 rgba(253, 121, 168, 0.08);
-  --bg-primary: rgba(30, 14, 22, 0.85);
-  --bg-secondary: rgba(35, 18, 28, 0.80);
-  --bg-tertiary: rgba(42, 22, 35, 0.76);
-  --bg-card: rgba(40, 20, 32, 0.78);
-  --bg-card-hover: rgba(50, 26, 40, 0.82);
-  --bg-input: rgba(25, 12, 18, 0.85);
-  --bg-modal-overlay: rgba(0, 0, 0, 0.78);
-  --toggle-track-bg: rgba(160, 80, 120, 0.30);
-  --toggle-track-border: rgba(200, 100, 150, 0.45);
-  --toggle-thumb-bg: #D4A0BC;
-  --toggle-thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --text-primary: #F0D0E0;
-  --text-secondary: #D4A0BC;
-  --text-muted: #A07090;
-  --text-accent: #FD79A8;
-  --accent: #E84393;
-  --border-color: rgba(140, 60, 100, 0.45);
-  --border-accent: rgba(232, 67, 147, 0.40);
-  --border-glow: rgba(232, 67, 147, 0.18);
-  --shadow-sm: 0 2px 6px rgba(30, 14, 22, 0.35);
-  --shadow-md: 0 4px 12px rgba(30, 14, 22, 0.45);
-  --shadow-lg: 0 8px 24px rgba(30, 14, 22, 0.55);
-  --shadow-glow: 0 0 20px rgba(232, 67, 147, 0.10);
-  --theme-dialog-bg: rgba(30, 14, 22, 0.85);
-  --theme-dialog-text: #F0D0E0;
-  --theme-dialog-name: #FD79A8;
-  --theme-main-bg: #1A0E16;
-  --theme-input-bg: rgba(25, 12, 18, 0.85);
-  --theme-background-image: none;
-  --body-bg-color: #1A0E16;
-  --font-sans: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --glass-radius-xs: 10px;
-  --glass-radius-sm: 14px;
-  --glass-radius-md: 18px;
-  --glass-radius-lg: 24px;
-  --glass-radius-xl: 32px;
-  --accent-08: rgba(232, 67, 147, 0.08);
-  --accent-10: rgba(232, 67, 147, 0.10);
-  --accent-15: rgba(232, 67, 147, 0.15);
-  --accent-25: rgba(232, 67, 147, 0.25);
-  --accent-30: rgba(232, 67, 147, 0.30);
-  --accent-40: rgba(232, 67, 147, 0.40);
-  --accent-50: rgba(232, 67, 147, 0.50);
-  --panel-dark-bg: rgba(30, 14, 22, 0.65);
-  --strip-bg: rgba(30, 14, 22, 0.72);
-  --overlay-dark-a: rgba(20, 8, 14, 0.55);
-  --overlay-dark-b: rgba(30, 14, 22, 0.45);
-  --btn-hover-glow: rgba(232, 67, 147, 0.25);
-  --btn-primary-text: #F0D0E0;
-  --separator-color: rgba(140, 60, 100, 0.4);
-  --color-red: #E84393;
-}
-
-[data-theme="pink"] {
-  --gal-blue-50: rgba(40, 20, 32, 0.95);
-  --gal-blue-100: rgba(48, 24, 38, 0.92);
-  --gal-blue-200: rgba(58, 30, 45, 0.88);
-  --gal-blue-300: rgba(80, 40, 60, 0.82);
-  --gal-blue-400: rgba(160, 60, 110, 0.55);
-  --gal-blue-500: rgba(200, 80, 140, 0.65);
-  --gal-blue-600: rgba(230, 100, 160, 0.75);
-  --gal-blue-700: rgba(250, 130, 180, 0.85);
-  --gal-text-name: #ffe0f0;
-  --gal-text-dia: #ffe8f5;
-  --gal-line: rgba(200, 80, 140, 0.30);
-  --gal-dot: rgba(220, 100, 160, 0.40);
-  --gal-shadow: 0 8px 32px rgba(30, 14, 22, 0.45);
-  --gal-glow: 0 0 40px rgba(232, 67, 147, 0.08);
-  --gal-border-out: rgba(200, 80, 140, 0.45);
-  --gal-av-b1: rgba(100, 40, 70, 0.40);
-  --gal-av-b2: rgba(140, 60, 100, 0.25);
-  --gal-av-b3: rgba(180, 90, 130, 0.35);
-  --gal-body-grad: linear-gradient(175deg, rgba(35, 18, 28, 0.94) 0%, rgba(42, 22, 35, 0.92) 3%, rgba(50, 28, 42, 0.90) 15%, rgba(38, 20, 32, 0.93) 40%, rgba(48, 26, 40, 0.91) 60%, rgba(35, 18, 28, 0.93) 85%, rgba(28, 14, 22, 0.95) 100%);
-  --gal-avatar-bg: #2a1420;
-  --gal-inset-high: rgba(253, 121, 168, 0.05);
-  --gal-inset-low: rgba(0, 0, 0, 0.35);
-  --gal-inset-side: rgba(253, 121, 168, 0.03);
-  --gal-inset-side-opp: rgba(0, 0, 0, 0.25);
-  --gal-text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
-}
-
-/* Pink Light - Core */
-[data-theme="pink"] body[theme-mode="light"] {
-  --page-glow-a: rgba(232, 67, 147, 0.06);
-  --page-glow-b: rgba(253, 121, 168, 0.03);
-  --glass-heavy: rgba(255, 245, 247, 0.82);
-  --glass-mid: rgba(255, 240, 245, 0.72);
-  --glass-soft: rgba(0, 0, 0, 0.03);
-  --glass-bg-card: rgba(255, 248, 250, 0.88);
-  --glass-bg-card-hover: rgba(255, 232, 240, 0.92);
-  --glass-border: rgba(232, 67, 147, 0.14);
-  --glass-border-strong: rgba(232, 67, 147, 0.22);
-  --glass-shadow: 0 4px 16px rgba(74, 32, 48, 0.08);
-  --glass-shadow-panel: 0 12px 40px rgba(74, 32, 48, 0.10);
-  --glass-outline: inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  --bg-primary: rgba(255, 248, 250, 0.88);
-  --bg-secondary: rgba(255, 244, 248, 0.85);
-  --bg-tertiary: rgba(255, 240, 244, 0.82);
-  --bg-card: rgba(255, 250, 252, 0.90);
-  --bg-card-hover: rgba(255, 236, 244, 0.94);
-  --bg-input: rgba(255, 250, 252, 0.92);
-  --bg-modal-overlay: rgba(0, 0, 0, 0.25);
-  --toggle-track-bg: rgba(232, 67, 147, 0.15);
-  --toggle-track-border: rgba(232, 67, 147, 0.22);
-  --toggle-thumb-bg: #FFFFFF;
-  --toggle-thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.10);
-  --text-primary: #4A2030;
-  --text-secondary: #6D3850;
-  --text-muted: #A06080;
-  --text-accent: #E84393;
-  --accent: #D63384;
-  --border-color: rgba(232, 67, 147, 0.20);
-  --border-accent: rgba(232, 67, 147, 0.30);
-  --border-glow: rgba(232, 67, 147, 0.15);
-  --shadow-glow: 0 0 20px rgba(232, 67, 147, 0.08);
-  --theme-dialog-bg: rgba(255, 248, 250, 0.92);
-  --theme-dialog-text: #4A2030;
-  --theme-dialog-name: #E84393;
-  --theme-main-bg: #FFF5F7;
-  --theme-input-bg: rgba(255, 250, 252, 0.92);
-  --body-bg-color: #FFF5F7;
-  --color-accent-300: #FD79A8;
-  --color-accent-400: #E84393;
-  --color-accent-500: #D63384;
-  --color-accent-600: #B52870;
-  --color-accent-700: #8E1F58;
-  --color-accent-800: #5A1438;
-}
-
-/* Pink Light - Accent */
-[data-theme="pink"] body[theme-mode="light"] {
-  --accent-08: rgba(232, 67, 147, 0.08);
-  --accent-10: rgba(232, 67, 147, 0.10);
-  --accent-15: rgba(232, 67, 147, 0.15);
-  --accent-25: rgba(232, 67, 147, 0.25);
-  --accent-30: rgba(232, 67, 147, 0.30);
-  --accent-40: rgba(232, 67, 147, 0.40);
-  --accent-50: rgba(232, 67, 147, 0.50);
-  --panel-dark-bg: rgba(255, 248, 250, 0.75);
-  --strip-bg: rgba(255, 244, 248, 0.82);
-  --overlay-dark-a: rgba(232, 67, 147, 0.04);
-  --overlay-dark-b: rgba(253, 121, 168, 0.02);
-  --btn-hover-glow: rgba(232, 67, 147, 0.20);
-  --btn-primary-text: #fff;
-  --separator-color: rgba(232, 67, 147, 0.15);
-  --color-red: #DC2626;
-}
-
-/* Pink Light - GAL */
-[data-theme="pink"] body[theme-mode="light"] {
-  --gal-blue-50: #fff0f5;
-  --gal-blue-100: #ffe0eb;
-  --gal-blue-200: #ffcce0;
-  --gal-blue-300: #ffb0cc;
-  --gal-blue-400: #fd79a8;
-  --gal-blue-500: #e84393;
-  --gal-blue-600: #d63384;
-  --gal-blue-700: #b52870;
-  --gal-text-name: #1a0510;
-  --gal-text-dia: #2a1020;
-  --gal-line: rgba(232, 67, 147, 0.30);
-  --gal-dot: rgba(232, 67, 147, 0.40);
-  --gal-shadow: 0 8px 32px rgba(74, 32, 48, 0.10);
-  --gal-glow: 0 0 40px rgba(232, 67, 147, 0.08);
-  --gal-border-out: rgba(200, 50, 120, 0.30);
-  --gal-av-b1: #ffcce0;
-  --gal-av-b2: #fff0f5;
-  --gal-av-b3: #fd79a8;
-  --gal-body-grad: linear-gradient(175deg, #fff5f8 0%, #ffeef4 3%, #fff8fa 15%, #fff5f8 40%, #fff0f5 60%, #ffe8f0 85%, #ffe0eb 100%);
-  --gal-avatar-bg: #ffcce0;
-  --gal-inset-high: rgba(255, 255, 255, 0.60);
-  --gal-inset-low: rgba(230, 180, 200, 0.18);
-  --gal-inset-side: rgba(255, 255, 255, 0.45);
-  --gal-inset-side-opp: rgba(230, 180, 200, 0.12);
-  --gal-text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6);
-}
-
-/* ------------------------------------------------------------
    1.5  Default Theme - Light Mode
    ------------------------------------------------------------ */
 html:not([data-theme]) body[theme-mode="light"] {
@@ -847,64 +237,10 @@ html:not([data-theme]) body[theme-mode="light"] {
   --gal-text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
-
-/* ------------------------------------------------------------
-   1.6  Theme Selector Styles
-   ------------------------------------------------------------ */
-.theme-preset-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-radius: var(--radius-md);
-  background: var(--glass-soft);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(var(--glass-blur-sm));
-  -webkit-backdrop-filter: blur(var(--glass-blur-sm));
-  transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
-}
-
-.theme-preset-wrap:hover {
-  border-color: var(--glass-border-strong);
-  box-shadow: var(--shadow-glow);
-}
-
-.theme-preset-select {
-  appearance: none;
-  -webkit-appearance: none;
-  background: transparent;
-  border: none;
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 13px;
-  padding: 4px 24px 4px 8px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  outline: none;
-  transition: color var(--transition-fast);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239CB4D4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 6px center;
-}
-
-.theme-preset-select:hover {
-  color: var(--text-accent);
-}
-
-.theme-preset-select:focus {
-  box-shadow: 0 0 0 2px var(--accent-15);
-}
-
-.theme-preset-select option {
-  background: var(--theme-main-bg);
-  color: var(--text-primary);
-}
-
 /* ============================================================
    AI Role-Play Tool — Game-UI Mobile Aesthetic
    Part 2: Layout, Components & Interaction Styles
    ============================================================ */
-
 
 /* ==== SECTION 2: RESET & BASE STYLES ==== */
 
@@ -995,7 +331,6 @@ select:focus {
 .hidden {
   display: none !important;
 }
-
 
 /* ==== SECTION 3: TOP NAVIGATION BAR ==== */
 
@@ -1101,7 +436,6 @@ select:focus {
   box-shadow: var(--shadow-sm);
 }
 
-
 /* ==== SECTION 4: MAIN LAYOUT ==== */
 
 /* Full-viewport flex container below the top bar */
@@ -1116,7 +450,6 @@ select:focus {
   overflow: hidden;
   z-index: 1;
 }
-
 
 /* ==== SECTION 5: LEFT SIDEBAR (GAME-UI STYLED) ==== */
 
@@ -1277,7 +610,6 @@ select:focus {
   display: flex;
   gap: 4px;
 }
-
 
 /* ==== SECTION 6: CHARACTER LIST (CARD-STYLE FOR GAME UI) ==== */
 
@@ -1469,7 +801,6 @@ select:focus {
   font-weight: 600;
 }
 
-
 /* ==== SECTION 7: CHAT AREA ==== */
 
 /* Main chat region — glass-mid panel */
@@ -1580,7 +911,6 @@ select:focus {
   min-height: 0;
 }
 
-
 /* ==== SECTION 8: CHAT TAB BAR ==== */
 
 /* Horizontal tab strip above the message area */
@@ -1668,7 +998,6 @@ select:focus {
   color: var(--text-primary);
 }
 
-
 /* ==== SECTION 9: MESSAGES AREA ==== */
 
 /* Scrollable message feed */
@@ -1723,7 +1052,6 @@ select:focus {
   margin-top: 8px;
   padding-top: 12px;
 }
-
 
 /* ==== SECTION 10: STORY RENDERING ==== */
 
@@ -2221,7 +1549,6 @@ select:focus {
   font-family: var(--font-mono);
 }
 
-
 /* ==== SECTION 11: INPUT AREA ==== */
 
 /* Bottom input bar with glass treatment */
@@ -2498,7 +1825,6 @@ select:focus {
   padding: 6px 4px 0;
 }
 
-
 /* ================================================================
    Section 13: Status Section (within info panel)
    ================================================================ */
@@ -2664,7 +1990,6 @@ select:focus {
   text-align: center;
 }
 
-
 /* ================================================================
    Section 14: Buttons
    ================================================================ */
@@ -2793,7 +2118,6 @@ select:focus {
   background: #c53030;
 }
 
-
 /* ================================================================
    Section 15: Modals
    ================================================================ */
@@ -2880,7 +2204,6 @@ select:focus {
 .modal-settings {
   width: 560px;
 }
-
 
 /* ================================================================
    Section 16: Forms & Settings
@@ -3225,7 +2548,6 @@ body[theme-mode="light"] select {
   color: var(--color-accent-400);
 }
 
-
 /* ================================================================
    Section 17: Debug Tab
    ================================================================ */
@@ -3405,7 +2727,6 @@ body[theme-mode="light"] select {
   line-height: 1.5;
   color: var(--text-secondary);
 }
-
 
 /* ================================================================
    Section 18: Floating Status Popup
@@ -3590,7 +2911,6 @@ body[theme-mode="light"] select {
    Spinners, Slide Panel, World Book, Lightbox, Game-UI, Responsive,
    Utility
    ================================================================ */
-
 
 /* ==== SECTION 19: GAL GAME DIALOGUE STYLES ==== */
 
@@ -3921,7 +3241,6 @@ body[theme-mode="light"] select {
   text-shadow: none;
 }
 
-
 /* ==== SECTION 20: CHOICE MENU (GAL-STYLE OPTION SELECTION) ==== */
 
 .choice-menu {
@@ -4152,7 +3471,6 @@ body[theme-mode="light"] select {
   }
 }
 
-
 /* ==== SECTION 21: ACTION BUTTONS ==== */
 
 .action-buttons {
@@ -4204,7 +3522,6 @@ body[theme-mode="light"] select {
   transform: translateY(0);
   background: var(--color-accent-800);
 }
-
 
 /* ==== SECTION 22: TOAST NOTIFICATIONS ==== */
 
@@ -4265,7 +3582,6 @@ body[theme-mode="light"] select {
   }
 }
 
-
 /* ==== SECTION 23: LOADING SPINNER ==== */
 
 .loading-spinner {
@@ -4291,7 +3607,6 @@ body[theme-mode="light"] select {
     transform: rotate(360deg);
   }
 }
-
 
 /* ==== SECTION 24: SLIDE-OUT PANEL ==== */
 
@@ -4346,7 +3661,6 @@ body[theme-mode="light"] select {
   width: 100%;
   text-align: left;
 }
-
 
 /* ==== SECTION 25: WORLD BOOK ENTRY STYLES ==== */
 
@@ -4634,7 +3948,6 @@ body[theme-mode="light"] select {
   font-size: 13px;
 }
 
-
 /* ==== SECTION 26: AVATAR LIGHTBOX ==== */
 
 .avatar-lightbox {
@@ -4665,7 +3978,6 @@ body[theme-mode="light"] select {
   border-radius: 8px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
 }
-
 
 /* ==== SECTION 27: GAME-UI ENHANCEMENT STYLES ==== */
 
@@ -4844,7 +4156,6 @@ body[theme-mode="light"] select {
   scrollbar-color: var(--glass-border) transparent;
 }
 
-
 /* ==== SECTION 28: RESPONSIVE BREAKPOINTS ==== */
 
 /* Tablet landscape */
@@ -4969,7 +4280,6 @@ body[theme-mode="light"] select {
     max-width: 100%;
   }
 }
-
 
 /* ==== SECTION 29: UTILITY & MISCELLANEOUS ==== */
 

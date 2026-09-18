@@ -411,7 +411,7 @@ function showToastSafe(text, severity) {
 
 document.addEventListener('DOMContentLoaded', async () => {
   initThemeMode();
-  initThemePreset();
+  purgeLegacyThemePreset();
   initBGM();
   initTtsMasterSwitch();
   ttsLoadSettings();
@@ -540,11 +540,7 @@ function bindEvents() {
   DOM.btnImportTheme().addEventListener('click', () => DOM.themeFileInput().click());
   DOM.themeFileInput().addEventListener('change', importTheme);
 
-  // Theme preset selector (top bar)
-  const themePresetSel = document.getElementById('themePresetSelect');
-  if (themePresetSel) themePresetSel.addEventListener('change', switchThemePreset);
-
-  // Theme mode toggle button (top bar, next to theme preset)
+  // Theme mode toggle button (top bar) — 旧「主题预设」下拉已移除，现在只有明/暗两套
   const themeModeToggleBtn = document.getElementById('themeModeToggle');
   if (themeModeToggleBtn) themeModeToggleBtn.addEventListener('click', toggleThemeMode);
 
@@ -4724,6 +4720,24 @@ async function sendMessage() {
           // 不显示裸文本，保持打字指示器直到完成
         },
         onDone: (result) => {
+          // ⚠️ 服务端在「主AI输出为空 / 中转失败」时会先发 error 再发 done，而这个 done 携带
+          // content:'' + formatted:{segments:[]}。onDone 在 onError 之后执行，若照渲染就会把
+          // 刚刚显示的错误信息覆盖成一块空白（只有时间戳、无正文，vn-shell 反解 0 段 → 画面空白）。
+          // 因此：失败载荷一律不渲染成正文块，只显示原因，也不写入 AppState。
+          const fmtObj = (result.formatted && typeof result.formatted === 'object') ? result.formatted : null;
+          const hasSegs = !!(fmtObj && Array.isArray(fmtObj.segments) && fmtObj.segments.length > 0);
+          const hasText = !!((result.content && String(result.content).trim()) || (fmtObj && fmtObj.text && String(fmtObj.text).trim()));
+          if (result.error || result.failed || (!hasSegs && !hasText)) {
+            const failMsg = result.error
+              || '主AI没有返回任何内容，本轮未生成（常见原因：思考模式占满 token、中转/供应商异常）。请重试。';
+            aiMsgDiv.dataset.failed = '1';
+            aiMsgDiv.innerHTML = `<div class="narration-text" style="color:#DC143C;">生成出错: ${escapeHtml(failMsg)}</div>`;
+            isStreaming = false;
+            try { showToast(failMsg, 'error'); } catch (e) { /* toast 非关键 */ }
+            console.warn('[Stream] 本轮失败，未渲染正文:', failMsg);
+            return;
+          }
+
           // 流式完成 - 用 Gal Game 格式渲染主窗口
           processAIResponse(result);
 
@@ -8214,38 +8228,22 @@ function initThemeMode() {
 }
 
 // ============ Theme Preset System ============
-
-function initThemePreset() {
-  const saved = localStorage.getItem('rp-theme-preset') || 'default';
-  const sel = document.getElementById('themePresetSelect');
-  if (sel) {
-    sel.value = saved;
-    applyThemePreset(saved);
-  }
-}
-
-function applyThemePreset(preset) {
-  const html = document.documentElement;
-  if (preset && preset !== 'default') {
-    html.setAttribute('data-theme', preset);
-  } else {
-    html.removeAttribute('data-theme');
-  }
-  // iOS theme works best in light mode; parchment and pink in dark by default
-  if (preset === 'ios') {
-    const current = document.body.getAttribute('theme-mode') || 'dark';
-    if (current !== 'light') {
-      switchThemeMode('light');
+// 旧的「主题预设」机制（parchment / ios / pink 三套 data-theme 配色）已废弃：
+// 现在只有 body[theme-mode="light"|"dark"] 两套主题，由 initThemeMode / toggleThemeMode 管理。
+// 保留清理函数：清掉历史遗留的 data-theme 属性与 localStorage，避免旧值继续影响样式。
+function purgeLegacyThemePreset() {
+  try {
+    const legacy = localStorage.getItem('rp-theme-preset');
+    if (legacy && legacy !== 'default') {
+      localStorage.removeItem('rp-theme-preset');
+    } else if (legacy === 'default') {
+      localStorage.removeItem('rp-theme-preset');
     }
-  }
-}
-
-function switchThemePreset() {
-  const sel = document.getElementById('themePresetSelect');
-  if (!sel) return;
-  const preset = sel.value;
-  applyThemePreset(preset);
-  localStorage.setItem('rp-theme-preset', preset);
+  } catch (e) { /* localStorage 不可用时忽略 */ }
+  const html = document.documentElement;
+  const cur = html.getAttribute('data-theme');
+  // data-theme 现在只允许 light / dark（由 vn-shell / initThemeMode 维护）
+  if (cur && cur !== 'light' && cur !== 'dark') html.removeAttribute('data-theme');
 }
 
 function exportTheme() {

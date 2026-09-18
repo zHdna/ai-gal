@@ -559,7 +559,8 @@ const ChatAPI = {
                   callbacks.onDone?.(data);
                   break;
                 case 'error':
-                  callbacks.onError?.(data.error || 'Unknown stream error');
+                  // 服务端两种字段都出现过：{message} 与 {error}
+                  callbacks.onError?.(data.error || data.message || 'Unknown stream error');
                   break;
                 case 'aborted':
                   callbacks.onError?.('Generation aborted');

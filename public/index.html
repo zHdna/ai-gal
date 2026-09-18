@@ -631,6 +631,7 @@
         <button class="hb" data-hist-scope="narr">旁白</button>
         <span class="spacer"></span>
         <button class="hb" id="histExpandAll">展开全部</button>
+        <button class="hb danger" id="histDeleteConv" title="删除当前存档（对话记录与缓存文件一起删除，可用于重新生成）">🗑 删除本对话</button>
       </div>
       <div class="sheet-body" id="histBody">
         <div class="hist" data-goto="0">
@@ -950,15 +951,6 @@ confidence = 0.88</pre>
         <span class="mode-icon mode-icon-dark">🌙</span>
         <span class="mode-icon mode-icon-light">☀️</span>
       </button>
-      <div class="theme-preset-wrap">
-        <span class="tp-label">🎨</span>
-        <select class="theme-preset-select" id="themePresetSelect" title="切换主题方案">
-          <option value="default">默认深色</option>
-          <option value="ios">☁️ iOS</option>
-          <option value="parchment">📜 羊皮卷</option>
-          <option value="pink">🌸 粉红</option>
-        </select>
-      </div>
       <button class="ws-toggle-btn" id="btnWorldState" title="世界状态 (MVU)">
         <span>🌐</span>
       </button>

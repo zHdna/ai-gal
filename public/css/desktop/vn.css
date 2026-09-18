@@ -1618,7 +1618,13 @@
     }
 
     /* 导入角色卡已移入左侧游戏列表（btnImportCharacter），这里不再保留入口 */
-    .app .cmd textarea {
+    /* ⚠️ 必须带上 #messageInput：旧样式表里有一条 `#messageInput { background: var(--theme-input-bg);
+       color: var(--text-primary) }`（ID 选择器，优先级 1-0-0），会压过 .app .cmd textarea（0-2-1）。
+       那条老规则用的是旧主题变量，而旧浅色覆盖挂在 html:not([data-theme]) 上，vn-shell 又会设
+       data-theme="light"，于是浅色模式下指令条变白、输入框却仍是深底浅字（用户报过：文字认不出来）。
+       这里把选择器提升到含 ID，确保输入框的配色始终由外壳的明/暗变量决定。 */
+    .app .cmd textarea,
+    .app .cmd textarea#messageInput {
       flex: 1 1 auto;
       min-height: 34px;
       max-height: 120px;
@@ -1628,11 +1634,13 @@
       resize: none;
       background: transparent;
       color: var(--text);
+      caret-color: var(--gold);
       font-size: 13px;
       line-height: 1.5;
     }
 
-    .app .cmd textarea::placeholder {
+    .app .cmd textarea::placeholder,
+    .app .cmd textarea#messageInput::placeholder {
       color: var(--text-mut);
     }
 
@@ -2594,6 +2602,24 @@
       color: var(--cyan);
       border-color: rgba(54, 224, 216, .42);
       background: rgba(54, 224, 216, .10);
+    }
+
+    /* 「回顾」里的删除当前对话：危险色，别和数据筛选按钮混淆 */
+    .app .hb.danger {
+      color: var(--rose);
+      border-color: rgba(255, 125, 168, .34);
+      background: rgba(255, 125, 168, .08);
+    }
+
+    .app .hb.danger:hover {
+      color: #fff;
+      border-color: var(--rose);
+      background: rgba(255, 125, 168, .22);
+    }
+
+    .app .hb.danger:disabled {
+      opacity: .5;
+      cursor: default;
     }
 
     .app .hist .exp {
@@ -3666,11 +3692,7 @@ html:not(.legacy) body::after {
   display: none !important;
 }
 
-/* --- 6. 只保留明 / 暗两套主题：预设选择器在设置弹窗里藏起来（元素保留，app.js 不报错） --- */
-.theme-preset-wrap,
-#themePresetSelect {
-  display: none !important;
-}
+/* --- 6. 只保留明 / 暗两套主题：旧的「主题预设」下拉已从 index.html 删除 --- */
 
 /* --- 7. 左侧游戏列表：app.js 会往 #stripAvatars / #characterList 里渲染自己的结构，
          这里把它的类名接到设计稿的侧栏样式上 --- */

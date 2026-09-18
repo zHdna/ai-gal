@@ -1252,11 +1252,6 @@
   min-height: 50px;
 }
 
-font-family: inherit;
-outline: none;
-transition: border-color 0.2s ease;
-}
-
 .char-edit-field input:focus,
 .char-edit-field textarea:focus {
   border-color: var(--color-accent-400);
@@ -1838,54 +1833,6 @@ html:not([data-theme]) body[theme-mode="light"] {
   --paper-shadow: inset 0 0 50px rgba(180, 160, 100, 0.05), 0 2px 10px rgba(80, 60, 20, 0.10);
 }
 
-/* Parchment — Dark */
-[data-theme="parchment"] {
-  --paper-bg: rgba(38, 28, 16, 0.82);
-  --paper-border: rgba(160, 130, 70, 0.35);
-  --paper-inner-border: rgba(160, 130, 70, 0.10);
-  --paper-shadow: inset 0 0 50px rgba(20, 14, 6, 0.20), 0 2px 10px rgba(20, 14, 6, 0.18);
-}
-
-/* Parchment — Light */
-[data-theme="parchment"] body[theme-mode="light"] {
-  --paper-bg: rgba(248, 238, 218, 0.90);
-  --paper-border: rgba(139, 94, 60, 0.35);
-  --paper-inner-border: rgba(139, 94, 60, 0.10);
-  --paper-shadow: inset 0 0 50px rgba(180, 150, 100, 0.06), 0 2px 10px rgba(80, 60, 20, 0.08);
-}
-
-/* iOS — Dark */
-[data-theme="ios"] {
-  --paper-bg: rgba(18, 18, 24, 0.82);
-  --paper-border: rgba(80, 80, 110, 0.30);
-  --paper-inner-border: rgba(80, 80, 110, 0.08);
-  --paper-shadow: inset 0 0 50px rgba(0, 0, 0, 0.20), 0 2px 10px rgba(0, 0, 0, 0.15);
-}
-
-/* iOS — Light */
-[data-theme="ios"] body[theme-mode="light"] {
-  --paper-bg: rgba(255, 255, 255, 0.90);
-  --paper-border: rgba(60, 60, 67, 0.18);
-  --paper-inner-border: rgba(60, 60, 67, 0.06);
-  --paper-shadow: inset 0 0 50px rgba(0, 0, 0, 0.02), 0 1px 6px rgba(0, 0, 0, 0.06);
-}
-
-/* Pink — Dark */
-[data-theme="pink"] {
-  --paper-bg: rgba(30, 16, 24, 0.82);
-  --paper-border: rgba(200, 80, 140, 0.30);
-  --paper-inner-border: rgba(200, 80, 140, 0.08);
-  --paper-shadow: inset 0 0 50px rgba(20, 8, 14, 0.20), 0 2px 10px rgba(20, 8, 14, 0.15);
-}
-
-/* Pink — Light */
-[data-theme="pink"] body[theme-mode="light"] {
-  --paper-bg: rgba(255, 248, 250, 0.90);
-  --paper-border: rgba(232, 67, 147, 0.22);
-  --paper-inner-border: rgba(232, 67, 147, 0.06);
-  --paper-shadow: inset 0 0 50px rgba(232, 67, 147, 0.02), 0 1px 6px rgba(100, 40, 70, 0.06);
-}
-
 /* ── Paper Frame Container ── */
 .story-block.assistant {
   position: relative;
@@ -2254,99 +2201,6 @@ body[theme-mode="light"] .char-conv-list .char-conv-item.active {
 
 body[theme-mode="light"] .char-conv-list .char-conv-item.active .conv-item-label {
   color: var(--color-accent-600) !important;
-}
-
-/* ── 7. Parchment theme accent color overrides ── */
-[data-theme="parchment"] .character-item.active {
-  border-left-color: #c4970 !important;
-  background: rgba(196, 153, 0, 0.15) !important;
-}
-
-[data-theme="parchment"] .char-conv-list .char-conv-item.active {
-  background: rgba(196, 153, 0, 0.16) !important;
-}
-
-[data-theme="parchment"] .char-conv-list .char-conv-item.active .conv-item-label {
-  color: #d4a017 !important;
-}
-
-[data-theme="parchment"] .strip-avatar.active {
-  border-color: #c4970 !important;
-}
-
-[data-theme="parchment"] body[theme-mode="light"] .character-item.active {
-  border-left-color: #8b5e3c !important;
-  background: rgba(139, 94, 60, 0.12) !important;
-}
-
-[data-theme="parchment"] body[theme-mode="light"] .char-conv-list .char-conv-item.active {
-  background: rgba(139, 94, 60, 0.16) !important;
-}
-
-[data-theme="parchment"] body[theme-mode="light"] .char-conv-list .char-conv-item.active .conv-item-label {
-  color: #8b5e3c !important;
-}
-
-/* ── 8. iOS theme accent color overrides ── */
-[data-theme="ios"] .character-item.active {
-  border-left-color: #0a84ff !important;
-  background: rgba(10, 132, 255, 0.15) !important;
-}
-
-[data-theme="ios"] .char-conv-list .char-conv-item.active {
-  background: rgba(10, 132, 255, 0.16) !important;
-}
-
-[data-theme="ios"] .char-conv-list .char-conv-item.active .conv-item-label {
-  color: #0a84ff !important;
-}
-
-[data-theme="ios"] .strip-avatar.active {
-  border-color: #0a84ff !important;
-}
-
-[data-theme="ios"] body[theme-mode="light"] .character-item.active {
-  border-left-color: #007aff !important;
-  background: rgba(0, 122, 255, 0.12) !important;
-}
-
-[data-theme="ios"] body[theme-mode="light"] .char-conv-list .char-conv-item.active {
-  background: rgba(0, 122, 255, 0.16) !important;
-}
-
-[data-theme="ios"] body[theme-mode="light"] .char-conv-list .char-conv-item.active .conv-item-label {
-  color: #007aff !important;
-}
-
-/* ── 9. Pink theme accent color overrides ── */
-[data-theme="pink"] .character-item.active {
-  border-left-color: #e84a97 !important;
-  background: rgba(232, 74, 151, 0.15) !important;
-}
-
-[data-theme="pink"] .char-conv-list .char-conv-item.active {
-  background: rgba(232, 74, 151, 0.16) !important;
-}
-
-[data-theme="pink"] .char-conv-list .char-conv-item.active .conv-item-label {
-  color: #e84a97 !important;
-}
-
-[data-theme="pink"] .strip-avatar.active {
-  border-color: #e84a97 !important;
-}
-
-[data-theme="pink"] body[theme-mode="light"] .character-item.active {
-  border-left-color: #ec4899 !important;
-  background: rgba(236, 72, 153, 0.12) !important;
-}
-
-[data-theme="pink"] body[theme-mode="light"] .char-conv-list .char-conv-item.active {
-  background: rgba(236, 72, 153, 0.16) !important;
-}
-
-[data-theme="pink"] body[theme-mode="light"] .char-conv-list .char-conv-item.active .conv-item-label {
-  color: #ec4899 !important;
 }
 
 /* ── 10. Sidebar panel: light gray bg to separate from character cards ── */

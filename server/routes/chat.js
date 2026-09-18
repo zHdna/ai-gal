@@ -1290,8 +1290,12 @@ module.exports = (db) => {
                 ? '主AI仅输出了思维链(reasoning)但没有实际内容。请尝试关闭该供应商的「思考模式」，或增大 max_tokens。'
                 : '主AI输出为空，请检查 API 配置或重试。';
               console.warn('[Stream] Empty content, skipping butler. reasoningText len:', reasoningText?.length || 0);
-              res.write(`event: error\ndata: ${JSON.stringify({ message: errMsg })}\n\n`);
-              res.write(`event: done\ndata: ${JSON.stringify({ id: null, content: '', formatted: { segments: [] }, error: errMsg })}\n\n`);
+              // ⚠️ 客户端 api.js 的 error 分支读的是 data.error（老代码只发 message → 前端显示
+              // "Unknown stream error"）；两个键都发，前端才能显示真正的原因。
+              // done 事件必须带 error 标记：客户端 onDone 在 onError 之后执行，若照常渲染
+              // 这个空载荷（content:'' + segments:[]），会把刚显示的报错覆盖成一块空白。
+              res.write(`event: error\ndata: ${JSON.stringify({ message: errMsg, error: errMsg })}\n\n`);
+              res.write(`event: done\ndata: ${JSON.stringify({ id: null, content: '', formatted: { segments: [] }, error: errMsg, failed: true })}\n\n`);
               res.end();
               return;
             }
@@ -1404,6 +1408,24 @@ module.exports = (db) => {
               // (【当前角色名册】/【本轮需强制登记的新角色】etc.) that a weak butler
               // model may have echoed into fixedText — these must never reach the UI.
               finalText = stripButlerLeaks(finalText) || finalText;
+
+              // 2. 早写盘：先把「管家修复后的正文」落库并挂到 result 上。
+              // ⚠️ 紧随其后的画像 / CG / 登场判定是【可选副作用】，但代码又长又容易因外部原因抛错；
+              // 一旦抛错就跳到外层 catch，把 L2390 那次正式落库整个跳过 —— 结果就是管家明明修好了
+              // 格式（调试面板里 fixedText 完整），前端和存档里却仍是主AI的坏文本。
+              // 这里先写一次，L2390 再写一次做覆盖：正常流程行为不变，异常流程至少保住格式修复。
+              try {
+                const earlyText = stripCotWrappers(finalText);
+                const earlyFixed = parseAIResponse(earlyText);
+                result.formatted = earlyFixed.formatted;
+                result.content = earlyText;
+                db.prepare('UPDATE messages SET content = ?, formatted = ? WHERE id = ?')
+                  .run(earlyText, JSON.stringify(earlyFixed.formatted), result.id);
+                console.log('[Butler] Early persist OK — content len', earlyText.length,
+                  'segs', (earlyFixed.formatted.segments || []).length);
+              } catch (e) {
+                console.warn('[Butler] Early persist failed (non-fatal):', e.message);
+              }
 
               // 2. Image generation: check if painter AI should run
               // ── Painter AI (portrait + CG) ──
