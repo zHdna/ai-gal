@@ -259,6 +259,7 @@ const DOM = {
   btnOpenApiPresets: () => document.getElementById('btnOpenApiPresets'),
   chatPresetSelect: () => document.getElementById('chatPresetSelect'),
   btnImportSTPreset: () => document.getElementById('btnImportSTPreset'),
+  btnExportSTPreset: () => document.getElementById('btnExportSTPreset'),
   btnDefaultChatPreset: () => document.getElementById('btnDefaultChatPreset'),
   btnDeleteChatPreset: () => document.getElementById('btnDeleteChatPreset'),
   stPresetFile: () => document.getElementById('stPresetFile'),
@@ -601,6 +602,8 @@ function bindEvents() {
   if (btnImportSTPresetEl) btnImportSTPresetEl.addEventListener('click', () => DOM.stPresetFile()?.click());
   const stPresetFileEl = DOM.stPresetFile();
   if (stPresetFileEl) stPresetFileEl.addEventListener('change', importSTPreset);
+  const btnExportSTPresetEl = DOM.btnExportSTPreset();
+  if (btnExportSTPresetEl) btnExportSTPresetEl.addEventListener('click', exportSTPreset);
   const btnDefaultChatPresetEl = DOM.btnDefaultChatPreset();
   if (btnDefaultChatPresetEl) btnDefaultChatPresetEl.addEventListener('click', setChatPresetDefault);
   const btnDeleteChatPresetEl = DOM.btnDeleteChatPreset();
@@ -1584,6 +1587,8 @@ function renderCharacterList() {
       renderLoadEarlierBar();
             AppState.userStatus = {};
             AppState.galleryImages = [];
+            AppState.cgGallery = [];
+            AppState._currentSaveId = '';
             DOM.welcomeScreen().classList.remove('hidden');
             DOM.chatContainer().classList.add('hidden');
             DOM.conversationTitle().textContent = '选择角色开始对话';
@@ -1728,14 +1733,18 @@ async function loadConversation(conversationId) {
     AppState.roundCounter = 0;
 
     // 先加载配置（名册、颜色、存档ID），再渲染消息
+    // 切存档/切对话先把 CG 状态清零：否则上一局的 CG 会留在 AppState.cgGallery 里继续当背景
+    // （本对话还没有存档记录、或画廊请求失败时，旧画廊会被误当成"本局背景"）
+    AppState.cgGallery = [];
+    AppState._currentSaveId = '';
     try {
       const saves = await SavesAPI.list().catch(() => []);
       const save = saves.find(s => s.conversation_id === conv.id);
       if (save) {
         AppState._currentSaveId = save.id;
-        // 加载 CG 画廊
+        // 加载 CG 画廊（只认本存档自己的画廊）
         const cgResp = await request('/saves/' + save.id + '/cg-gallery').catch(() => null);
-        if (cgResp && cgResp.gallery) {
+        if (cgResp && Array.isArray(cgResp.gallery)) {
           AppState.cgGallery = cgResp.gallery;
         }
       }
@@ -5481,6 +5490,9 @@ function renderGallery() {
 
   if (!hasContent) {
     if (empty) empty.classList.remove('hidden');
+    // 必须把 viewport 清空：vn-shell 的旧画廊兜底会扫这个 DOM 取 CG，
+    // 留着上一次渲染的 <img class="cg-image"> 就会把上一局的 CG 复活成背景
+    if (vp) vp.innerHTML = '';
     counter.textContent = '0 / 0';
     prev.disabled = true; next.disabled = true;
     return;
@@ -7628,6 +7640,8 @@ async function deleteCharacter(characterId) {
       renderLoadEarlierBar();
       AppState.userStatus = {};
       AppState.galleryImages = [];
+      AppState.cgGallery = [];
+      AppState._currentSaveId = '';
       DOM.welcomeScreen().classList.remove('hidden');
       DOM.chatContainer().classList.add('hidden');
       DOM.conversationTitle().textContent = '选择角色开始对话';
@@ -8626,6 +8640,50 @@ async function importSTPreset(e) {
     showToast('导入失败: ' + (err.message || '无效文件'), 'error');
   }
   e.target.value = '';
+}
+
+/**
+ * Export the selected chat preset as a **standard SillyTavern chat completion
+ * preset** (format details in server/st-preset.js), embedding the active API
+ * provider's source / URL / model so the file can be imported into SillyTavern
+ * directly.
+ *
+ * API keys are deliberately never written into the file: ST keeps credentials in
+ * its own secrets store and a preset is meant to be shareable.
+ */
+async function exportSTPreset() {
+  const sel = DOM.chatPresetSelect();
+  const id = sel ? sel.value : '';
+  if (!id) { showToast('请先选择一个预设', 'warning'); return; }
+
+  // Gather name + mapping report for feedback. Neither is allowed to block the
+  // actual download, so each failure is tolerated independently.
+  let name = 'preset';
+  let note = '';
+  try {
+    const preset = await PresetAPI.get(id);
+    if (preset && preset.name) name = preset.name;
+  } catch (err) { console.warn('[ST export] name lookup failed:', err); }
+
+  try {
+    const { report } = await PresetAPI.exportStMeta(id);
+    console.log('[ST export] mapping report:', report);
+    if (report && Array.isArray(report.unmappableSkipped) && report.unmappableSkipped.length > 0) {
+      note = '；' + report.unmappableSkipped.join('、') + ' 在 ST 聊天补全预设中无对应字段，已跳过';
+    }
+    if (report && report.source) {
+      note += '；供应商映射为 ST 源「' + report.source + '」';
+    }
+  } catch (err) { console.warn('[ST export] report unavailable:', err); }
+
+  const safe = String(name).replace(/[\\/:*?"<>|]+/g, '_').trim() || 'preset';
+  const a = document.createElement('a');
+  a.href = PresetAPI.exportStUrl(id);
+  a.download = safe + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  showToast('已导出 ST 格式预设（API Key 不含在内）' + note, 'success');
 }
 
 async function setChatPresetDefault() {
@@ -9695,6 +9753,8 @@ async function restartConversation() {
       AppState.userStatus = {};
       AppState.galleryImages = [];
       AppState.galleryIndex = 0;
+      AppState.cgGallery = [];
+      AppState._currentSaveId = '';
       clearDebugPanel();
 
       // 重新创建对话
@@ -9715,6 +9775,12 @@ async function restartConversation() {
       AppState.roundCounter = 0;
       AppState.galleryImages = [];
       AppState.galleryIndex = 0;
+      // 重开 = 回到「初次加载」的样子：本局的 CG 记录一并清掉，
+      // 否则旧 CG 会继续霸占背景，要等又生成一张新 CG 才换掉。
+      // 只清画廊索引，图片文件保留在存档目录里（不删盘上文件）。
+      const sid = getCurrentSaveId();
+      if (sid) await request('/saves/' + sid + '/cg-gallery', { method: 'DELETE' }).catch(() => {});
+      AppState.cgGallery = [];
       clearDebugPanel();
       DOM.messagesArea().innerHTML = '';
       renderGallery();

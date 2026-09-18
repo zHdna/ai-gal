@@ -139,7 +139,14 @@
     .app .sidebar {
       position: relative;
       flex: 0 0 64px;
-      z-index: 18;
+      /* 必须高于 HUD(25) 与 stage-x(26)：侧栏里的悬停提示框 .tip::after（自身 z-index 90）
+         是伪元素，只能活在 sidebar 自己的层叠上下文里 —— 祖先的 18 就是它的上限，自己写多大都没用。
+         侧栏首行的「展开游戏列表」按钮贴近顶部，提示框又是向上溢出（bottom:100%+8px），
+         正好探进 HUD 带，于是被 HUD 盖住。
+         抬高是安全的：.sidebar-panel 用 top:0/bottom:0 限在本盒内（起始于 HUD 之下，不重叠），
+         dock(22)/fab(21) 都在右下角，所以只改变提示框的层次，不动其它任何东西。
+         （与 HUD 抬到 25 是同一类问题的镜像：谁的悬停提示要显示，谁就得在上层。） */
+      z-index: 27;
       min-height: 0;
     }
 
@@ -158,6 +165,11 @@
       backdrop-filter: var(--glass);
       box-shadow: 0 14px 34px rgba(0, 0, 0, .34);
     }
+
+    /* 展开 / 收起改用纯箭头字符（▶ / ◀）：比 emoji 文件夹直观。
+       箭头是几何字形，同字号下比 emoji 小一圈，故单独放大，保持与相邻按钮一致的视觉重量。 */
+    .app #btnExpandSidebar { font-size: 26px; }
+    .app #btnCollapseSidebar { font-size: 18px; }
 
     /* 顶端图标（展开/新建/收起）：只做「变大 + emoji」，配色跟其它按钮一致（中性底 + 描边），
        不做金色软底/发光圈那种装饰。注：旧移动端样式 theater-enhance.css 用

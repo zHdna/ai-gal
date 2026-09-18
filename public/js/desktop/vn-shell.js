@@ -472,17 +472,41 @@
     var orig = window.applyChatBackground;
     window.applyChatBackground = function (v) {
       try {
-        var st = {
-          conv: (App.currentConversation && App.currentConversation.id) || '',
-          count: $$('#messagesArea .story-block').length,
-          value: v || ''
-        };
-        localStorage.setItem('vn.bgStamp', JSON.stringify(st));
-        bgStamp = st;
+        var conv = (App.currentConversation && App.currentConversation.id) || '';
+        /* 启动时 app.js 会重放上次的 script:bg，那时还没有当前对话（conv=''）。
+           这种重放绝不能写 stamp —— 否则会把「这条背景属于哪个存档」冲成空，
+           之后打开该存档就再也认不出它了（背景/隔离判断全靠 stamp.conv）。 */
+        if (conv) {
+          var st = {
+            conv: conv,
+            count: $$('#messagesArea .story-block').length,
+            value: v || ''
+          };
+          localStorage.setItem('vn.bgStamp', JSON.stringify(st));
+          bgStamp = st;
+        }
       } catch (e) { }
       return orig.apply(this, arguments);
     };
     window.__vnBgHooked = true;
+  }
+
+  /** 钩住 app.js 的画廊重画入口。
+      CG 生成完成后 app.js 的全部动作就是 startGalleryPoll →「AppState.cgGallery = 新列表; renderGallery();」，
+      而 renderGallery 只重画画廊那一栏（viewport / 计数 / 翻页钮），从不碰舞台 #cgImg ——
+      于是新 CG 要等到下一轮 syncFromDom → render() → syncStage() 才出现，
+      表现就是「CG 生成后不加载，进入下一轮才显示上一轮的」。
+      这里在画廊重画之后补一次舞台重算：画廊一更新，当前该显示哪张立刻跟着变。
+      （boot() 里的启动轮询也会调 syncStage，但它 800ms×40 ≈ 32s 后就停了，撑不住整局游戏。） */
+  function hookRenderGallery() {
+    if (window.__vnGalleryHooked || typeof window.renderGallery !== 'function') return;
+    var orig = window.renderGallery;
+    window.renderGallery = function () {
+      var r = orig.apply(this, arguments);
+      try { syncStage(); } catch (e) { }
+      return r;
+    };
+    window.__vnGalleryHooked = true;
   }
   /** 最新一张 CG：按【时间】取，不是按 DOM 顺序 ——
       历史坑：`App.cgGallery` 是「新的在前」，早先这里对旧画廊里的 <img> 取 .pop()（DOM 最后一张）
@@ -581,8 +605,17 @@
     return msgs.length ? msgs.length - 1 : 0;
   }
 
+  /** 有没有「正在演的这局」：没有对话 / 没有消息 → 舞台回到初次加载态（卡面或中性底），不放 CG。
+      否则上一局留在画廊里的 CG 会被 newestCg() 继续当成背景，要等又生成一张新 CG 才换掉。 */
+  function hasActiveStory() {
+    if (!(App.currentConversation && App.currentConversation.id)) return false;
+    if ((App.messages || []).length) return true;
+    return allBlocks().length > 0;
+  }
+
   /** 舞台最终用哪张：手动切换（上方箭头）优先 → 按文本分配 → 都没有才退回角色卡卡面 */
   function currentCg() {
+    if (!hasActiveStory()) return null;   /* 没进游戏 / 已退出游戏 → 不出图 */
     var t = cgTimeline();
     if (S.cgManual != null && t[S.cgManual]) {
       var m = t[S.cgManual];
@@ -647,9 +680,12 @@
     var conv = (App.currentConversation && App.currentConversation.id) || '';
     var url = '';
     if (bg) {
-      /* 只有「属于本存档、且应用得比最新 CG 更晚」的剧本背景才压过 CG */
-      if (!cg) url = bg;
-      else if (st && st.conv === conv && (parseInt(st.count, 10) || 0) >= cg.count) url = bg;
+      /* 剧本背景也必须「属于本存档」：换存档 / 没进游戏时，上一局 /bg 设的背景不能再出现
+         （bgStamp 记的是「哪个存档、第几楼之后」应用的；缺 stamp 的一律不认）。
+         只有属于本存档、且应用得比最新 CG 更晚的剧本背景才压过 CG。 */
+      var sameSave = !!(st && st.conv === conv);
+      if (!cg) { if (sameSave) url = bg; }
+      else if (sameSave && (parseInt(st.count, 10) || 0) >= cg.count) url = bg;
     }
     if (!url) url = cg ? cg.url : cardFace();
     if (url) {
@@ -678,7 +714,7 @@
     if (!segs.length) return;
 
     var fresh = false;
-    if (convId && convId !== S.convId) { S.convId = convId; fresh = true; S.reviewBlockId = null; resetCast(); }
+    if (convId && convId !== S.convId) { S.convId = convId; fresh = true; S.reviewBlockId = null; S.cgManual = null; S.cgKey = null; resetCast(); }
     if (S.forceFirst) { fresh = true; S.forceFirst = false; }
     var isNew = id !== S.blockId;
     var lenChanged = segs.length !== S.segs.length;
@@ -1091,8 +1127,11 @@
   function syncSidebarGlyph() {
     var sb = byId('leftSidebar');
     var b = byId('btnExpandSidebar');
-    /* 顶端图标：折叠态 📂（点开列表）/ 展开态 📁（收起），与设计稿一致 */
-    if (b && sb) b.textContent = sb.classList.contains('expanded') ? '📁' : '📂';
+    /* 顶端图标：折叠态 ▶（点开列表）/ 展开态 ◀（收起）。
+       原来是 emoji 文件夹（📂 折叠 / 📁 展开），两个字形状太接近、不易辨认，改成方向明确的箭头。
+       注意：这个字符是 JS 维护的（下面那个观察器会在侧栏 class 一变时重设），
+       光改 index.html 里的初始文字会被这里覆盖掉。 */
+    if (b && sb) b.textContent = sb.classList.contains('expanded') ? '◀' : '▶';
   }
   new MutationObserver(syncSidebarGlyph).observe(byId('leftSidebar') || app, { attributes: true, attributeFilter: ['class'] });
 
@@ -2334,37 +2373,19 @@
     }).observe(area, { childList: true, subtree: true, characterData: true });
   }
 
-  /* 开机自动接续最近的存档：VN 不该一上来是空舞台。
-     AppState.conversations 要等 app.js 自己load，所以这里直接问一次 /api/conversations。 */
+  /* 开机【不】自动接续存档：新启动服务器 = 「未加载角卡」的默认状态。
+     以前这里会自动接续最近一条存档，于是上一局的 CG 会跟着一起回来
+     —— 这正是「退出游戏后重开还是上一次那张 CG」的来源。 */
   var autoResumed = false;
-  function resumeInto(conv) {
-    autoResumed = true;
-    /* 只把角色卡状态放好（不触发 selectCharacter 的「自动载入最近存档」），再按 id 载入指定存档 */
-    setCurrentCharacter(conv.character_id).then(function () {
-      if (typeof window.loadConversation !== 'function') return;
-      return window.loadConversation(conv.id).then(function () {
-        toast('已接续最近存档：' + (conv.title || conv.save_id || ''));
-        lastSidebarConv = conv.id;
-        setTimeout(function () { syncFromDom(true); updateHeader(); syncStage(); }, 400);
-        setTimeout(refreshSidebar, 900);
-      });
-    }).catch(function (e) { console.warn('[VN] 自动接续失败', e); });
-  }
   function autoResume() {
     if (autoResumed) return;
     if (location.search.indexOf('conv=') >= 0) { autoResumed = true; return; }   /* app.js 自己会载入 */
     if (document.querySelector('#messagesArea .story-block')) { autoResumed = true; return; }
-    ensureConversations().then(function (list) {
-      if (autoResumed) return;
-      if (!list || !list.length) {
-        autoResumed = true;                         /* 真的没有存档：停在「选角色卡开始」的引导态 */
-        var x = byId('btnExpandSidebar');
-        var sb = byId('leftSidebar');
-        if (x && sb && !sb.classList.contains('expanded')) { x.click(); toast('还没有存档：选一张角色卡开始'); }
-        return;
-      }
-      resumeInto(list[0]);
-    });
+    autoResumed = true;
+    /* 停在「选角色卡开始」的引导态：展开左侧游戏列表，不碰任何存档 */
+    var x = byId('btnExpandSidebar');
+    var sb = byId('leftSidebar');
+    if (x && sb && !sb.classList.contains('expanded')) x.click();
   }
 
   /** URL 直链状态（调试 / 分享某个画面都靠它）：
@@ -2469,6 +2490,7 @@
     syncTts();
     clearDemoData();
     hookApplyBg();
+    hookRenderGallery();
     ensureConversations().then(function () { decorateConvRows(byId('characterList')); });
     observeMessages();
     render();

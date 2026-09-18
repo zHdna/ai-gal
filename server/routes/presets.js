@@ -3,6 +3,36 @@
  * Import/edit SillyTavern-compatible presets for chat & image generation
  */
 const { Router } = require('express');
+const { APP_KEYS } = require('../constants');
+const { buildSTPreset, presetFilename } = require('../st-preset');
+
+function safeParse(raw, fallback) {
+  try {
+    const v = JSON.parse(raw || '');
+    return v === null || v === undefined ? fallback : v;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Resolve which provider to embed in an exported preset.
+ * Mirrors the chat pipeline: app_settings.main_ai_provider_id, then is_default.
+ * @param {object} db
+ * @param {string|undefined} requestedId explicit ?provider= override
+ */
+function resolveExportProvider(db, requestedId) {
+  if (requestedId) {
+    const byId = db.prepare('SELECT * FROM api_providers WHERE id = ?').get(requestedId);
+    if (byId) return byId;
+  }
+  const main = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(APP_KEYS.MAIN_AI_PROVIDER_ID);
+  if (main && main.value) {
+    const bySetting = db.prepare('SELECT * FROM api_providers WHERE id = ?').get(main.value);
+    if (bySetting) return bySetting;
+  }
+  return db.prepare('SELECT * FROM api_providers WHERE is_default = 1 LIMIT 1').get() || null;
+}
 
 module.exports = (db) => {
   const router = Router();
@@ -21,6 +51,50 @@ module.exports = (db) => {
       data: JSON.parse(r.data || '{}'),
       enabled_params: JSON.parse(r.enabled_params || '[]')
     })));
+  });
+
+  // Export a preset as a standard SillyTavern chat completion preset.
+  //   GET /presets/:id/export            → downloadable .json (ST-importable)
+  //   GET /presets/:id/export?meta=1     → { preset, report } for previews/debug
+  //   GET /presets/:id/export?inline=1   → raw preset body, no attachment header
+  //   GET /presets/:id/export?provider=X → embed provider X instead of the active one
+  router.get('/:id/export', (req, res) => {
+    const row = db.prepare('SELECT * FROM api_presets WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Preset not found' });
+
+    // Only chat presets map onto ST's chat completion preset format, which is the
+    // one that carries API provider (source / URL / model) information.
+    if (row.preset_type && row.preset_type !== 'chat') {
+      return res.status(400).json({
+        error: 'Only chat presets have a standard SillyTavern format',
+        preset_type: row.preset_type,
+      });
+    }
+
+    const preset = {
+      ...row,
+      data: safeParse(row.data, {}),
+      enabled_params: safeParse(row.enabled_params, []),
+    };
+    const provider = resolveExportProvider(db, req.query.provider);
+    const { preset: body, report } = buildSTPreset(preset, provider);
+
+    if (req.query.meta === '1') {
+      return res.json({ preset: body, report });
+    }
+    if (req.query.inline === '1') {
+      return res.json(body);
+    }
+
+    const filename = presetFilename(row.name);
+    // ASCII fallback for old clients + RFC 5987 form so Chinese names survive.
+    const asciiName = filename.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+    );
+    res.send(JSON.stringify(body, null, 2));
   });
 
   // Get single preset

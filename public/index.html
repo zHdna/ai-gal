@@ -284,7 +284,7 @@
       <aside class="sidebar" id="leftSidebar">
         <!-- 折叠态竖条 -->
         <div class="sidebar-strip" id="sidebarStrip">
-          <button class="strip-toggle tip" id="btnExpandSidebar" data-tip="展开游戏列表">📂</button>
+          <button class="strip-toggle tip" id="btnExpandSidebar" data-tip="展开游戏列表">▶</button>
           <div class="strip-avatars" id="stripAvatars">
             <span class="strip-av on" data-demo="1" data-cast="0" style="background-image:none"></span>
             <span class="strip-av" data-demo="1" data-cast="1" style="background-image:none"></span>
@@ -299,7 +299,7 @@
             <h3>游戏列表</h3>
             <span class="spacer"></span>
             <button class="close-x tip" id="btnNewCharacter" data-tip="新建角色卡">➕</button>
-            <button class="close-x tip" id="btnCollapseSidebar" data-tip="收起侧栏">📁</button>
+            <button class="close-x tip" id="btnCollapseSidebar" data-tip="收起侧栏">◀</button>
           </div>
 
           <div class="side-tags" id="characterTagsBar">
@@ -1582,6 +1582,7 @@ confidence = 0.88</pre>
           <select id="chatPresetSelect" class="setting-select"></select>
           <div style="display:flex;gap:6px;margin-top:8px">
             <button class="btn btn-sm" id="btnImportSTPreset">导入 ST 预设</button>
+            <button class="btn btn-sm" id="btnExportSTPreset" title="导出为标准 SillyTavern 聊天补全预设（含当前 API 供应商，不含 API Key）">导出 ST 预设</button>
             <button class="btn btn-sm" id="btnDefaultChatPreset">设为默认</button>
             <button class="btn btn-sm btn-danger" id="btnDeleteChatPreset">删除</button>
           </div>

@@ -199,6 +199,22 @@ const PresetAPI = {
   setDefault(id) {
     return request('/presets/' + id + '/set-default', { method: 'POST' });
   },
+  /**
+   * 导出为**标准 SillyTavern 聊天补全预设**的下载地址。
+   * 服务端已附带 Content-Disposition，直接挂到 <a download> 上即可。
+   */
+  exportStUrl(id, opts = {}) {
+    const q = new URLSearchParams();
+    if (opts.provider) q.set('provider', opts.provider);
+    const qs = q.toString();
+    return `${API_BASE}/presets/${encodeURIComponent(id)}/export${qs ? '?' + qs : ''}`;
+  },
+  /** 导出映射报告：生成了哪些 ST 字段、丢弃了哪些、用的哪个供应商。 */
+  exportStMeta(id, opts = {}) {
+    const q = new URLSearchParams({ meta: '1' });
+    if (opts.provider) q.set('provider', opts.provider);
+    return request(`/presets/${encodeURIComponent(id)}/export?${q.toString()}`);
+  },
 };
 
 // ============ Characters ============

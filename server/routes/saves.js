@@ -421,6 +421,26 @@ module.exports = (db) => {
     }
   });
 
+  // Clear the whole CG gallery of a save — used when a game is restarted, so the
+  // stage returns to its initial state instead of the previous run's last CG.
+  // Only the gallery index is reset; the generated image files are kept on disk.
+  router.delete('/:id/cg-gallery', (req, res) => {
+    const save = db.prepare('SELECT * FROM saves WHERE id = ?').get(req.params.id);
+    if (!save) return res.status(404).json({ error: 'Save not found' });
+    const gp = path.join(save.save_path, 'cg_gallery.json');
+    let removed = 0;
+    try {
+      const gallery = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      removed = Array.isArray(gallery) ? gallery.length : 0;
+    } catch { /* no gallery file yet — nothing to clear */ }
+    try {
+      fs.writeFileSync(gp, '[]', 'utf-8');
+      res.json({ message: 'CG gallery cleared', removed, filesKept: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to clear gallery' });
+    }
+  });
+
   // Delete CG from gallery
   router.delete('/:id/cg-gallery/:index', (req, res) => {
     const save = db.prepare('SELECT * FROM saves WHERE id = ?').get(req.params.id);

@@ -88,7 +88,9 @@
 - **世界书**：`character_book` 条目、关键词 / 常驻 / 关闭三种激活模式，见 `WORLDBOOK_ACTIVATION_GUIDE.md`；
 - **STscript**：脚本命令与脚本变量（全局 / 会话级）；
 - **变量标记**：`<UpdateVariables>`、`<json_patch>`（RFC 6902）、SAM 风格等常见写法的识别与状态检视；
-- **提示词字段**：系统提示词、历史后置指令、对话示例、`creator_notes` 等照常生效。
+- **提示词字段**：系统提示词、历史后置指令、对话示例、`creator_notes` 等照常生效；
+- **API 预设**：导入 / 导出 SillyTavern 的聊天补全预设（字段名与 ST 完全一致，可直接被 ST 导入），
+  导出时自动带上当前 API 供应商（源 / 地址 / 模型）；出于安全考虑**不包含 API Key**。
 
 ### 与 SillyTavern 的区别和优势
 
