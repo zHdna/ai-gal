@@ -8747,9 +8747,41 @@ function saveSpFromPanel() {
 
 // ============ 图像生成设置 ============
 
-// ============ OpenAI 兼容生图附加设置（生图模型 / 质量前缀 / 图片尺寸） ============
-// 生成「生图模型 + 提示词质量前缀 + 图片尺寸」三块控件 HTML（仅 OpenAI/Stability 模式显示）
-function imageOpenAISettingsHtml(s) {
+// ============ 生图引擎（默认 anima-turbo-cg） ============
+// anima-turbo-cg 是默认的极简本地生图引擎（stable-diffusion.cpp，OpenAI 兼容，端口 8100）。
+// 权威默认值在服务端 server/constants.js 的 ANIMA_PRESET；这里是前端在字段为空时的展示回退。
+const ANIMA_DEFAULTS = {
+  api_url: 'http://127.0.0.1:8100/v1/images/generations',
+  api_key: 'local',
+  api_model: 'sd-cpp-local',
+  image_size: '1024x1024',
+};
+// 需要「API 地址 / Key / 模型」这一组字段的引擎
+const API_IMAGE_MODES = ['anima', 'openai', 'stability'];
+const hasApiEndpoint = (m) => API_IMAGE_MODES.includes(m);
+const hasComfyGroup = (m) => m === 'comfyui' || m === 'none';
+
+/**
+ * 计算要展示/保存的 API 字段。anima 引擎自带默认端点，即使数据库里是空的也能开箱即用。
+ */
+function effectiveApiSettings(s) {
+  const src = s || {};
+  const isAnima = (src.mode || 'anima') === 'anima';
+  const pick = (v, fb) => ((typeof v === 'string' && v.trim()) ? v.trim() : (isAnima ? fb : ''));
+  return {
+    api_url: pick(src.api_url, ANIMA_DEFAULTS.api_url),
+    api_key: pick(src.api_key, ANIMA_DEFAULTS.api_key),
+    api_model: pick(src.api_model, ANIMA_DEFAULTS.api_model),
+    image_size: (src.image_size || (isAnima ? ANIMA_DEFAULTS.image_size : '')),
+  };
+}
+
+function imageOpenAISettingsHtml(rawSettings) {
+  // 生成「生图模型 + 提示词质量前缀 + 图片尺寸」三块控件 HTML
+  // （OpenAI / Stability / anima-turbo-cg 三种模式共用，都是 API 端点式引擎）
+  // anima-turbo-cg 的模型/尺寸有内置默认值，字段为空时也要显示出来（否则用户面对空白下拉框）
+  const eff = effectiveApiSettings(rawSettings);
+  const s = Object.assign({}, rawSettings, { api_model: eff.api_model, image_size: eff.image_size });
   const m = (s.api_model || '').trim();
   const q = s.quality_prefix || '';
   const sz = s.image_size || '';
@@ -8909,15 +8941,19 @@ function resolveOpenAIValues(root) {
 
 function renderImageGenSettings() {
   ImageAPI.get().then(s => {
+    const mode = s.mode || 'anima';
+    const eff = effectiveApiSettings(Object.assign({}, s, { mode }));
     DOM.imageGenSettings().innerHTML = `
       <div class="form-group">
         <label>生成引擎</label>
         <select id="genMode" class="setting-select">
-          <option value="comfyui" ${s.mode === 'comfyui' ? 'selected' : ''}>ComfyUI (本地)</option>
-          <option value="openai" ${s.mode === 'openai' ? 'selected' : ''}>OpenAI DALL-E / 兼容 API</option>
-          <option value="stability" ${s.mode === 'stability' ? 'selected' : ''}>Stability AI</option>
-          <option value="none" ${s.mode === 'none' ? 'selected' : ''}>关闭生图</option>
+          <option value="anima" ${mode === 'anima' ? 'selected' : ''}>anima-turbo-cg（极简本地生图·默认）</option>
+          <option value="comfyui" ${mode === 'comfyui' ? 'selected' : ''}>ComfyUI（画质最佳·需工作流）</option>
+          <option value="openai" ${mode === 'openai' ? 'selected' : ''}>OpenAI DALL-E / 兼容 API</option>
+          <option value="stability" ${mode === 'stability' ? 'selected' : ''}>Stability AI</option>
+          <option value="none" ${mode === 'none' ? 'selected' : ''}>关闭生图</option>
         </select>
+        <small style="color:var(--text-muted)">默认走 anima-turbo-cg（极简模式，需另启该服务，见 README）。追求更好画质请选 ComfyUI 并配置工作流。</small>
       </div>
       <div class="form-group">
         <label>提示词模式</label>
@@ -8926,24 +8962,25 @@ function renderImageGenSettings() {
           <option value="natural" ${s.gen_mode === 'natural' ? 'selected' : ''}>自然语言模式</option>
         </select>
       </div>
-      <div class="form-group" id="comfyuiGroup" style="display:${s.mode === 'comfyui' || s.mode === 'none' ? 'block' : 'none'}">
+      <div class="form-group" id="comfyuiGroup" style="display:${hasComfyGroup(mode) ? 'block' : 'none'}">
         <label>ComfyUI 地址</label>
-        <input type="text" id="comfyuiUrl" class="setting-input" value="${escapeHtml(s.comfyui_url || 'http://127.0.0.1:8100')}">
+        <input type="text" id="comfyuiUrl" class="setting-input" value="${escapeHtml(s.comfyui_url || 'http://127.0.0.1:8188')}">
       </div>
-      <div class="form-group" id="apiGroup" style="display:${s.mode === 'openai' || s.mode === 'stability' ? 'block' : 'none'}">
+      <div class="form-group" id="apiGroup" style="display:${hasApiEndpoint(mode) ? 'block' : 'none'}">
         <label>API 地址</label>
-        <input type="text" id="apiUrl" class="setting-input" value="${escapeHtml(s.api_url || '')}" placeholder="https://api.openai.com/v1/images/generations">
+        <input type="text" id="apiUrl" class="setting-input" value="${escapeHtml(eff.api_url)}" placeholder="https://api.openai.com/v1/images/generations">
         <label style="margin-top:6px">API Key</label>
-        <input type="password" id="apiKey" class="setting-input" value="${escapeHtml(s.api_key || '')}">
-        ${imageOpenAISettingsHtml(s)}
+        <input type="password" id="apiKey" class="setting-input" value="${escapeHtml(eff.api_key)}">
+        ${imageOpenAISettingsHtml(Object.assign({}, s, { mode }))}
       </div>
       <button class="btn btn-sm" id="btnSaveImageGenSettings" style="margin-top:8px">保存图像设置</button>
     `;
 
     DOM.imageGenSettings().querySelector('#genMode').addEventListener('change', (e) => {
       const v = e.target.value;
-      DOM.imageGenSettings().querySelector('#comfyuiGroup').style.display = (v === 'comfyui' || v === 'none') ? 'block' : 'none';
-      DOM.imageGenSettings().querySelector('#apiGroup').style.display = (v === 'openai' || v === 'stability') ? 'block' : 'none';
+      DOM.imageGenSettings().querySelector('#comfyuiGroup').style.display = hasComfyGroup(v) ? 'block' : 'none';
+      DOM.imageGenSettings().querySelector('#apiGroup').style.display = hasApiEndpoint(v) ? 'block' : 'none';
+      prefillApiFieldsForMode(DOM.imageGenSettings(), v);
     });
     wireOpenAICustom(DOM.imageGenSettings());
 
@@ -8951,7 +8988,7 @@ function renderImageGenSettings() {
       const mode = DOM.imageGenSettings().querySelector('#genMode').value;
       const genMode = DOM.imageGenSettings().querySelector('#genPromptMode').value;
       const data = { mode, gen_mode: genMode };
-      if (mode === 'comfyui' || mode === 'none') {
+      if (hasComfyGroup(mode)) {
         data.comfyui_url = DOM.imageGenSettings().querySelector('#comfyuiUrl').value;
       } else {
         data.api_url = DOM.imageGenSettings().querySelector('#apiUrl').value;
@@ -8966,6 +9003,30 @@ function renderImageGenSettings() {
       }
     });
   }).catch(console.error);
+}
+
+/**
+ * 切到 anima-turbo-cg 时，把内置默认端点写进空字段，避免用户看到空白的 URL/模型/尺寸。
+ * 已有内容（用户自己填过的）一律不覆盖。
+ */
+function prefillApiFieldsForMode(root, mode) {
+  if (!root || mode !== 'anima') return;
+  const url = root.querySelector('#apiUrl') || root.querySelector('#imageApiUrl');
+  const key = root.querySelector('#apiKey') || root.querySelector('#imageApiKey');
+  const modelSel = root.querySelector('#apiModel');
+  const modelCustom = root.querySelector('#apiModelCustom');
+  const sizeSel = root.querySelector('#imageSize');
+  const sizeCustom = root.querySelector('#imageSizeCustom');
+  if (url && !url.value.trim()) url.value = ANIMA_DEFAULTS.api_url;
+  if (key && !key.value.trim()) key.value = ANIMA_DEFAULTS.api_key;
+  if (modelSel && modelCustom) {
+    const current = modelSel.value === '__custom__' ? modelCustom.value.trim() : modelSel.value;
+    if (!current) { modelSel.value = '__custom__'; modelCustom.value = ANIMA_DEFAULTS.api_model; modelCustom.style.display = 'block'; }
+  }
+  if (sizeSel && sizeCustom) {
+    const current = sizeSel.value === '__custom__' ? sizeCustom.value.trim() : sizeSel.value;
+    if (!current) { sizeSel.value = ANIMA_DEFAULTS.image_size; sizeCustom.style.display = 'none'; }
+  }
 }
 
 // ============ BGM 播放器 ============
@@ -9121,39 +9182,43 @@ function openImageGenSettingsInPanel() {
 
   ImageAPI.get().then(s => {
     const div = popup.querySelector('#imageSettingsContent');
+    const mode = s.mode || 'anima';
+    const eff = effectiveApiSettings(Object.assign({}, s, { mode }));
     div.innerHTML = `
       <div class="form-group"><label>生成引擎</label>
         <select id="genMode" class="setting-select">
-          <option value="comfyui" ${s.mode === 'comfyui' ? 'selected' : ''}>ComfyUI</option>
-          <option value="openai" ${s.mode === 'openai' ? 'selected' : ''}>OpenAI</option>
-          <option value="stability" ${s.mode === 'stability' ? 'selected' : ''}>Stability</option>
-          <option value="none" ${s.mode === 'none' ? 'selected' : ''}>关闭</option>
+          <option value="anima" ${mode === 'anima' ? 'selected' : ''}>anima-turbo-cg（极简·默认）</option>
+          <option value="comfyui" ${mode === 'comfyui' ? 'selected' : ''}>ComfyUI（画质最佳）</option>
+          <option value="openai" ${mode === 'openai' ? 'selected' : ''}>OpenAI</option>
+          <option value="stability" ${mode === 'stability' ? 'selected' : ''}>Stability</option>
+          <option value="none" ${mode === 'none' ? 'selected' : ''}>关闭</option>
         </select></div>
       <div class="form-group"><label>提示词模式</label>
         <select id="genPromptMode" class="setting-select">
           <option value="tag" ${(s.gen_mode || 'tag') === 'tag' ? 'selected' : ''}>关键词Tag模式</option>
           <option value="natural" ${s.gen_mode === 'natural' ? 'selected' : ''}>自然语言模式</option>
         </select></div>
-      <div class="form-group" id="comfyuiGroup" style="display:${s.mode === 'comfyui' || s.mode === 'none' ? 'block' : 'none'}">
+      <div class="form-group" id="comfyuiGroup" style="display:${hasComfyGroup(mode) ? 'block' : 'none'}">
         <label>ComfyUI 地址</label>
-        <input type="text" id="comfyuiUrl" class="setting-input" value="${escapeHtml(s.comfyui_url || 'http://127.0.0.1:8100')}"></div>
-      <div class="form-group" id="apiGroup" style="display:${s.mode === 'openai' || s.mode === 'stability' ? 'block' : 'none'}">
+        <input type="text" id="comfyuiUrl" class="setting-input" value="${escapeHtml(s.comfyui_url || 'http://127.0.0.1:8188')}"></div>
+      <div class="form-group" id="apiGroup" style="display:${hasApiEndpoint(mode) ? 'block' : 'none'}">
         <label>API 地址/Key</label>
-        <input type="text" id="apiUrl" class="setting-input" value="${escapeHtml(s.api_url || '')}" placeholder="API URL">
-        <input type="password" id="apiKey" class="setting-input" value="${escapeHtml(s.api_key || '')}" placeholder="API Key" style="margin-top:4px">
-        ${imageOpenAISettingsHtml(s)}</div>
+        <input type="text" id="apiUrl" class="setting-input" value="${escapeHtml(eff.api_url)}" placeholder="API URL">
+        <input type="password" id="apiKey" class="setting-input" value="${escapeHtml(eff.api_key)}" placeholder="API Key" style="margin-top:4px">
+        ${imageOpenAISettingsHtml(Object.assign({}, s, { mode }))}</div>
       <button class="btn btn-sm" id="btnSaveImgPopup" style="margin-top:8px">保存</button>`;
 
     div.querySelector('#genMode').addEventListener('change', e => {
-      div.querySelector('#comfyuiGroup').style.display = (e.target.value === 'comfyui' || e.target.value === 'none') ? 'block' : 'none';
-      div.querySelector('#apiGroup').style.display = (e.target.value === 'openai' || e.target.value === 'stability') ? 'block' : 'none';
+      div.querySelector('#comfyuiGroup').style.display = hasComfyGroup(e.target.value) ? 'block' : 'none';
+      div.querySelector('#apiGroup').style.display = hasApiEndpoint(e.target.value) ? 'block' : 'none';
+      prefillApiFieldsForMode(div, e.target.value);
     });
     wireOpenAICustom(div);
     div.querySelector('#btnSaveImgPopup').addEventListener('click', async () => {
       const m = div.querySelector('#genMode').value;
       const gm = div.querySelector('#genPromptMode').value;
       const d = { mode: m, gen_mode: gm };
-      if (m === 'comfyui' || m === 'none') d.comfyui_url = div.querySelector('#comfyuiUrl').value;
+      if (hasComfyGroup(m)) d.comfyui_url = div.querySelector('#comfyuiUrl').value;
       else { d.api_url = div.querySelector('#apiUrl').value; d.api_key = div.querySelector('#apiKey').value; Object.assign(d, resolveOpenAIValues(div)); }
       try { await ImageAPI.update(d); showToast('图像设置已保存', 'success'); popup.remove(); }
       catch { showToast('保存失败', 'error'); }
@@ -9270,17 +9335,20 @@ function renderImageSettings() {
 
   ImageAPI.get().then(settings => {
     const s = settings || {};
-    const mode = s.mode || 'comfyui';
+    const mode = s.mode || 'anima';
     const genMode = s.gen_mode || 'tag';
+    const eff = effectiveApiSettings(Object.assign({}, s, { mode }));
     container.innerHTML = `
       <div class="setting-row" style="flex-direction:column;align-items:flex-start">
         <label>生成引擎</label>
         <select id="imageMode" class="setting-select">
-          <option value="comfyui" ${mode === 'comfyui' ? 'selected' : ''}>ComfyUI (本地)</option>
+          <option value="anima" ${mode === 'anima' ? 'selected' : ''}>anima-turbo-cg（极简本地生图·默认）</option>
+          <option value="comfyui" ${mode === 'comfyui' ? 'selected' : ''}>ComfyUI（画质最佳·需工作流）</option>
           <option value="openai" ${mode === 'openai' ? 'selected' : ''}>OpenAI DALL-E / 兼容 API</option>
           <option value="stability" ${mode === 'stability' ? 'selected' : ''}>Stability AI</option>
           <option value="none" ${mode === 'none' ? 'selected' : ''}>关闭生图</option>
         </select>
+        <small style="color:var(--text-muted)">默认 anima-turbo-cg：极简模式，解压即用、无 Python/ComfyUI（需先启动该服务，见 README）。想要更好的图像质量，请改装 ComfyUI 并配置工作流。</small>
       </div>
       <div class="setting-row" style="flex-direction:column;align-items:flex-start">
         <label>提示词模式</label>
@@ -9290,23 +9358,23 @@ function renderImageSettings() {
         </select>
         <small style="color:var(--text-muted)">Tag模式：主AI和管家AI以标签组织生图提示词；自然语言模式：以完整句子描述场景</small>
       </div>
-      <div id="imageComfyuiGroup" style="display:${mode === 'comfyui' || mode === 'none' ? 'block' : 'none'}">
+      <div id="imageComfyuiGroup" style="display:${hasComfyGroup(mode) ? 'block' : 'none'}">
         <div class="setting-row" style="flex-direction:column;align-items:flex-start">
           <label>ComfyUI 服务器地址</label>
-          <input type="text" id="imageComfyuiUrl" value="${escapeHtml(s.comfyui_url || 'http://127.0.0.1:8100')}" class="setting-input" style="width:100%" placeholder="http://127.0.0.1:8100">
+          <input type="text" id="imageComfyuiUrl" value="${escapeHtml(s.comfyui_url || 'http://127.0.0.1:8188')}" class="setting-input" style="width:100%" placeholder="http://127.0.0.1:8188">
           <small style="color:var(--text-muted)">用于角色头像和CG生成</small>
         </div>
       </div>
-      <div id="imageApiGroup" style="display:${mode === 'openai' || mode === 'stability' ? 'block' : 'none'}">
+      <div id="imageApiGroup" style="display:${hasApiEndpoint(mode) ? 'block' : 'none'}">
         <div class="setting-row" style="flex-direction:column;align-items:flex-start">
           <label>API 地址</label>
-          <input type="text" id="imageApiUrl" value="${escapeHtml(s.api_url || '')}" class="setting-input" style="width:100%" placeholder="https://api.openai.com/v1/images/generations">
+          <input type="text" id="imageApiUrl" value="${escapeHtml(eff.api_url)}" class="setting-input" style="width:100%" placeholder="https://api.openai.com/v1/images/generations">
         </div>
         <div class="setting-row" style="flex-direction:column;align-items:flex-start">
           <label>API Key</label>
-          <input type="password" id="imageApiKey" value="${escapeHtml(s.api_key || '')}" class="setting-input" style="width:100%" placeholder="sk-...">
+          <input type="password" id="imageApiKey" value="${escapeHtml(eff.api_key)}" class="setting-input" style="width:100%" placeholder="anima-turbo-cg 填 local 即可">
         </div>
-        ${imageOpenAISettingsHtml(s)}
+        ${imageOpenAISettingsHtml(Object.assign({}, s, { mode }))}
       </div>
 
       <hr style="border-color:var(--glass-border);margin:16px 0">
@@ -9382,8 +9450,9 @@ function renderImageSettings() {
         const v = modeSelect.value;
         const comfyuiGroup = document.getElementById('imageComfyuiGroup');
         const apiGroup = document.getElementById('imageApiGroup');
-        if (comfyuiGroup) comfyuiGroup.style.display = (v === 'comfyui' || v === 'none') ? 'block' : 'none';
-        if (apiGroup) apiGroup.style.display = (v === 'openai' || v === 'stability') ? 'block' : 'none';
+        if (comfyuiGroup) comfyuiGroup.style.display = hasComfyGroup(v) ? 'block' : 'none';
+        if (apiGroup) apiGroup.style.display = hasApiEndpoint(v) ? 'block' : 'none';
+        prefillApiFieldsForMode(container, v);
       });
     }
     wireOpenAICustom(container);
@@ -9393,7 +9462,7 @@ function renderImageSettings() {
     if (saveBtn) {
       saveBtn.addEventListener('click', async () => {
         try {
-          const m = document.getElementById('imageMode')?.value || 'comfyui';
+          const m = document.getElementById('imageMode')?.value || 'anima';
           const g = document.getElementById('imageGenMode')?.value || 'tag';
           const data = {
             mode: m,
@@ -9409,8 +9478,8 @@ function renderImageSettings() {
             cg_workflow: document.getElementById('imageCGWorkflow')?.value.trim() || '',
             portrait_workflow: document.getElementById('imagePortraitWorkflow')?.value.trim() || '',
           };
-          if (m === 'comfyui' || m === 'none') {
-            data.comfyui_url = document.getElementById('imageComfyuiUrl')?.value || 'http://127.0.0.1:8100';
+          if (hasComfyGroup(m)) {
+            data.comfyui_url = document.getElementById('imageComfyuiUrl')?.value || 'http://127.0.0.1:8188';
           } else {
             data.api_url = document.getElementById('imageApiUrl')?.value || '';
             data.api_key = document.getElementById('imageApiKey')?.value || '';
@@ -9430,7 +9499,7 @@ function renderImageSettings() {
 
 async function saveImageSettings() {
   try {
-    const mode = document.getElementById('imageMode')?.value || 'comfyui';
+    const mode = document.getElementById('imageMode')?.value || 'anima';
     const genMode = document.getElementById('imageGenMode')?.value || 'tag';
     const data = {
       mode,
@@ -9446,8 +9515,8 @@ async function saveImageSettings() {
       cg_workflow: document.getElementById('imageCGWorkflow')?.value.trim() || '',
       portrait_workflow: document.getElementById('imagePortraitWorkflow')?.value.trim() || '',
     };
-    if (mode === 'comfyui' || mode === 'none') {
-      data.comfyui_url = document.getElementById('imageComfyuiUrl')?.value || 'http://127.0.0.1:8100';
+    if (hasComfyGroup(mode)) {
+      data.comfyui_url = document.getElementById('imageComfyuiUrl')?.value || 'http://127.0.0.1:8188';
     } else {
       data.api_url = document.getElementById('imageApiUrl')?.value || '';
       data.api_key = document.getElementById('imageApiKey')?.value || '';

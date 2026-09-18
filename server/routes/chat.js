@@ -252,12 +252,12 @@ function normalizeImageTags(prompt, portraitData) {
 // Extracts tags from roster entry fields (性别→上衣) and builds portrait prompt
 const PORTRAIT_QUALITY_PREFIX = 'masterpiece,+best_quality,+ultra_detailed,';
 
-// Helper: get image settings with defaults
+// Helper: get image settings with defaults (default engine = anima-turbo-cg)
 function getImageSettings(db) {
   try {
     const s = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
-    return s || { mode: 'comfyui', gen_mode: 'tag' };
-  } catch { return { mode: 'comfyui', gen_mode: 'tag' }; }
+    return s || { mode: 'anima', gen_mode: 'tag' };
+  } catch { return { mode: 'anima', gen_mode: 'tag' }; }
 }
 
 // Helper: get quality prefix for portrait (custom overrides default)

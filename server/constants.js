@@ -18,6 +18,43 @@ exports.APP_KEYS = {
   BUTLER_AI_PRESET_ID: 'butler_ai_preset_id',
 };
 
+// ── Image engines ──
+// `image_settings.mode` accepts:
+//   anima      — anima-turbo-cg, a minimal single-model local service (stable-diffusion.cpp)
+//                speaking the OpenAI images API on 127.0.0.1:8100.  DEFAULT.
+//   comfyui    — full ComfyUI instance + user-supplied workflow JSON (best quality)
+//   openai     — any OpenAI-compatible online/offline images API
+//   stability  — Stability AI format
+//   none       — image generation disabled (profile placeholders only)
+exports.IMAGE_MODES = ['anima', 'comfyui', 'openai', 'stability', 'none'];
+
+// Modes served by generateViaOpenAI() (`anima` is an OpenAI-compatible endpoint too).
+exports.OPENAI_COMPATIBLE_MODES = ['anima', 'openai'];
+// Modes that talk to a third-party endpoint instead of a local ComfyUI graph.
+exports.EXTERNAL_IMAGE_MODES = ['anima', 'openai', 'stability'];
+
+// anima-turbo-cg preset — the single source of truth for its endpoint contract.
+// The service ignores the API key, but AI-GAL requires a non-empty one.
+exports.ANIMA_PRESET = {
+  MODE: 'anima',
+  API_URL: 'http://127.0.0.1:8100/v1/images/generations',
+  API_KEY: 'local',
+  API_MODEL: 'sd-cpp-local',
+  // Anima-Turbo is a distilled model: 1024² is its native resolution.
+  IMAGE_SIZE: '1024x1024',
+  // sd.cpp answers synchronously.  A GPU box finishes in ~4 s, but a CPU-only box
+  // needs minutes for 1024² (512²/6 steps ≈ 73 s), so the default 120 s cloud
+  // timeout would abort perfectly healthy requests.
+  TIMEOUT_MS: 600000,
+};
+
+// Timeout for third-party image APIs (OpenAI / Stability).
+exports.EXTERNAL_API_TIMEOUT_MS = 120000;
+
+// ComfyUI's own default port.  ComfyUI is a separate engine from anima-turbo-cg,
+// so it must NOT default to 8100.
+exports.DEFAULT_COMFYUI_URL = 'http://127.0.0.1:8188';
+
 // ── File names ──
 exports.EVENT_LOG_FILE = 'event_log.md';
 exports.ROSTER_FILE = 'character_roster.json';

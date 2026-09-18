@@ -190,13 +190,17 @@ function initDatabase() {
   }
 
   // --- Image Generation Settings ---
+  // Default engine is anima-turbo-cg (minimal single-model local service on port 8100,
+  // OpenAI-compatible).  ComfyUI remains the higher-quality option and is a separate
+  // engine on its own port (8188).  See README §五.2.
+  const ANIMA = require('../constants').ANIMA_PRESET;
   db.exec(`
     CREATE TABLE IF NOT EXISTS image_settings (
       id                        TEXT PRIMARY KEY DEFAULT 'default',
-      mode                      TEXT DEFAULT 'none',           -- none | comfyui | openai | stability
+      mode                      TEXT DEFAULT '${ANIMA.MODE}',  -- anima | comfyui | openai | stability | none
       comfyui_url               TEXT DEFAULT 'http://127.0.0.1:8188',
-      api_url                   TEXT DEFAULT '',
-      api_key                   TEXT DEFAULT '',
+      api_url                   TEXT DEFAULT '${ANIMA.API_URL}',
+      api_key                   TEXT DEFAULT '${ANIMA.API_KEY}',
       model                     TEXT DEFAULT 'flux',
       workflow_id               TEXT DEFAULT '',
       custom_params             TEXT DEFAULT '{}',             -- JSON string
@@ -209,9 +213,9 @@ function initDatabase() {
       cg_negative_node          TEXT DEFAULT '',               -- CG负向提示词节点ID
       portrait_negative_prompt  TEXT DEFAULT '',               -- 头像自定义负向提示词
       cg_negative_prompt        TEXT DEFAULT '',               -- CG自定义负向提示词
-      api_model                 TEXT DEFAULT 'dall-e-3',        -- OpenAI兼容生图模型
+      api_model                 TEXT DEFAULT '${ANIMA.API_MODEL}', -- OpenAI兼容/anima 生图模型
       quality_prefix            TEXT DEFAULT '',               -- OpenAI兼容模式提示词质量前缀
-      image_size                TEXT DEFAULT '1024x1024'        -- OpenAI兼容模式图片尺寸
+      image_size                TEXT DEFAULT '${ANIMA.IMAGE_SIZE}' -- OpenAI兼容/anima 图片尺寸
     )
   `);
 
@@ -233,6 +237,22 @@ function initDatabase() {
       db.prepare(`ALTER TABLE image_settings ADD COLUMN ${col} TEXT DEFAULT ''`).run();
     } catch (e) { /* Column already exists */ }
   }
+
+  // Migrate pre-anima databases that still hold the untouched legacy default row.
+  // The guard is deliberately narrow: `mode='none'` AND no API endpoint AND ComfyUI
+  // still on its factory URL — i.e. the user never configured image generation at all.
+  // Any deliberate choice (a real ComfyUI/API URL, a saved key) is left alone.
+  try {
+    db.prepare(`
+      UPDATE image_settings
+         SET mode = ?, api_url = ?, api_key = ?, api_model = ?, image_size = ?
+       WHERE id = 'default'
+         AND (mode IS NULL OR mode = 'none')
+         AND COALESCE(api_url, '') = ''
+         AND COALESCE(api_key, '') = ''
+         AND COALESCE(comfyui_url, 'http://127.0.0.1:8188') = 'http://127.0.0.1:8188'
+    `).run(ANIMA.MODE, ANIMA.API_URL, ANIMA.API_KEY, ANIMA.API_MODEL, ANIMA.IMAGE_SIZE);
+  } catch (e) { /* Nothing to migrate */ }
 
   // --- App Settings (key-value store) ---
   db.exec(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT DEFAULT '')`);

@@ -5,7 +5,7 @@ const { Router } = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
-const { SETTINGS_ID } = require('../constants');
+const { SETTINGS_ID, ANIMA_PRESET, OPENAI_COMPATIBLE_MODES, EXTERNAL_IMAGE_MODES, EXTERNAL_API_TIMEOUT_MS, DEFAULT_COMFYUI_URL } = require('../constants');
 const { isPathWithin } = require('../utils/pathGuard');
 const savePaths = require('../savePaths');
 const { isUrlSafe } = require('../utils/urlGuard');
@@ -22,7 +22,30 @@ const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const PROFILE_DIR = path.join(PROJECT_ROOT, 'profile');
 const DEFAULT_WORKFLOW_CG = 'GALCG.json';
 const DEFAULT_WORKFLOW_PORTRAIT = 'portrait_x.json';
-const DEFAULT_COMFYUI_URL = 'http://127.0.0.1:8100';
+// ComfyUI is a distinct engine from anima-turbo-cg (which owns 8100), so it keeps 8188.
+// DEFAULT_COMFYUI_URL is imported from ../constants (single source of truth).
+
+/**
+ * Resolve the effective endpoint for an external image engine.
+ *
+ * anima-turbo-cg is the built-in default engine, so its endpoint/model must survive a
+ * blank settings row (fresh install, cleared field, or an API-Key field a browser
+ * refused to prefill).  `openai` / `stability` keep their "user must configure it"
+ * behaviour and are returned blank when unset.
+ */
+function resolveExternalEndpoint(genMode, settings) {
+  const isAnima = genMode === ANIMA_PRESET.MODE;
+  const pick = (value, fallback) => {
+    const v = typeof value === 'string' ? value.trim() : '';
+    return v || (isAnima ? fallback : '');
+  };
+  return {
+    apiUrl: pick(settings && settings.api_url, ANIMA_PRESET.API_URL),
+    apiKey: pick(settings && settings.api_key, ANIMA_PRESET.API_KEY),
+    apiModel: pick(settings && settings.api_model, ANIMA_PRESET.API_MODEL),
+    timeoutMs: isAnima ? ANIMA_PRESET.TIMEOUT_MS : EXTERNAL_API_TIMEOUT_MS,
+  };
+}
 
 /**
  * Resolve the workflow file used for a generation type.
@@ -633,6 +656,18 @@ module.exports = (db) => {
 
   router.get('/', (req, res) => {
     const row = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
+    if (!row) return res.json(row);
+    // Surface anima-turbo-cg's preset so the Settings UI renders a working endpoint even
+    // when the row is bare (older DB, or a cleared field).  Only the anima engine does
+    // this — `openai` / `stability` must stay blank until the user fills them in.
+    if (row.mode === ANIMA_PRESET.MODE) {
+      const ep = resolveExternalEndpoint(ANIMA_PRESET.MODE, row);
+      row.api_url = ep.apiUrl;
+      row.api_key = ep.apiKey;
+      row.api_model = ep.apiModel;
+      if (!row.image_size) row.image_size = ANIMA_PRESET.IMAGE_SIZE;
+      if (!row.comfyui_url) row.comfyui_url = DEFAULT_COMFYUI_URL;
+    }
     res.json(row);
   });
 
@@ -643,9 +678,10 @@ module.exports = (db) => {
     if (typeof api_key === 'string') api_key = api_key.trim();
     // 未传则用已保存的设置
     if (!api_url) {
-      const row = db.prepare('SELECT api_url, api_key FROM image_settings WHERE id = ?').get(SETTINGS_ID);
-      api_url = row.api_url || '';
-      if (!api_key) api_key = row.api_key || '';
+      const row = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
+      // anima 引擎的端点有内置默认值，字段留空时也能拉模型列表
+      api_url = resolveExternalEndpoint(row && row.mode, row).apiUrl;
+      if (!api_key) api_key = (row && row.api_key) || '';
     }
     if (!api_url) return res.status(400).json({ error: '未配置 API 地址' });
     // 由生图端点推导 /models 基址：去掉末尾 /images/generations 等后缀
@@ -723,7 +759,7 @@ module.exports = (db) => {
     if (!prompt) return res.status(400).json({ error: 'prompt required' });
 
     const settings = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
-    const genMode = (settings && settings.mode) || 'comfyui';
+    const genMode = (settings && settings.mode) || 'anima';
     res.json({ message: 'Regeneration queued', status: 'pending' });
 
     // --- ComfyUI URL (external instance) ---
@@ -756,6 +792,36 @@ module.exports = (db) => {
     if (prompt.includes('1boy') && !prompt.includes('(1boy:')) {
       boostedPrompt = prompt.replace(/\b1boy\b/, '(1boy:1.3)');
       console.log('[ImageGen-Regen] Boosted 1boy weight to (1boy:1.3)');
+    }
+
+    // --- External API regeneration (anima-turbo-cg / OpenAI-compatible / Stability) ---
+    // Without this branch the CG「重新生成」button always fell through to the ComfyUI path,
+    // which is meaningless when the user's engine is anima-turbo-cg (no workflow, no ComfyUI).
+    if (EXTERNAL_IMAGE_MODES.includes(genMode)) {
+      const { apiUrl, apiKey } = resolveExternalEndpoint(genMode, settings);
+      if (!apiUrl) {
+        console.error('[ImageGen-Regen] External API URL not configured (mode=' + genMode + ')');
+        return;
+      }
+      try {
+        const result = await generateViaExternalAPI(boostedPrompt, genMode, apiUrl, apiKey, settings);
+        if (!result || (!result.url && !result.b64)) return;
+        const charName = (character_name || 'character').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+        // b64_json 多为 png；url 由服务端决定扩展名
+        const ext = result.b64 ? 'png' : 'jpg';
+        const filename = `${charName}_${Date.now()}.${ext}`;
+        const savePath = path.join(IMAGES_DIR, filename);
+        if (result.url) await downloadExternalImage(result.url, savePath);
+        else fs.writeFileSync(savePath, Buffer.from(result.b64, 'base64'));
+        replaceGalleryEntry(db, conversation_id, oldFilename, filename, savePath, prompt, character_name);
+        console.log('[ImageGen] Regenerated via ' + genMode + ':', filename);
+      } catch (err) {
+        console.error('[ImageGen-Regen] External API failed (mode=' + genMode + '):', {
+          message: err.message, genMode, type, character_name, conversation_id,
+          promptHead: (prompt || '').substring(0, 150),
+        });
+      }
+      return;
     }
 
     try {
@@ -861,7 +927,7 @@ module.exports = (db) => {
 
     const settings = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
     let comfyuiUrl = (settings && settings.comfyui_url) || DEFAULT_COMFYUI_URL;
-    const genMode = (settings && settings.mode) || 'comfyui';
+    const genMode = (settings && settings.mode) || 'anima';
 
     // Extract culture from portrait metadata
     const culture = (portrait && typeof portrait === 'object') ? (portrait.culture || '') : '';
@@ -958,12 +1024,11 @@ module.exports = (db) => {
       return;
     }
 
-    // --- External API generation ---
-    if (genMode === 'openai' || genMode === 'stability') {
-      const apiUrl = (settings && settings.api_url) || '';
-      const apiKey = (settings && settings.api_key) || '';
-      if (!apiUrl || !apiKey) {
-        console.error('[ImageGen] External API URL/key not configured');
+    // --- External API generation (anima-turbo-cg / OpenAI-compatible / Stability) ---
+    if (EXTERNAL_IMAGE_MODES.includes(genMode)) {
+      const { apiUrl, apiKey } = resolveExternalEndpoint(genMode, settings);
+      if (!apiUrl) {
+        console.error('[ImageGen] External API URL not configured (mode=' + genMode + ')');
         return;
       }
       try {
@@ -1096,6 +1161,38 @@ function saveToConversation(db, conversation_id, character_name, filename, saveP
       savePaths.cachePortraitInMaster(db, conversation_id, character_name, save.save_path);
     }
   } catch (e) { /* ignore */ }
+}
+
+/**
+ * Swap a regenerated CG into the newest save of a conversation: copy the fresh file in,
+ * delete the superseded one, and repoint its gallery entry (matched by the old filename,
+ * falling back to the top entry so a missing name never loses the refresh).
+ */
+function replaceGalleryEntry(db, conversation_id, oldFilename, filename, savePath, prompt, character_name) {
+  if (!conversation_id) return;
+  try {
+    const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
+    if (!save) return;
+    const destDir = path.join(save.save_path, 'images');
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.copyFileSync(savePath, path.join(destDir, filename));
+    if (oldFilename && oldFilename !== filename) {
+      const oldPath = path.resolve(destDir, oldFilename);
+      if (isPathWithin(destDir, oldPath)) { try { fs.unlinkSync(oldPath); } catch { } }
+    }
+    const gp = path.join(save.save_path, 'cg_gallery.json');
+    try {
+      const gallery = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      const entry = gallery.find(g => g && g.filename === oldFilename) || gallery[0];
+      if (entry) {
+        entry.filename = filename;
+        entry.timestamp = new Date().toISOString();
+        if (prompt) entry.prompt = prompt;
+        if (character_name) entry.character = character_name;
+        fs.writeFileSync(gp, JSON.stringify(gallery, null, 2), 'utf-8');
+      }
+    } catch { }
+  } catch (e) { console.error('[ImageGen] Gallery replace failed:', e.message); }
 }
 
 function addToCGGallery(savePath, filename, character_name, prompt) {
@@ -1286,17 +1383,31 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function generateViaExternalAPI(prompt, mode, apiUrl, apiKey, settings) {
   const url = apiUrl.replace(/\/$/, '');
-  if (mode === 'openai') {
-    return generateViaOpenAI(prompt, url, apiKey, settings);
+  // anima-turbo-cg speaks the OpenAI images API, so it shares this branch; the mode is
+  // still passed through so the model/size/timeout defaults resolve correctly.
+  if (OPENAI_COMPATIBLE_MODES.includes(mode)) {
+    return generateViaOpenAI(prompt, url, apiKey, settings, mode);
   } else if (mode === 'stability') {
     return generateViaStability(prompt, url, apiKey, settings);
   }
   throw new Error('Unknown external API mode: ' + mode);
 }
 
-async function generateViaOpenAI(prompt, apiUrl, apiKey, settings) {
-  // OpenAI DALL-E 3 / compatible API format
-  const model = (settings && settings.api_model) || 'dall-e-3';
+/**
+ * Pick the transport by the URL's own protocol.
+ *
+ * anima-turbo-cg serves plain HTTP on 127.0.0.1:8100.  Hardcoding `https` made every
+ * such request die with EPROTO (a TLS handshake against a plaintext server), which is
+ * why the default engine could never actually be reached.
+ */
+function transportFor(urlString) {
+  return /^https:/i.test(urlString) ? require('https') : require('http');
+}
+
+async function generateViaOpenAI(prompt, apiUrl, apiKey, settings, mode) {
+  // OpenAI DALL-E 3 / compatible API format (also used by anima-turbo-cg)
+  const ep = resolveExternalEndpoint(mode, settings);
+  const model = ep.apiModel || 'dall-e-3';
   // 尺寸：空字符串表示不指定，由各服务商使用自己的默认值（避免把 DALL-E 的 1024x1024
   // 这种某些服务商不支持的尺寸硬塞过去导致 400 参数不合法）
   const size = (settings && settings.image_size) || '';
@@ -1315,13 +1426,15 @@ async function generateViaOpenAI(prompt, apiUrl, apiKey, settings) {
 
   return new Promise((resolve, reject) => {
     const urlObj = new URL(apiUrl);
+    const isHttps = urlObj.protocol === 'https:';
     const opts = {
-      hostname: urlObj.hostname, port: urlObj.port || 443, path: urlObj.pathname + urlObj.search,
+      hostname: urlObj.hostname, port: urlObj.port || (isHttps ? 443 : 80),
+      path: urlObj.pathname + urlObj.search,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`, 'Content-Length': Buffer.byteLength(body) },
-      timeout: 120000
+      timeout: ep.timeoutMs
     };
-    const req = require('https').request(opts, (res) => {
+    const req = transportFor(apiUrl).request(opts, (res) => {
       let buf = ''; res.on('data', d => buf += d);
       res.on('end', () => {
         try {
@@ -1342,6 +1455,11 @@ async function generateViaOpenAI(prompt, apiUrl, apiKey, settings) {
       });
     });
     req.on('error', reject);
+    // 本地单模型服务（anima-turbo-cg）同步出图，纯 CPU 上 1024² 可能耗时数分钟：
+    // 超时后必须显式销毁，否则请求会一直吊着而不是报错。
+    req.on('timeout', () => {
+      req.destroy(new Error(`生图请求超时（${Math.round(ep.timeoutMs / 1000)}s）。若使用 anima-turbo-cg 且为纯 CPU，请把图片尺寸降到 512x512 或 768x768。`));
+    });
     req.write(body); req.end();
   });
 }
@@ -1356,14 +1474,16 @@ async function generateViaStability(prompt, apiUrl, apiKey, settings) {
 
   return new Promise((resolve, reject) => {
     const urlObj = new URL(apiUrl);
+    const isHttps = urlObj.protocol === 'https:';
     const body = formData.toString();
     const opts = {
-      hostname: urlObj.hostname, port: urlObj.port || 443, path: urlObj.pathname + urlObj.search,
+      hostname: urlObj.hostname, port: urlObj.port || (isHttps ? 443 : 80),
+      path: urlObj.pathname + urlObj.search,
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': `Bearer ${apiKey}`, 'Content-Length': Buffer.byteLength(body), 'Accept': 'image/*' },
-      timeout: 120000
+      timeout: EXTERNAL_API_TIMEOUT_MS
     };
-    const req = require('https').request(opts, (res) => {
+    const req = transportFor(apiUrl).request(opts, (res) => {
       if (res.headers['content-type']?.includes('image')) {
         // Direct image response → save to temp file, return URL path
         const savePath = path.join(IMAGES_DIR, `stability_${Date.now()}.jpg`);
@@ -1384,6 +1504,7 @@ async function generateViaStability(prompt, apiUrl, apiKey, settings) {
       }
     });
     req.on('error', reject);
+    req.on('timeout', () => { req.destroy(new Error('生图请求超时')); });
     req.write(body); req.end();
   });
 }
