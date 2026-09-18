@@ -21,6 +21,7 @@ const path = require('path');
 const fs = require('fs');
 const net = require('net');
 const http = require('http');
+const os = require('os');
 const { spawn } = require('child_process');
 
 // ── 单实例：第二个实例只把已有窗口唤到前台，避免两个服务抢同一个 SQLite ──────
@@ -78,24 +79,26 @@ function main() {
   }
 
   // ── 端口 ────────────────────────────────────────────────────────────────
-  function isPortFree(port) {
+  // host 为 0.0.0.0 时按「所有网卡」检查占用（最严格），否则只查该网卡
+  function isPortFree(port, host) {
     return new Promise((resolve) => {
       const srv = net.createServer();
       srv.once('error', () => resolve(false));
       srv.once('listening', () => srv.close(() => resolve(true)));
-      srv.listen(port, '127.0.0.1');
+      if (host && host !== '0.0.0.0') srv.listen(port, host);
+      else srv.listen(port);
     });
   }
 
-  async function pickFreePort(desired) {
+  async function pickFreePort(desired, host) {
     for (let p = desired; p < desired + 20 && p <= desktopConfig.MAX_PORT; p++) {
-      if (await isPortFree(p)) return p;
+      if (await isPortFree(p, host)) return p;
     }
     return desired; // 全部占用时交给服务端自行兜底（它会再找）
   }
 
   // ── sidecar 子进程 ──────────────────────────────────────────────────────
-  function spawnServer(port) {
+  function spawnServer(port, host) {
     if (!fs.existsSync(NODE_EXE)) {
       fatal('内置 Node 运行时缺失', `找不到：${NODE_EXE}\n安装包可能不完整，请重新安装。`);
       return;
@@ -105,7 +108,7 @@ function main() {
       return;
     }
 
-    const env = { ...process.env, PORT: String(port), HOST: '127.0.0.1', AI_GAL_DATA_DIR: DATA_ROOT };
+    const env = { ...process.env, PORT: String(port), HOST: host, AI_GAL_DATA_DIR: DATA_ROOT };
     delete env.ELECTRON_RUN_AS_NODE; // 不要污染子进程
 
     child = spawn(NODE_EXE, [SERVER_ENTRY], {
@@ -161,10 +164,12 @@ function main() {
     });
   }
 
-  function waitForHealth(port, timeoutMs) {
+  function waitForHealth(fallbackPort, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     return new Promise((resolve) => {
       const tick = () => {
+        // 服务端可能因端口占用自行换端口；以它自报的端口为准
+        const port = actualPort || fallbackPort;
         const req = http.get({ host: '127.0.0.1', port, path: '/api/health', timeout: 1500 }, (res) => {
           res.resume();
           if (res.statusCode === 200) return resolve(true);
@@ -231,7 +236,7 @@ function main() {
       width: 460,
       height: 340,
       resizable: false,
-      title: '端口设置',
+      title: '端口与局域网设置',
       parent: win || undefined,
       modal: false,
       autoHideMenuBar: true,
@@ -246,21 +251,47 @@ function main() {
     settingsWin.on('closed', () => { settingsWin = null; });
   }
 
-  ipcMain.handle('settings:get', () => ({
-    port: actualPort || desktopConfig.resolveDesiredPort(),
-    dataRoot: DATA_ROOT,
-    configPath: desktopConfig.CONFIG_PATH,
-    version: app.getVersion(),
-  }));
+  /** 本机所有非回环 IPv4 地址 —— 供设置界面显示「手机上该访问哪个地址」 */
+  function lanUrls(port) {
+    const urls = [];
+    const ifaces = os.networkInterfaces();
+    for (const name of Object.keys(ifaces)) {
+      for (const ni of ifaces[name] || []) {
+        if (ni.family === 'IPv4' && !ni.internal) urls.push(`http://${ni.address}:${port}`);
+      }
+    }
+    return urls;
+  }
 
-  ipcMain.handle('settings:save-port', async (_e, rawPort) => {
-    const port = Number(rawPort);
+  ipcMain.handle('settings:get', () => {
+    const port = actualPort || desktopConfig.resolveConfiguredPort();
+    return {
+      port,
+      allowLan: desktopConfig.resolveConfiguredHost() === '0.0.0.0',
+      lanUrls: lanUrls(port),
+      dataRoot: DATA_ROOT,
+      configPath: desktopConfig.CONFIG_PATH,
+      version: app.getVersion(),
+    };
+  });
+
+  ipcMain.handle('settings:save', async (_e, patch) => {
+    const port = Number(patch && patch.port);
+    const allowLan = Boolean(patch && patch.allowLan);
     if (!desktopConfig.isValidPort(port)) {
       return { ok: false, message: `端口需为 ${desktopConfig.MIN_PORT}~${desktopConfig.MAX_PORT} 之间的整数` };
     }
-    desktopConfig.writeConfig({ port });
-    await restartServer();
-    return { ok: true, port: actualPort, message: `已切换到端口 ${actualPort}` };
+    desktopConfig.writeConfig({ port, allowLan });
+    const newPort = await restartServer();
+    return {
+      ok: true,
+      port: newPort,
+      allowLan: desktopConfig.resolveConfiguredHost() === '0.0.0.0',
+      lanUrls: lanUrls(newPort),
+      message: allowLan
+        ? `已开启局域网访问：其它设备可访问本机 ${newPort} 端口`
+        : `已改为仅本机访问（端口 ${newPort}）`,
+    };
   });
 
   ipcMain.handle('settings:open-data-folder', () => { shell.openPath(DATA_ROOT); return true; });
@@ -275,7 +306,7 @@ function main() {
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: '显示主界面', click: () => { if (win) { win.show(); win.focus(); } } },
       { type: 'separator' },
-      { label: '端口设置…', click: openSettingsWindow },
+      { label: '端口与局域网设置…', click: openSettingsWindow },
       { label: '打开数据文件夹（存档 / 配置）', click: () => shell.openPath(DATA_ROOT) },
       { label: '打开程序文件夹', click: () => shell.openPath(PAYLOAD_ROOT) },
       { type: 'separator' },
@@ -287,19 +318,23 @@ function main() {
 
   // ── 启动编排 ────────────────────────────────────────────────────────────
   async function startServer() {
-    const desired = desktopConfig.resolveDesiredPort();
-    const port = await pickFreePort(desired);
+    // 用 resolveConfigured*（只看配置文件）：桌面版以界面里的设置为准，
+    // 不被偶然继承来的 PORT/HOST 环境变量盖掉。
+    const desired = desktopConfig.resolveConfiguredPort();
+    const host = desktopConfig.resolveConfiguredHost();
+    const port = await pickFreePort(desired, host);
     if (port !== desired) {
       writeLog(`[desktop] port ${desired} busy, using ${port}\n`);
       desktopConfig.writeConfig({ port });
     }
     actualPort = null;
-    spawnServer(port);
+    spawnServer(port, host);
+    writeLog(`[desktop] binding ${host}:${port} (LAN=${host === '0.0.0.0'})\n`);
     // 以子进程自报的端口为准，等它出现；同时用健康检查兜底
     const ready = await waitForHealth(port, 40000);
     if (!ready) {
       fatal('服务启动超时',
-        `等待 http://127.0.0.1:${port} 就绪超过 40 秒。\n\n日志：${LOG_FILE}`);
+        `等待 http://127.0.0.1:${actualPort || port} 就绪超过 40 秒。\n\n日志：${LOG_FILE}`);
       return port;
     }
     return actualPort || port;

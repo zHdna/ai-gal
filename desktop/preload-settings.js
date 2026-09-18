@@ -7,6 +7,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('desktopAPI', {
   get: () => ipcRenderer.invoke('settings:get'),
-  savePort: (port) => ipcRenderer.invoke('settings:save-port', port),
+  save: (patch) => ipcRenderer.invoke('settings:save', patch),
   openDataFolder: () => ipcRenderer.invoke('settings:open-data-folder'),
 });

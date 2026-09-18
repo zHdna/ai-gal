@@ -28,8 +28,9 @@ const app = express();
 const appPaths = require('./paths');
 const desktopConfig = require('./desktop-config');
 const PORT = desktopConfig.resolveDesiredPort();
-// Default to localhost (local-only); Start-LAN.bat sets HOST=0.0.0.0 for LAN access
-const LISTEN_HOST = process.env.HOST || '127.0.0.1';
+// 默认仅本机可访问；Start-LAN.bat 的 HOST=0.0.0.0、
+// 或桌面版的「允许局域网访问」开关（desktop-config.json 的 allowLan）都会改为全网卡监听。
+const LISTEN_HOST = desktopConfig.resolveDesiredHost();
 
 // Middleware
 app.use(express.json({ limit: '10mb' }));

@@ -30,7 +30,10 @@ function isValidPort(p) {
 
 function readConfig() {
   try {
-    const raw = fs.readFileSync(paths.DESKTOP_CONFIG_PATH, 'utf8');
+    let raw = fs.readFileSync(paths.DESKTOP_CONFIG_PATH, 'utf8');
+    // 记事本 / PowerShell 5.1 写 UTF-8 时会带 BOM，而 JSON.parse 遇到 BOM 直接抛错。
+    // 不处理的话用户手改配置会「改了没反应」，所以先剥掉。
+    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
@@ -58,6 +61,41 @@ function resolveDesiredPort() {
   return DEFAULT_PORT;
 }
 
+/**
+ * 取「期望监听地址」：env HOST > 配置 allowLan > 127.0.0.1（仅本机）。
+ *
+ * allowLan 为 true 时绑定 0.0.0.0，局域网内其它设备（手机、平板）也能打开。
+ * 绿色版仍可用 Start-LAN.bat 的 HOST=0.0.0.0 覆盖，行为不变。
+ */
+function resolveDesiredHost() {
+  const fromEnv = process.env.HOST;
+  if (fromEnv && String(fromEnv).trim()) return String(fromEnv).trim();
+  const cfg = readConfig();
+  return cfg.allowLan === true ? '0.0.0.0' : '127.0.0.1';
+}
+
+/** 当前是否允许局域网访问 */
+function resolveAllowLan() {
+  return resolveDesiredHost() === '0.0.0.0';
+}
+
+/**
+ * 仅读配置文件、**不看环境变量**的端口 / 地址 —— 桌面版外壳专用。
+ *
+ * 为什么要这一对：桌面程序是用户从快捷方式启动的，会继承一份环境变量。
+ * 如果父进程（开发工具、其它服务）恰好设了 PORT/HOST，用户就会看到
+ * 「我在界面里设了 5000，它却跑在别的端口上」。所以外壳以配置文件为准，
+ * 环境变量只用于绿色版 / 命令行（server/index.js 仍走 resolveDesired*）。
+ */
+function resolveConfiguredPort() {
+  const cfg = readConfig();
+  return isValidPort(cfg.port) ? Number(cfg.port) : DEFAULT_PORT;
+}
+
+function resolveConfiguredHost() {
+  return readConfig().allowLan === true ? '0.0.0.0' : '127.0.0.1';
+}
+
 module.exports = {
   DEFAULT_PORT,
   MIN_PORT,
@@ -66,5 +104,9 @@ module.exports = {
   readConfig,
   writeConfig,
   resolveDesiredPort,
+  resolveDesiredHost,
+  resolveAllowLan,
+  resolveConfiguredPort,
+  resolveConfiguredHost,
   CONFIG_PATH: paths.DESKTOP_CONFIG_PATH,
 };

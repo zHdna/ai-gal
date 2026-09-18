@@ -3,25 +3,43 @@
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
-<title>端口设置</title>
+<title>端口与局域网设置</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 22px 24px;
+    margin: 0; padding: 20px 24px;
     font: 13px/1.6 "Microsoft YaHei UI", "Segoe UI", sans-serif;
     background: #16181d; color: #e6e8ee;
     user-select: none;
   }
   h1 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
-  .hint { color: #9aa3b2; font-size: 12px; margin-bottom: 16px; }
-  label { display: block; font-size: 12px; color: #9aa3b2; margin-bottom: 6px; }
-  input {
+  label.field { display: block; font-size: 12px; color: #9aa3b2; margin-bottom: 6px; }
+  input[type=number] {
     width: 100%; padding: 9px 11px; font: inherit; font-size: 14px;
     color: #e6e8ee; background: #0f1116;
     border: 1px solid #2c313c; border-radius: 6px; outline: none;
   }
-  input:focus { border-color: #4a7dff; }
+  input[type=number]:focus { border-color: #4a7dff; }
+
+  .lan {
+    margin-top: 16px; padding: 12px 14px;
+    background: #12141a; border: 1px solid #242833; border-radius: 8px;
+  }
+  .check { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
+  .check input { margin: 3px 0 0; width: 15px; height: 15px; accent-color: #3b6bf0; cursor: pointer; }
+  .check span { font-size: 13px; }
+  .warn {
+    margin: 10px 0 0; padding-left: 24px;
+    font-size: 11.5px; line-height: 1.7; color: #9aa3b2;
+  }
+  .warn b { color: #f0b232; font-weight: 600; }
+
+  #urls { margin: 10px 0 0; padding: 9px 11px; background: #0f1116; border-radius: 6px; border: 1px solid #242833; }
+  #urls .t { font-size: 11px; color: #7b8494; margin-bottom: 4px; }
+  #urls code { display: block; font-family: Consolas, monospace; font-size: 12px; color: #6f9bff; word-break: break-all; }
+  #urls .none { font-size: 11.5px; color: #7b8494; }
+
   .row { display: flex; gap: 10px; align-items: center; margin-top: 18px; }
   button {
     padding: 9px 18px; font: inherit; font-weight: 500; cursor: pointer;
@@ -31,21 +49,31 @@
   button.primary { background: #3b6bf0; border-color: #3b6bf0; color: #fff; }
   button.primary:hover { background: #4a7dff; }
   button:disabled { opacity: .55; cursor: default; }
-  #status { margin-top: 14px; font-size: 12px; min-height: 18px; }
+  #status { margin-top: 12px; font-size: 12px; min-height: 18px; }
   .ok { color: #4ade80; }
   .err { color: #f87171; }
-  .meta { margin-top: 18px; padding-top: 14px; border-top: 1px solid #242833; font-size: 11px; color: #7b8494; }
-  .meta a { color: #6f9bff; text-decoration: none; cursor: pointer; }
-  .meta a:hover { text-decoration: underline; }
-  code { font-family: Consolas, monospace; color: #a8b2c4; word-break: break-all; }
+  .meta { margin-top: 16px; padding-top: 12px; border-top: 1px solid #242833; font-size: 11px; color: #7b8494; }
+  code.path { font-family: Consolas, monospace; color: #a8b2c4; word-break: break-all; }
 </style>
 </head>
 <body>
-  <h1>端口设置</h1>
-  <div class="hint">若 3210 与其它程序冲突，可在此改成别的端口。保存后会自动重启服务。</div>
+  <h1>端口与局域网设置</h1>
 
-  <label for="port">监听端口（1024 ~ 65535）</label>
+  <label class="field" for="port">监听端口（1024 ~ 65535）</label>
   <input id="port" type="number" min="1024" max="65535" step="1" autocomplete="off">
+
+  <div class="lan">
+    <label class="check" for="lan">
+      <input id="lan" type="checkbox">
+      <span>允许局域网访问（手机 / 平板也能打开）</span>
+    </label>
+    <div class="warn">
+      开启后本机将在所有网卡上监听（<code>0.0.0.0</code>），同一 Wi-Fi 下的设备可以访问。<br>
+      <b>注意</b>：局域网内任何人都能打开这个界面，包括你的 API Key 设置 —— 请只在可信网络里开启。<br>
+      <b>首次开启</b>时 Windows 防火墙可能弹窗，请选「允许访问」；若误点了「取消」，其它设备会连不上。
+    </div>
+    <div id="urls" style="display:none"></div>
+  </div>
 
   <div class="row">
     <button class="primary" id="save">保存并重启</button>
@@ -55,8 +83,8 @@
   <div id="status"></div>
 
   <div class="meta">
-    配置文件：<br><code id="cfg"></code><br>
-    数据目录：<br><code id="dataRoot"></code>
+    配置文件：<br><code class="path" id="cfg"></code><br>
+    数据目录：<br><code class="path" id="dataRoot"></code>
   </div>
 
 <script>
@@ -68,12 +96,30 @@
     statusEl.className = cls || '';
   }
 
+  function renderUrls(urls, allowLan) {
+    const box = $('urls');
+    if (!allowLan) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    if (!urls || !urls.length) {
+      box.innerHTML = '<div class="t">其它设备访问地址</div><div class="none">未检测到局域网地址（可能没连网线 / Wi-Fi）</div>';
+      return;
+    }
+    box.innerHTML = '<div class="t">其它设备用这些地址访问</div>' +
+      urls.map((u) => '<code>' + u + '</code>').join('');
+  }
+
   async function init() {
     const info = await window.desktopAPI.get();
     $('port').value = info.port;
+    $('lan').checked = !!info.allowLan;
     $('cfg').textContent = info.configPath;
     $('dataRoot').textContent = info.dataRoot;
+    renderUrls(info.lanUrls, info.allowLan);
   }
+
+  $('lan').addEventListener('change', () => {
+    renderUrls(null, $('lan').checked);
+  });
 
   $('save').addEventListener('click', async () => {
     const port = Number($('port').value);
@@ -84,9 +130,11 @@
     $('save').disabled = true;
     setStatus('正在重启服务…');
     try {
-      const r = await window.desktopAPI.savePort(port);
+      const r = await window.desktopAPI.save({ port: port, allowLan: $('lan').checked });
       if (r.ok) {
         $('port').value = r.port;
+        $('lan').checked = !!r.allowLan;
+        renderUrls(r.lanUrls, r.allowLan);
         setStatus(r.message, 'ok');
       } else {
         setStatus(r.message, 'err');
@@ -99,7 +147,6 @@
   });
 
   $('openFolder').addEventListener('click', () => window.desktopAPI.openDataFolder());
-
   $('port').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('save').click(); });
 
   init();
