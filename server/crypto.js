@@ -27,7 +27,7 @@ if (process.env.CRYPTO_PASSWORD && process.env.CRYPTO_SALT) {
 } else {
   // Generate (and persist) a random per-installation secret instead of a
   // shared hardcoded one. Deleting this file simply invalidates stored keys.
-  const secretFile = path.join(__dirname, 'db', '.crypto_secret');
+  const secretFile = require('./paths').CRYPTO_SECRET_PATH;
   let secret;
   try {
     secret = fs.readFileSync(secretFile, 'utf8').trim();
@@ -44,7 +44,7 @@ if (process.env.CRYPTO_PASSWORD && process.env.CRYPTO_SALT) {
     '[Crypto] CRYPTO_PASSWORD/CRYPTO_SALT not set — using a machine-local random key' +
     (KEY_IS_EPHEMERAL
       ? ' (in-memory only; stored API keys will not survive a restart).'
-      : ' stored in server/db/.crypto_secret.')
+      : ` stored in ${secretFile}.`)
   );
 }
 

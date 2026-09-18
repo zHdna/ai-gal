@@ -4,9 +4,10 @@
  */
 const Database = require('better-sqlite3');
 const { SETTINGS_ID, APP_KEYS } = require('../constants');
-const path = require('path');
+const { DB_PATH, DB_DIR } = require('../paths');
+const fs = require('fs');
 
-const DB_PATH = path.join(__dirname, 'data.db');
+fs.mkdirSync(DB_DIR, { recursive: true });
 
 function initDatabase() {
   const db = new Database(DB_PATH);

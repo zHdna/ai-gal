@@ -1,0 +1,60 @@
+# electron-builder 配置 —— AI-GAL 桌面版
+#
+# 结构说明：
+#   AI-GAL.exe            Electron 外壳（本目录的 main.js / settings.html）
+#   resources/app.asar    外壳代码（很小）
+#   resources/app-payload 真正的业务负载：server/ public/ BGM/ runtime/ node_modules/
+#
+# 为什么负载走 extraResources 而不是打进 asar：
+#   · better-sqlite3 是原生模块，必须由子进程 node.exe 从**真实路径**加载；
+#   · public/ 由 express 从磁盘提供服务，BGM/ 也按路径读取；
+#   · 保持与仓库一致的目录布局，server/paths.js 的 APP_ROOT 推断才能成立。
+
+appId: com.zhdna.aigal
+productName: AI-GAL
+copyright: Copyright © 2026 zHdna
+
+directories:
+  output: ../dist-desktop
+
+# 外壳自身的文件（业务负载见 extraResources）
+files:
+  - main.js
+  - preload-settings.js
+  - settings.html
+  - package.json
+
+asar: true
+
+extraResources:
+  - { from: ../server,        to: app-payload/server }
+  - { from: ../public,        to: app-payload/public }
+  - { from: ../BGM,           to: app-payload/BGM }
+  - { from: ../runtime,       to: app-payload/runtime }
+  - { from: ../node_modules,  to: app-payload/node_modules }
+  - { from: ../package.json,  to: app-payload/package.json }
+  - { from: ../GALCG.json,    to: app-payload/GALCG.json }
+  - { from: ../portrait_x.json, to: app-payload/portrait_x.json }
+  - { from: ../qwen3-tts-01.json, to: app-payload/qwen3-tts-01.json }
+  - { from: ../LICENSE,       to: app-payload/LICENSE }
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # 直接复用仓库里已有的图标，不再另存一份 build/icon.png
+  icon: ../public/logo.png
+  artifactName: AI-GAL-Setup-${version}.exe
+
+nsis:
+  oneClick: false                     # 显示安装向导，用户可自选安装目录
+  perMachine: false                   # 每用户安装，默认不弹 UAC；用户仍可手动装到 Program Files
+  allowElevation: true                # 允许在需要时提权
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: AI-GAL
+  uninstallDisplayName: AI-GAL
+  # 卸载时**不要**删除用户数据（%APPDATA%\AI-GAL 里有存档、数据库、API Key）
+  deleteAppDataOnUninstall: false

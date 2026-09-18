@@ -6,8 +6,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// Ensure avatars directory exists
-const avatarDir = path.join(__dirname, '..', '..', 'public', 'uploads', 'avatars');
+// Ensure avatars directory exists (writable data dir — 见 server/paths.js)
+const avatarDir = require('../paths').AVATARS_DIR;
 fs.mkdirSync(avatarDir, { recursive: true });
 
 const upload = multer({

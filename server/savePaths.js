@@ -27,7 +27,7 @@ const path = require('path');
 const { ROSTER_FILE } = require('./constants');
 const { namesEquivalent, isActionLikeText } = require('./nameMatch');
 
-const SAVES_DIR = path.join(__dirname, '..', 'saves');
+const SAVES_DIR = require('./paths').SAVES_DIR;
 const GAME_DIR_RE = /^game(\d+)$/;
 // Must match chat.js NPC_PLACEHOLDER_AVATAR sentinel (avatar filename stays in master, not copied).
 const NPC_PLACEHOLDER = 'NPCF';

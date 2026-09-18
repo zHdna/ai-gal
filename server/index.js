@@ -14,8 +14,20 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
+// 桌面版 sidecar 模式：外壳（Electron）退出后本进程必须跟着退出，否则会留下
+// 孤儿 node 占着端口，用户下次启动就会莫名换端口。IPC 通道断开是父进程已死的
+// 可靠信号 —— 比「写 stdout 时撞上 EPIPE」这种偶然事件确定得多。
+if (typeof process.send === 'function') {
+  process.on('disconnect', () => {
+    console.log('[Server] 外壳已退出，sidecar 随之关闭');
+    process.exit(0);
+  });
+}
+
 const app = express();
-const PORT = process.env.PORT || 3210;
+const appPaths = require('./paths');
+const desktopConfig = require('./desktop-config');
+const PORT = desktopConfig.resolveDesiredPort();
 // Default to localhost (local-only); Start-LAN.bat sets HOST=0.0.0.0 for LAN access
 const LISTEN_HOST = process.env.HOST || '127.0.0.1';
 
@@ -37,7 +49,7 @@ app.use((req, res, next) => {
 //   · 显式 ?desktop=1（含 Cookie 记忆）→ 停留在桌面版；移动端可随时切回
 //   · 需要完全停用移动端跳转时，启动带环境变量 DISABLE_MOBILE_FRONTEND=1（旧开关仍兼容）
 const DISABLE_MOBILE_FRONTEND = process.env.DISABLE_MOBILE_FRONTEND === '1';
-const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const PUBLIC_DIR = appPaths.PUBLIC_DIR;
 const DESKTOP_INDEX = path.join(PUBLIC_DIR, 'index.html');
 const MOBILE_INDEX = path.join(PUBLIC_DIR, 'mobile.html');
 
@@ -80,9 +92,11 @@ if (!DISABLE_MOBILE_FRONTEND) {
 }
 
 // Serve static files with no-cache for development
-app.use(express.static(path.join(__dirname, '..', 'public'), { etag: false, lastModified: false, setHeaders: (res) => { res.setHeader('Cache-Control', 'no-cache'); } }));
-// Serve profile images (NPCF.jpg etc.)
-app.use('/profile', express.static(path.join(__dirname, '..', 'profile')));
+app.use(express.static(PUBLIC_DIR, { etag: false, lastModified: false, setHeaders: (res) => { res.setHeader('Cache-Control', 'no-cache'); } }));
+// profile/ 与 public/uploads/ 是**可写**数据（随 DATA_ROOT 外置，见 server/paths.js），
+// 单独挂载到与原先相同的 URL 上，前端不必改任何路径。
+app.use('/profile', express.static(require('./paths').PROFILE_DIR));
+app.use('/uploads', express.static(require('./paths').UPLOADS_DIR));
 
 // Initialize DB
 const db = initDatabase();
@@ -143,7 +157,34 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, LISTEN_HOST, () => {
-  const mode = LISTEN_HOST === '0.0.0.0' ? 'LAN accessible' : 'local only';
-  console.log(`[Server] AI-GAL running at http://${LISTEN_HOST}:${PORT} (${mode})`);
-});
+// ── 启动监听：端口被占用时自动向上寻找空闲端口 ─────────────────────────────
+// 3210 撞上别的程序时，用户不该看到「双击没反应」。找到可用端口后回写
+// desktop-config.json，让下次启动稳定落在同一端口，而不是每次漂移。
+const MAX_PORT_TRIES = 20;
+
+function listenOn(port, attempt) {
+  attempt = attempt || 0;
+  const server = app.listen(port, LISTEN_HOST);
+
+  server.on('listening', () => {
+    if (port !== PORT) {
+      console.warn(`[Server] 端口 ${PORT} 已被占用，自动改用 ${port}（已记入 desktop-config.json）`);
+      desktopConfig.writeConfig({ port });
+    }
+    const mode = LISTEN_HOST === '0.0.0.0' ? 'LAN accessible' : 'local only';
+    console.log(`[Server] AI-GAL running at http://${LISTEN_HOST}:${port} (${mode})`);
+    // 固定格式，供 Electron 外壳 / 启动器解析实际端口
+    console.log(`[Server] PORT=${port}`);
+    console.log(`[paths] ${appPaths.describe()}`);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE' && attempt < MAX_PORT_TRIES && port < desktopConfig.MAX_PORT) {
+      return listenOn(port + 1, attempt + 1);
+    }
+    console.error(`[Server] 监听失败 ${LISTEN_HOST}:${port} -> ${err.code || err.message}`);
+    process.exit(1);
+  });
+}
+
+listenOn(PORT);

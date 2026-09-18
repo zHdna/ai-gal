@@ -126,7 +126,25 @@
   不需要装 Node.js，不需要装 npm，也不需要执行任何安装命令。
 - 其他系统：自行安装 Node 22 后执行 `node server/index.js` 亦可。
 
-### 启动
+### 桌面版（安装包，推荐给普通用户）
+
+不想解压一堆文件、也不想碰命令行，就用桌面版安装包（约 190 MB，已包含运行时和全部依赖）：
+
+1. 到 [Releases](https://github.com/zHdna/ai-gal/releases) 下载 `AI-GAL-Setup-x.y.z.exe`；
+2. 双击安装。**安装位置可以自己选**；默认装在当前用户目录下，不需要管理员权限；
+3. 装完双击桌面上的「AI-GAL」图标就行，会打开一个独立的程序窗口。
+
+目标机器上**不需要安装 Node.js，也不需要任何其它东西**。
+
+| 事项 | 说明 |
+| --- | --- |
+| 数据在哪里 | 存档、数据库、配置都在 `%APPDATA%\AI-GAL`。托盘图标右键 →「打开数据文件夹」可直达 |
+| 端口 | 默认 3210。被别的程序占用时会**自动改用空闲端口**并记住，下次沿用；想手动指定：托盘右键 →「端口设置…」 |
+| 卸载 | 卸载**不会删除**存档和配置；要彻底清干净需手动删掉 `%APPDATA%\AI-GAL` |
+| 首次运行提示 | 安装包未做代码签名，SmartScreen 可能提示「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」即可 |
+| 生图 | 与绿色版相同，`anima-turbo-cg` 仍需单独启动（见下方说明） |
+
+### 启动（绿色版 / 从源码运行）
 
 | 方式 | 操作 | 地址 |
 | --- | --- | --- |
@@ -142,11 +160,16 @@
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `PORT` | `3210` | 监听端口 |
+| `PORT` | `3210` | 监听端口。被占用时服务会自动改用空闲端口 |
 | `HOST` | `127.0.0.1` | `Start-LAN.bat` 会设为 `0.0.0.0` |
+| `AI_GAL_DATA_DIR` | 见下 | 可写数据（存档 / 数据库 / 生成图片 / 上传）存放目录。桌面版固定为 `%APPDATA%\AI-GAL` |
 | `DISABLE_MOBILE_FRONTEND` | 未设置 | 设为 `1` 关闭移动端自动跳转 |
 | `CRYPTO_PASSWORD` | 未设置 | API Key 加密口令，**建议设置** |
 | `CRYPTO_SALT` | 未设置 | 加密盐，**建议设置** |
+
+**数据目录是怎么定的**：程序目录可写时就写在程序目录里（绿色版的行为，和你之前用的完全一致，
+不会产生迁移）；程序目录不可写时（例如装到了 `C:\Program Files`）自动退回 `%APPDATA%\AI-GAL`。
+在程序目录放一个名为 `.portable` 的空文件，即可强制「数据跟着程序走」的便携模式。
 
 ### 关于依赖（一般无需处理）
 
@@ -320,12 +343,19 @@ AI-GAL/
 ├─ node_modules/                  依赖库（随仓库分发，开箱即用）
 ├─ server/                        后端
 │  ├─ index.js                    入口 / 路由挂载
+│  ├─ paths.js                    只读程序目录 / 可写数据目录的唯一真相来源
+│  ├─ desktop-config.js           桌面版可配置项（端口，存在数据目录里）
 │  ├─ crypto.js                   API Key 加解密
 │  ├─ savePaths.js                master/sub 存档目录架构
 │  ├─ db/init.js                  数据库建表与迁移
 │  ├─ routes/                     各功能路由（chat / images / tts / saves …）
 │  ├─ utils/                      工具（jsonpatch / nameMatch / pathGuard …）
 │  └─ data/anime-character-names.json   动漫角色英文名对照表
+├─ desktop/                       桌面版（Electron 外壳）源码
+│  ├─ main.js                     窗口 / 托盘 / 子进程编排
+│  ├─ settings.html               端口设置界面
+│  ├─ preload-settings.js         设置窗口的 preload
+│  └─ electron-builder.yml        打包配置（NSIS 安装包）
 ├─ public/                        前端
 │  ├─ index.html                  桌面 VN 界面
 │  ├─ mobile.html                 移动端界面
@@ -338,6 +368,10 @@ AI-GAL/
 ```
 
 运行后生成（已加入 `.gitignore`，**请勿分享**）：
+
+> 下列路径都是相对**数据目录**而言的。绿色版的数据目录就是程序目录本身；
+> 桌面版（安装包）与「装到不可写位置」的情况，数据目录是 `%APPDATA%\AI-GAL`，
+> 因此实际位置是 `%APPDATA%\AI-GAL\saves\`、`%APPDATA%\AI-GAL\server\db\data.db` 等等。
 
 | 路径 | 内容 |
 | --- | --- |

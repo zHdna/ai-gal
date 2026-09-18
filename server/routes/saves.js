@@ -9,7 +9,9 @@ const path = require('path');
 const { isPathWithin } = require('../utils/pathGuard');
 const savePaths = require('../savePaths');
 
-const SAVES_DIR = path.join(__dirname, '..', '..', 'saves');
+const SAVES_DIR = require('../paths').SAVES_DIR;
+const GENERATED_IMAGES_DIR = require('../paths').GENERATED_IMAGES_DIR;
+const PROFILE_DIR = require('../paths').PROFILE_DIR;
 
 module.exports = (db) => {
   const router = Router();
@@ -145,7 +147,7 @@ module.exports = (db) => {
       }
 
       // Copy generated images
-      const imgDir = path.join(__dirname, '..', '..', 'data', 'generated_images');
+      const imgDir = GENERATED_IMAGES_DIR;
       const destImgDir = path.join(save.save_path, 'images');
       if (fs.existsSync(imgDir)) {
         fs.mkdirSync(destImgDir, { recursive: true });
@@ -203,7 +205,7 @@ module.exports = (db) => {
       // Placeholder NPC sentinels → serve the default profile image (no real avatar yet).
       // The butler's next round discovers these and replaces them with a generated portrait.
       if (char && (char.avatar === 'NPCF' || char.avatar === 'NPCM')) {
-        const holder = path.join(__dirname, '..', '..', 'profile', char.avatar + '.jpg');
+        const holder = path.join(PROFILE_DIR, char.avatar + '.jpg');
         if (fs.existsSync(holder)) return res.sendFile(holder);
       }
       // Filter out 'pending' and empty — only serve actual avatar files

@@ -15,11 +15,12 @@ const MAX_DATA_URL_BYTES = 5 * 1024 * 1024;
 // Maximum number of HTTP redirect hops when downloading external images
 const MAX_REDIRECTS = 5;
 
-const IMAGES_DIR = path.join(__dirname, '..', '..', 'data', 'generated_images');
+const IMAGES_DIR = require('../paths').GENERATED_IMAGES_DIR;
 fs.mkdirSync(IMAGES_DIR, { recursive: true });
 
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
-const PROFILE_DIR = path.join(PROJECT_ROOT, 'profile');
+// profile/ 是可写数据（NPC 占位头像等），随 DATA_ROOT 外置
+const PROFILE_DIR = require('../paths').PROFILE_DIR;
 const DEFAULT_WORKFLOW_CG = 'GALCG.json';
 const DEFAULT_WORKFLOW_PORTRAIT = 'portrait_x.json';
 // ComfyUI is a distinct engine from anima-turbo-cg (which owns 8100), so it keeps 8188.

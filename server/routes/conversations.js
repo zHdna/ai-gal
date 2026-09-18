@@ -10,8 +10,8 @@ const { ROSTER_FILE } = require('../constants');
 const { applyWorldStateFromText, seedFromStateBlock } = require('../utils/jsonpatch');
 const savePaths = require('../savePaths');
 
-// Saves directory
-const SAVES_DIR = path.join(__dirname, '..', '..', 'saves');
+// Saves directory (writable data dir — 见 server/paths.js)
+const SAVES_DIR = require('../paths').SAVES_DIR;
 
 /**
  * Extract character names from first_message text.

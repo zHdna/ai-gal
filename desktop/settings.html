@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>端口设置</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 22px 24px;
+    font: 13px/1.6 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    background: #16181d; color: #e6e8ee;
+    user-select: none;
+  }
+  h1 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+  .hint { color: #9aa3b2; font-size: 12px; margin-bottom: 16px; }
+  label { display: block; font-size: 12px; color: #9aa3b2; margin-bottom: 6px; }
+  input {
+    width: 100%; padding: 9px 11px; font: inherit; font-size: 14px;
+    color: #e6e8ee; background: #0f1116;
+    border: 1px solid #2c313c; border-radius: 6px; outline: none;
+  }
+  input:focus { border-color: #4a7dff; }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 18px; }
+  button {
+    padding: 9px 18px; font: inherit; font-weight: 500; cursor: pointer;
+    border-radius: 6px; border: 1px solid #2c313c; background: #232833; color: #e6e8ee;
+  }
+  button:hover { background: #2b3140; }
+  button.primary { background: #3b6bf0; border-color: #3b6bf0; color: #fff; }
+  button.primary:hover { background: #4a7dff; }
+  button:disabled { opacity: .55; cursor: default; }
+  #status { margin-top: 14px; font-size: 12px; min-height: 18px; }
+  .ok { color: #4ade80; }
+  .err { color: #f87171; }
+  .meta { margin-top: 18px; padding-top: 14px; border-top: 1px solid #242833; font-size: 11px; color: #7b8494; }
+  .meta a { color: #6f9bff; text-decoration: none; cursor: pointer; }
+  .meta a:hover { text-decoration: underline; }
+  code { font-family: Consolas, monospace; color: #a8b2c4; word-break: break-all; }
+</style>
+</head>
+<body>
+  <h1>端口设置</h1>
+  <div class="hint">若 3210 与其它程序冲突，可在此改成别的端口。保存后会自动重启服务。</div>
+
+  <label for="port">监听端口（1024 ~ 65535）</label>
+  <input id="port" type="number" min="1024" max="65535" step="1" autocomplete="off">
+
+  <div class="row">
+    <button class="primary" id="save">保存并重启</button>
+    <button id="openFolder">打开数据文件夹</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div class="meta">
+    配置文件：<br><code id="cfg"></code><br>
+    数据目录：<br><code id="dataRoot"></code>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $('status');
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text || '';
+    statusEl.className = cls || '';
+  }
+
+  async function init() {
+    const info = await window.desktopAPI.get();
+    $('port').value = info.port;
+    $('cfg').textContent = info.configPath;
+    $('dataRoot').textContent = info.dataRoot;
+  }
+
+  $('save').addEventListener('click', async () => {
+    const port = Number($('port').value);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      setStatus('端口需为 1024 ~ 65535 之间的整数', 'err');
+      return;
+    }
+    $('save').disabled = true;
+    setStatus('正在重启服务…');
+    try {
+      const r = await window.desktopAPI.savePort(port);
+      if (r.ok) {
+        $('port').value = r.port;
+        setStatus(r.message, 'ok');
+      } else {
+        setStatus(r.message, 'err');
+      }
+    } catch (e) {
+      setStatus('保存失败：' + (e && e.message ? e.message : e), 'err');
+    } finally {
+      $('save').disabled = false;
+    }
+  });
+
+  $('openFolder').addEventListener('click', () => window.desktopAPI.openDataFolder());
+
+  $('port').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('save').click(); });
+
+  init();
+</script>
+</body>
+</html>

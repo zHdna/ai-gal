@@ -10,8 +10,8 @@ const fs = require('fs');
 const { isPathWithin } = require('../utils/pathGuard');
 const savePaths = require('../savePaths');
 
-// Avatar upload storage
-const avatarDir = path.join(__dirname, '..', '..', 'public', 'uploads', 'characters');
+// Avatar upload storage (writable data dir — 见 server/paths.js)
+const avatarDir = require('../paths').CHARACTER_AVATARS_DIR;
 fs.mkdirSync(avatarDir, { recursive: true });
 const avatarUpload = multer({
   storage: multer.diskStorage({

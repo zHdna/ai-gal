@@ -32,6 +32,11 @@ profile/
 *.err
 .probe-tmp/
 
+# ---- 桌面版构建产物 & 工具链 ----
+# desktop/ 的源码要提交；下面是它的依赖与产物，不入库。
+desktop/node_modules/
+dist-desktop/
+
 # ---- OS / editor ----
 Thumbs.db
 Desktop.ini

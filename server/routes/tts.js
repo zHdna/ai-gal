@@ -11,7 +11,8 @@ const fs = require('fs');
 const path = require('path');
 const { isPathWithin } = require('../utils/pathGuard');
 
-const TTS_CACHE_DIR = path.join(__dirname, '..', '..', 'data', 'tts-cache');
+const TTS_CACHE_DIR = require('../paths').TTS_CACHE_DIR;
+const TTS_QUEUE_FILE = require('../paths').TTS_QUEUE_FILE;
 
 const TTS_SETTINGS_KEY = 'tts_api_settings';
 
@@ -662,7 +663,7 @@ function buildTTSRouter(db) {
   // 队列 worker 至多并发 TTS_MAX_CONCURRENCY 个合成（按 provider 再限 TTS_MAX_PER_PROVIDER），
   // 超出部分留在内存队列并持久化到磁盘文件；前一批在飞任务返回后自动拉取下一批。
   // 前端收到 queued 后只拿到目标缓存文件名，由播放器 _waitForCacheFile 轮询等待生成完成。
-  const TTS_QUEUE_FILE = path.join(__dirname, '..', '..', 'data', 'tts-queue.json');
+  // TTS_QUEUE_FILE 已在模块顶部由 server/paths.js 提供（随 DATA_ROOT 外置）
   const TTS_MAX_CONCURRENCY = 10;      // 全局同时在飞上限（用户要求：一次不超过 10 条）
   const TTS_MAX_PER_PROVIDER = 3;      // 单 provider 并发上限（避免对单一服务同时打满 10 个冷启动）
   let ttsQueue = [];                    // 待处理/处理中的任务描述符
