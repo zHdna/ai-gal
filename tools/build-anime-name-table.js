@@ -36,7 +36,7 @@ async function loadCsv() {
   const c = new AbortController();
   const id = setTimeout(() => c.abort(), 30000);
   try {
-    const r = await fetch(CDN, { signal: c.signal, headers: { 'User-Agent': 'ai-rp-tool/build-anime-name-table' } });
+    const r = await fetch(CDN, { signal: c.signal, headers: { 'User-Agent': 'ai-gal/build-anime-name-table' } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return await r.text();
   } finally { clearTimeout(id); }

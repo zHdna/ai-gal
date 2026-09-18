@@ -353,7 +353,7 @@ function applyJsonPatchesFromText(model, text) {
 /* ──────────────────────────────────────────────────────────────────────────
  * Tavern Helper <UpdateVariables> support
  *
- * Many complex cards (e.g. 扣扣审判 / MVU scripts) emit variable updates using a
+ * Many complex cards (e.g. Tavern Helper / MVU scripts) emit variable updates using a
  * SQL-flavoured dialect rather than RFC 6902 patches:
  *
  *   <UpdateVariables>
@@ -597,8 +597,8 @@ function applyOneUpdate(model, op) {
  * 'SELECT_DEL'|'TIME'|..., args: [rawArg, ...] }
  *
  * Two wrapper tags are recognised (same SQL-dialect content inside):
- *   <UpdateVariables>               — Tavern Helper / 扣扣审判 style (plural)
- *   <variable_update_call_format>   — 蔚蓝星区 SAM-style custom wrapper
+ *   <UpdateVariables>               — Tavern Helper style (plural)
+ *   <variable_update_call_format>   — SAM-style custom wrapper
  *
  * Supported verbs (case-insensitive, @. prefix optional):
  *   SELECT_ADD / SELECT_SET  — 5-arg upsert record field (existing)

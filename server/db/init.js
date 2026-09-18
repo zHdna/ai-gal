@@ -58,7 +58,6 @@ function initDatabase() {
       tags            TEXT DEFAULT '[]',             -- JSON string
       avatar          TEXT DEFAULT '',               -- base64 or URL
       markup_mode     TEXT DEFAULT '',               -- '' | 'game-xml' : custom game-markup cards (Tavern Helper style)
-      asset_base_path TEXT DEFAULT '',               -- local folder for <pic> illustration resolution (Tier 2)
       created_at      TEXT DEFAULT (datetime('now')),
       updated_at      TEXT DEFAULT (datetime('now'))
     )
@@ -84,9 +83,8 @@ function initDatabase() {
     db.exec('ALTER TABLE characters ADD COLUMN metadata TEXT DEFAULT \'{}\'');
   } catch (e) { /* ignore */ }
 
-  // Migrate: add markup_mode + asset_base_path for game-markup engine cards (大容量卡 / Tavern Helper 风格)
+  // Migrate: add markup_mode for game-markup engine cards (大容量卡 / Tavern Helper 风格)
   try { db.exec("ALTER TABLE characters ADD COLUMN markup_mode TEXT DEFAULT ''"); } catch (e) { /* ignore */ }
-  try { db.exec("ALTER TABLE characters ADD COLUMN asset_base_path TEXT DEFAULT ''"); } catch (e) { /* ignore */ }
 
   // Migrate: add mvu_meta column (MVU variable schema metadata extracted on import)
   try { db.exec("ALTER TABLE characters ADD COLUMN mvu_meta TEXT DEFAULT ''"); } catch (e) { /* ignore */ }

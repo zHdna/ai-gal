@@ -8,18 +8,12 @@
  */
 const { spawn } = require('child_process');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { requireBrowser } = require('./browser');
 
-const CHROME = [
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-  path.join(os.homedir(), 'AppData/Local/Google/Chrome/Application/chrome.exe'),
-  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-].find((p) => fs.existsSync(p));
-if (!CHROME) { console.error('找不到 Chrome/Edge'); process.exit(3); }
+const CHROME = requireBrowser();
 
-const URL_APP = process.argv[2] || 'http://127.0.0.1:3215/?conv=c36922f0-dcc7-4552-a294-c58afc185b90&theme=dark&fs=1';
+const URL_APP = process.argv[2] || 'http://127.0.0.1:3215/?theme=dark&fs=1';
 const OUT = process.argv[3] || path.join(__dirname, '..', '.probe-tmp', 'cdp-conmodal.png');
 const PORT = 9333;
 

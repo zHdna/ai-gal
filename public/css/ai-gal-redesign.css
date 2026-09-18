@@ -2088,7 +2088,7 @@ select:focus {
   background: rgba(0, 0, 0, 0.2);
 }
 
-/* Placeholder chip when asset_base_path not set or image missing */
+/* Placeholder chip when the illustration image is missing */
 .game-pic-placeholder {
   display: inline-flex;
   align-items: center;

@@ -1,7 +1,7 @@
 /* ===========================================================================
    桌面 VN 外壳（desktop visual-novel shell）
    ---------------------------------------------------------------------------
-   设计稿：design/mockups/desktop-vn.html（DOM/CSS 由 tools/build-desktop-vn.js 生成）
+   桌面 VN 外壳：DOM/CSS 均在本仓库内直接维护
    旧桌面 DOM（app.js 的 DOM 契约）整块藏在 #vnLegacyDom 里，display:none 但完全可用：
    .click() 照常派发，innerHTML 照常写入，getElementById 取「文档序最前」= 外壳元素。
 

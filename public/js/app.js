@@ -294,7 +294,6 @@ const DOM = {
   wbEntriesList: () => document.getElementById('wbEntriesList'),
   btnAddWBEntry: () => document.getElementById('btnAddWBEntry'),
   charFirstMessage: () => document.getElementById('charFirstMessage'),
-  charAssetBasePath: () => document.getElementById('charAssetBasePath'),
   charTags: () => document.getElementById('charTags'),
   btnCancelCharacter: () => document.getElementById('btnCancelCharacter'),
   btnSaveCharacter: () => document.getElementById('btnSaveCharacter'),
@@ -3213,7 +3212,7 @@ function isGameMarkupText(text) {
 /**
  * 渲染含有自定义游戏标记（Tavern Helper 风格）的文本。
  * 标记：<content>/<now_plot>/<pic>PATH</pic>/<update>/<update_analysis>/<json_patch> + {name}「...」
- * 白名单消毒：仅保留有限 HTML；`<pic>` 解析为立绘（有资源基路径则尝试加载，否则占位 chip）。
+ * 白名单消毒：仅保留有限 HTML；`<pic>` 解析为立绘（默认从该角色卡的存档目录加载，缺失则占位 chip）。
  */
 function renderGameMarkup(raw) {
   if (!raw) return '';
@@ -3300,19 +3299,20 @@ function renderGameDialogue(name, text) {
 
 function renderGamePic(picPath) {
   const char = AppState.currentCharacter;
-  if (char && char.asset_base_path && char.asset_base_path.trim()) {
-    const id = encodeURIComponent(char.id);
-    const segs = picPath.split('/').map(s => encodeURIComponent(s)).join('/');
-    const url = `/api/characters/${id}/asset/${segs}`;
-    return `<span class="game-pic-wrap">` +
-      `<img class="game-pic" src="${url}" alt="${escapeHtml(picPath)}" loading="lazy" ` +
-      `onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';">` +
-      `<span class="game-pic-placeholder" style="display:none" title="立绘未找到：${escapeHtml(picPath)}">` +
-      `<span class="pic-icon">🖼️</span><span class="pic-label">${escapeHtml(picPath)}</span></span>` +
-      `</span>`;
+  if (!char) {
+    return `<span class="game-pic-placeholder" title="立绘资源未配置：${escapeHtml(picPath)}">` +
+      `<span class="pic-icon">🖼️</span><span class="pic-label">${escapeHtml(picPath)}</span></span>`;
   }
-  return `<span class="game-pic-placeholder" title="立绘资源未配置：${escapeHtml(picPath)}">` +
-    `<span class="pic-icon">🖼️</span><span class="pic-label">${escapeHtml(picPath)}</span></span>`;
+  /* 立绘默认存放于该角色卡的存档目录（saves/gameNNNN/ 及其 sub 存档），无需手动配置路径 */
+  const id = encodeURIComponent(char.id);
+  const segs = picPath.split('/').map(s => encodeURIComponent(s)).join('/');
+  const url = `/api/characters/${id}/asset/${segs}`;
+  return `<span class="game-pic-wrap">` +
+    `<img class="game-pic" src="${url}" alt="${escapeHtml(picPath)}" loading="lazy" ` +
+    `onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';">` +
+    `<span class="game-pic-placeholder" style="display:none" title="立绘未找到：${escapeHtml(picPath)}">` +
+    `<span class="pic-icon">🖼️</span><span class="pic-label">${escapeHtml(picPath)}</span></span>` +
+    `</span>`;
 }
 
 function renderGameUpdate(block) {
@@ -7242,7 +7242,6 @@ async function openCharacterModal(characterId = null) {
       DOM.charDescription().value = char.description || '';
       DOM.charScenario().value = char.scenario || '';
       DOM.charFirstMessage().value = char.first_message || '';
-      DOM.charAssetBasePath().value = char.asset_base_path || '';
       DOM.charSystemPrompt().value = char.system_prompt || '';
       DOM.charPostHistory().value = char.post_history_instructions || '';
       DOM.charTags().value = parseTags(char.tags).join(', ');
@@ -7492,7 +7491,6 @@ async function saveCharacter() {
     description: DOM.charDescription().value.trim(),
     scenario: DOM.charScenario().value.trim(),
     first_message: DOM.charFirstMessage().value.trim(),
-    asset_base_path: DOM.charAssetBasePath().value.trim(),
     system_prompt: DOM.charSystemPrompt().value.trim(),
     post_history_instructions: DOM.charPostHistory().value.trim(),
     tags: DOM.charTags().value.split(',').map(t => t.trim()).filter(Boolean),

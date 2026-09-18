@@ -182,14 +182,14 @@ module.exports = (db) => {
         `).run(msgId, id, char.first_message);
 
         // Seed MVU world_state from engine-card greeting — supports:
-        //   <json_patch> / <JSONPatch>           (RFC 6902, standard MVU + 扣扣审判)
+        //   <json_patch> / <JSONPatch>           (RFC 6902, standard MVU)
         //   <UpdateVariables>                     (Tavern Helper SQL dialect)
-        //   <variable_update_call_format>         (蔚蓝星区 SAM-style)
-        //   <|state|>...</|state|>               (蔚蓝星区 initial-state JSON block)
+        //   <variable_update_call_format>         (SAM-style)
+        //   <|state|>...</|state|>               (card initial-state JSON block)
         const greetingHasVars = /<json_patch>|<JSONPatch>|<UpdateVariables>|<UpdateVariable>|<variable_update_call_format>|<\|state\|>/.test(char.first_message || '');
         if (char.markup_mode === 'game-xml' || greetingHasVars) {
           try {
-            // First try <|state|> block seeding (蔚蓝星区 style — flattens static.* prefix)
+            // First try <|state|> block seeding (card style — flattens static.* prefix)
             let seeded = seedFromStateBlock(char.first_message || '');
             // Then apply any <json_patch>/<UpdateVariables>/<variable_update_call_format> blocks
             seeded = applyWorldStateFromText(seeded || {}, char.first_message || '');

@@ -1,5 +1,5 @@
 /**
- * nameMatch.js — Canonical card-name / character-name equivalence for ai-rp-tool.
+ * nameMatch.js — Canonical card-name / character-name equivalence for AI-GAL.
  *
  * SINGLE SOURCE OF TRUTH for `namesEquivalent`, `normCard`, `levenshtein`.
  * Previously duplicated in chat.js and images.js, which invites silent drift.

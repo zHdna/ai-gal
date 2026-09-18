@@ -10,20 +10,14 @@
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { requireBrowser } = require('./browser');
 
 const url = process.argv[2];
 if (!url) { console.error('usage: node tools/probe-real.js <url> [WxH] [budgetMs]'); process.exit(2); }
 const size = (process.argv[3] || '1920x1080').split('x');
 const budget = process.argv[4] || '14000';
 
-const CHROME = [
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-  path.join(os.homedir(), 'AppData/Local/Google/Chrome/Application/chrome.exe'),
-  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-].find((p) => fs.existsSync(p));
-if (!CHROME) { console.error('找不到 Chrome/Edge'); process.exit(3); }
+const CHROME = requireBrowser();
 
 const work = path.resolve(__dirname, '..', '.probe-tmp');
 fs.mkdirSync(work, { recursive: true });

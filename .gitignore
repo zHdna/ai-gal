@@ -22,10 +22,6 @@ public/uploads/
 # Character profile art / NPC portraits
 profile/
 
-# Design dev screenshots (capture real app sessions — never share)
-design/_shots/
-design/preview/
-
 # ---- Logs & scratch ----
 *.log
 *.out

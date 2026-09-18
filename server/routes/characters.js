@@ -351,7 +351,7 @@ function parseSamVariableList(content, fields) {
 
 /**
  * Pick the best greeting for an engine card. If first_message is a bare placeholder
- * (e.g. 【扣扣审判封面】), prefer the richest alternate greeting that contains narrative
+ * (e.g. 【作品封面】), prefer the richest alternate greeting that contains narrative
  * markup, so the imported greeting actually shows the intended rendered content.
  */
 function pickEngineGreeting(card) {
@@ -381,14 +381,13 @@ module.exports = (db) => {
     res.json(row);
   });
 
-  // Partial update: markup_mode / asset_base_path (used by frontend engine-card settings)
+  // Partial update: markup_mode (used by frontend engine-card settings)
   router.patch('/:id', (req, res) => {
     const existing = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Character not found' });
 
     const fields = {};
     if (req.body.markup_mode !== undefined) fields.markup_mode = String(req.body.markup_mode);
-    if (req.body.asset_base_path !== undefined) fields.asset_base_path = String(req.body.asset_base_path);
     if (Object.keys(fields).length === 0) return res.json({ message: 'no changes' });
 
     const setClause = Object.keys(fields).map(k => `${k} = ?`).join(', ');
@@ -398,35 +397,54 @@ module.exports = (db) => {
     res.json({ message: 'Character updated', fields });
   });
 
-  // Serve <pic> illustration assets from the character's asset_base_path (Tier 2)
-  // URL: /api/characters/:id/asset/<relative path inside asset_base_path>
+  // Serve <pic> illustration assets from the character's SAVE folder（默认存放位置，无需配置路径）
+  // URL: /api/characters/:id/asset/<relative path inside the save folder>
+  // 查找顺序：master 存档目录 → master/images → 各 sub 存档目录（新→旧）→ 其 images/
   // Path-traversal protected; tries common image extensions when none given.
   const ASSET_EXTS = ['', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.bmp'];
+
+  // 立绘查找根目录：该角色卡的存档目标目录（saves/gameNNNN）及其 images/，再兜底其 sub 存档。
+  function resolveAssetBases(characterId) {
+    let master = '';
+    try { master = savePaths.ensureMasterDir(db, characterId); } catch (e) { return []; }
+    if (!master) return [];
+    const bases = [master, path.join(master, 'images')];
+    let subs = [];
+    try {
+      subs = fs.readdirSync(master, { withFileTypes: true })
+        .filter(e => e.isDirectory() && e.name !== 'images')
+        .map(e => e.name)
+        .sort()
+        .reverse(); // 时间戳命名的 sub 存档：新的排在前面
+    } catch (e) { /* master 尚未建立 → 仅用上面的根目录 */ }
+    for (const s of subs) {
+      bases.push(path.join(master, s), path.join(master, s, 'images'));
+    }
+    return bases;
+  }
+
   router.get('/:id/asset/*', (req, res) => {
-    const row = db.prepare('SELECT asset_base_path FROM characters WHERE id = ?').get(req.params.id);
+    const row = db.prepare('SELECT id FROM characters WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Character not found' });
-    const base = (row.asset_base_path || '').trim();
-    if (!base) return res.status(404).json({ error: 'asset_base_path not configured' });
 
     const rel = req.params[0] || '';
     if (!rel) return res.status(400).json({ error: 'missing asset path' });
 
-    // Resolve and enforce it stays within base (block ../ traversal)
-    const baseResolved = path.resolve(base);
-    const resolved = path.resolve(baseResolved, rel);
-    if (!isPathWithin(baseResolved, resolved)) {
-      return res.status(400).json({ error: 'invalid asset path' });
-    }
-
-    for (const ext of ASSET_EXTS) {
-      const candidate = ext ? resolved + ext : resolved;
-      // Re-validate candidate (with appended extension) still within base dir
-      if (!isPathWithin(baseResolved, candidate)) continue;
-      try {
-        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-          return res.sendFile(candidate);
-        }
-      } catch (e) { /* ignore and continue */ }
+    for (const base of resolveAssetBases(req.params.id)) {
+      // Resolve and enforce it stays within base (block ../ traversal)
+      const baseResolved = path.resolve(base);
+      const resolved = path.resolve(baseResolved, rel);
+      if (!isPathWithin(baseResolved, resolved)) continue;
+      for (const ext of ASSET_EXTS) {
+        const candidate = ext ? resolved + ext : resolved;
+        // Re-validate candidate (with appended extension) still within base dir
+        if (!isPathWithin(baseResolved, candidate)) continue;
+        try {
+          if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+            return res.sendFile(candidate);
+          }
+        } catch (e) { /* ignore and continue */ }
+      }
     }
     return res.status(404).json({ error: 'asset not found' });
   });
@@ -454,9 +472,8 @@ module.exports = (db) => {
     const creator_notes = data.creator_notes || '';
     const tags = Array.isArray(data.tags) ? JSON.stringify(data.tags) : (typeof data.tags === 'string' ? data.tags : '[]');
     const avatar = data.avatar || data.char_image || '';
-    // Engine card detection → markup_mode; asset_base_path from body override or '' (user sets later)
+    // Engine card detection → markup_mode
     const markup_mode = data.markup_mode || (isEngineCard(data) ? 'game-xml' : '');
-    const asset_base_path = data.asset_base_path || '';
     // Persist detected UI contract (MVU vs legacy status bar) so prompts can adapt.
     const ui = detectCardUI(data);
     const metadata = JSON.stringify({ ui_hints: ui });
@@ -466,10 +483,10 @@ module.exports = (db) => {
     const id = uuidv4();
     db.prepare(`
       INSERT INTO characters (id, name, title, description, personality, scenario, first_message,
-        system_prompt, post_history_instructions, character_book, book_activation, mes_example, creator_notes, tags, avatar, markup_mode, asset_base_path, metadata, mvu_meta, excluded_names)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        system_prompt, post_history_instructions, character_book, book_activation, mes_example, creator_notes, tags, avatar, markup_mode, metadata, mvu_meta, excluded_names)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, name, title, description, personality, scenario, first_message,
-      system_prompt, post_history_instructions, character_book, 'on', mes_example, creator_notes, tags, avatar, markup_mode, asset_base_path, metadata, mvu_meta, JSON.stringify([name]));
+      system_prompt, post_history_instructions, character_book, 'on', mes_example, creator_notes, tags, avatar, markup_mode, metadata, mvu_meta, JSON.stringify([name]));
 
     // Allocate master save folder for this game
     try { savePaths.ensureMasterDir(db, id); } catch (e) { /* ignore */ }
@@ -544,7 +561,6 @@ module.exports = (db) => {
       }
 
       const markup_mode = data.markup_mode || (isEngineCard(data) ? 'game-xml' : '');
-      const asset_base_path = data.asset_base_path || '';
       // Persist detected UI contract (MVU vs legacy status bar) so prompts can adapt.
       const ui = detectCardUI(data);
       const metadata = JSON.stringify({ ui_hints: ui });
@@ -554,10 +570,10 @@ module.exports = (db) => {
       const id = uuidv4();
       db.prepare(`
         INSERT INTO characters (id, name, title, description, personality, scenario, first_message,
-          system_prompt, post_history_instructions, character_book, book_activation, mes_example, creator_notes, tags, avatar, markup_mode, asset_base_path, metadata, mvu_meta, excluded_names)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          system_prompt, post_history_instructions, character_book, book_activation, mes_example, creator_notes, tags, avatar, markup_mode, metadata, mvu_meta, excluded_names)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(id, name, title, description, personality, scenario, first_message,
-        system_prompt, post_history_instructions, character_book, 'on', mes_example, creator_notes, tags, avatar, markup_mode, asset_base_path, metadata, mvu_meta, JSON.stringify([name]));
+        system_prompt, post_history_instructions, character_book, 'on', mes_example, creator_notes, tags, avatar, markup_mode, metadata, mvu_meta, JSON.stringify([name]));
 
       // Allocate master save folder for this game
       try { savePaths.ensureMasterDir(db, id); } catch (e) { /* ignore */ }
@@ -568,7 +584,7 @@ module.exports = (db) => {
 
   // Create character (manual)
   router.post('/', (req, res) => {
-    const { name, title, description, personality, scenario, first_message, system_prompt, post_history_instructions, character_book, book_activation, mes_example, creator_notes, tags, avatar, markup_mode, asset_base_path } = req.body;
+    const { name, title, description, personality, scenario, first_message, system_prompt, post_history_instructions, character_book, book_activation, mes_example, creator_notes, tags, avatar, markup_mode } = req.body;
 
     if (!name) return res.status(400).json({ error: 'Character name is required' });
 
@@ -576,11 +592,11 @@ module.exports = (db) => {
     const metadata = typeof req.body.metadata === 'object' ? JSON.stringify(req.body.metadata) : '{}';
     db.prepare(`
       INSERT INTO characters (id, name, title, description, personality, scenario, first_message,
-        system_prompt, post_history_instructions, character_book, book_activation, mes_example, creator_notes, tags, avatar, markup_mode, asset_base_path, metadata, excluded_names)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        system_prompt, post_history_instructions, character_book, book_activation, mes_example, creator_notes, tags, avatar, markup_mode, metadata, excluded_names)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, name, title || '', description || '', personality || '', scenario || '', first_message || '',
       system_prompt || '', post_history_instructions || '', character_book || '', book_activation || 'off', mes_example || '', creator_notes || '',
-      JSON.stringify(tags || []), avatar || '', markup_mode || '', asset_base_path || '', metadata, JSON.stringify([name]));
+      JSON.stringify(tags || []), avatar || '', markup_mode || '', metadata, JSON.stringify([name]));
 
     // Allocate master save folder for this game
     try { savePaths.ensureMasterDir(db, id); } catch (e) { /* ignore */ }
@@ -593,7 +609,7 @@ module.exports = (db) => {
     const existing = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Character not found' });
 
-    const { name, title, description, personality, scenario, first_message, system_prompt, post_history_instructions, character_book, book_activation, mes_example, creator_notes, tags, avatar, metadata, markup_mode, asset_base_path } = req.body;
+    const { name, title, description, personality, scenario, first_message, system_prompt, post_history_instructions, character_book, book_activation, mes_example, creator_notes, tags, avatar, metadata, markup_mode } = req.body;
     const metadataStr = (metadata && typeof metadata === 'object') ? JSON.stringify(metadata) : undefined;
 
     db.prepare(`
@@ -614,7 +630,6 @@ module.exports = (db) => {
         avatar = COALESCE(?, avatar),
         metadata = COALESCE(?, metadata),
         markup_mode = COALESCE(?, markup_mode),
-        asset_base_path = COALESCE(?, asset_base_path),
         updated_at = datetime('now')
       WHERE id = ?
     `).run(
@@ -623,7 +638,6 @@ module.exports = (db) => {
       tags !== undefined ? JSON.stringify(tags) : null,
       avatar, metadataStr,
       markup_mode !== undefined ? markup_mode : null,
-      asset_base_path !== undefined ? asset_base_path : null,
       req.params.id
     );
 

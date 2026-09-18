@@ -4,12 +4,12 @@
  *
  *   node tools/shot-url.js <url> <out.png> [WxH] [budgetMs]
  *
- * 与 tools/shot-mockup.js 同一套 Chrome 参数；stdio 落盘（管道会 EPERM）。
+ * 与 tools/probe-real.js 同一套 Chrome 参数；stdio 落盘（管道会 EPERM）。
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { requireBrowser } = require('./browser');
 
 const url = process.argv[2];
 const out = process.argv[3];
@@ -17,13 +17,7 @@ const size = (process.argv[4] || '1920x1080').split('x');
 const budget = process.argv[5] || '6000';
 if (!url || !out) { console.error('usage: node tools/shot-url.js <url> <out.png> [WxH] [budgetMs]'); process.exit(2); }
 
-const CHROME = [
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-  path.join(os.homedir(), 'AppData/Local/Google/Chrome/Application/chrome.exe'),
-  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-].find((p) => fs.existsSync(p));
-if (!CHROME) { console.error('找不到 Chrome/Edge'); process.exit(3); }
+const CHROME = requireBrowser();
 
 fs.mkdirSync(path.dirname(out), { recursive: true });
 const work = path.join(__dirname, '..', '.probe-tmp');

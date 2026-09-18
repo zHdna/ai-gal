@@ -1,5 +1,5 @@
 /**
- * savePaths.js — Master/Sub save-folder architecture for ai-rp-tool
+ * savePaths.js — Master/Sub save-folder architecture for AI-GAL
  *
  * Layout:
  *   saves/

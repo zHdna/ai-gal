@@ -39,7 +39,7 @@ const { lookupAnimeEnglishName } = require('../utils/anime-names');
  *   <UpdateVariables>          — Tavern Helper SQL dialect (plural)
  *   <UpdateVariable>           — standard MVU Game Maker (singular)
  *   <json_patch> / <JSONPatch> — RFC 6902 patch array
- *   <variable_update_call_format> — 蔚蓝星区 SAM-style custom
+ *   <variable_update_call_format> — SAM-style custom
  *   <SAMCheckpoint>            — SAM v6 full-state snapshot (stripped after apply)
  *   <UpdateAnalysis>           — reasoning sub-block inside <UpdateVariable>
  *   <combat_log>               — D20 check result log (MVU)
