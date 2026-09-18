@@ -1,5 +1,9 @@
-# ---- Runtime & user data (never share) ----
-node_modules/
+# ---- 依赖库：随仓库分发（请勿排除）----
+# node_modules/ 是「即下即用」的前提：内置便携版 Node 22（runtime/node.exe）与之 ABI 匹配，
+# 用户既不需要、也无法执行 npm install（包内不含 npm）。
+# 因此这里**故意不忽略** node_modules/。若确需临时排除，请用 git add -f 显式添加。
+
+# ---- 用户数据（never share）----
 
 # SQLite database + WAL sidecars + per-install encryption secret
 server/db/data.db

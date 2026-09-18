@@ -2,7 +2,8 @@
 
 **AI-GAL** 是一个完全本地运行的 AI 角色扮演 / 视觉小说（Galgame）引擎。
 用 SillyTavern 生态的角色卡驱动多角色剧情：主 AI 写故事，管家 AI 负责格式切分与氛围分析，
-画师 AI 撰写生图提示词，配合 ComfyUI 自动生成立绘与 CG，
+画师 AI 撰写生图提示词，默认由 **anima-turbo-cg**（极简本地生图，解压即用）生成立绘与 CG，
+也可改用 **ComfyUI + 自备工作流** 换取更高画质，
 支持 TTS 语音朗读、MVU 变量系统、世界书、多存档管理与移动端自适应界面。
 
 后端 Node.js + Express + SQLite（better-sqlite3），前端为原生 JS 游戏化 UI，无需构建、解压即用。
@@ -23,8 +24,10 @@
 - **记忆代理**：每轮生成一句记忆摘要，累计后自动整理成表格注入上下文，长对话不丢剧情
 
 ### 视觉与音频
-- **ComfyUI 自动生图**：（注：请一定要安装ComfyUI以确保游戏体验）主要功能：角色立绘（portrait）、剧情 CG、角色登场 CG、头像；
-  提示词标签按双层结构（Hard Tags + 自然语言）自动组合
+- **自动生图**：角色立绘（portrait）、剧情 CG、角色登场 CG、头像；
+  提示词标签按双层结构（Hard Tags + 自然语言）自动组合。
+  **anima-turbo-cg 是极简模式**（默认，单模型、无 Python / 无 torch / 无 ComfyUI，解压即用，只有基本的生图功能，适用于不会使用comfyui的初级用户）；
+  **若需要更好的图像质量，建议安装 ComfyUI 并配置自己的工作流**（见第五节 2）
 - **TTS 语音朗读**：支持火山引擎、阿里百炼、SiliconFlow、Volink 等云端 API 格式，
   以及 ComfyUI Qwen3-TTS（`qwen3-tts-01.json`）本地推理
 - **BGM 氛围联动**：按管家 AI 判定的 mood（battle / blue / ceremony / nomal / relaxed / suspense）自动切歌，
@@ -34,7 +37,7 @@
 ### 存档与界面
 - **master/sub 存档架构**：按角色分文件夹，存档内含事件日志、角色名册、CG 画廊、生成图片
 - **多端界面**：桌面全屏 VN 演出界面 + 手机 / 平板移动端（自动识别跳转，可用 `?desktop=1` 切回）
-- **局域网游玩**：`Start-LAN.bat` 启动后，同一网络下的手机可直接访问
+- **局域网游玩**：`Start-LAN.bat` 启动后，同一网络下的手机可直接访问，有专门的移动前端。（注意安全风险）
 
 ---
 
@@ -66,10 +69,12 @@
 
 ### 本地推理与显存提醒
 
-本地 LLM、本地生图（ComfyUI）与本地 TTS（Qwen3-TTS）**都会占用大量显存**，三者同时开启会互相挤占，
-表现为排队、超时或生成失败。请根据自己的**显存容量与实际需求**合理启用：
+本地 LLM、本地生图（anima-turbo-cg 或 ComfyUI）与本地 TTS（Qwen3-TTS）**都会占用大量显存**，
+三者同时开启会互相挤占，表现为排队、超时或生成失败。请根据自己的**显存容量与实际需求**合理启用：
 
 - 显存有限时，优先把 **LLM 换成云端 API**（主 AI 尤其推荐云端强模型），本地只保留生图或 TTS 其中一项；
+- **anima-turbo-cg 是独立的服务进程**（不是本项目的子进程），它自己占一份显存（1024² 约 3.5 GB）；
+  不玩的时候用它的 `stop.bat` 关掉即可释放；
 - ComfyUI 的模型精度 / 分辨率 / 并发数、TTS 的采样参数都会显著影响占用，可按需下调；
 - 云端 TTS（火山引擎 / 阿里百炼 / SiliconFlow / Volink 等）不占本地显存，是省显存的替代方案。
 
@@ -116,8 +121,10 @@
 
 ### 环境
 
-- Windows（`start.bat` 为 Windows 脚本；其他系统可直接 `node server/index.js`）
-- 无需安装 Node.js —— 仓库自带 `runtime/node.exe`
+- **Windows 无须额外安装任何依赖。** 便携版 Node 22 运行时（`runtime\node.exe`）与全部依赖库
+  （`node_modules\`）均已内置，**clone 或解压后双击 `start.bat` 即可运行** ——
+  不需要装 Node.js，不需要装 npm，也不需要执行任何安装命令。
+- 其他系统：自行安装 Node 22 后执行 `node server/index.js` 亦可。
 
 ### 启动
 
@@ -125,7 +132,11 @@
 | --- | --- | --- |
 | 本机（推荐） | 双击 `start.bat` | http://127.0.0.1:3210 |
 | 局域网 | 双击 `Start-LAN.bat` | http://<你的IP>:3210 |
-| 手动 | `node server\index.js` | http://127.0.0.1:3210 |
+| 手动 | `runtime\node.exe server\index.js` | http://127.0.0.1:3210 |
+
+> **想让「生图」开箱可用**：默认生图引擎是 `anima-turbo-cg`，它是**另一个需要单独启动的程序**。
+> 请在启动 AI-GAL 之前（或之后）去它的目录双击 `start.bat`。没启动它也能玩，
+> 但立绘 / CG 会退回占位图 —— 详见 **第五节「首次配置」第 2 条「生图」**。
 
 ### 环境变量
 
@@ -137,16 +148,17 @@
 | `CRYPTO_PASSWORD` | 未设置 | API Key 加密口令，**建议设置** |
 | `CRYPTO_SALT` | 未设置 | 加密盐，**建议设置** |
 
-### 安装依赖（克隆后必做）
+### 关于依赖（一般无需处理）
 
-`node_modules/` 不随仓库分发，克隆后先安装：
+`node_modules/` 与便携版 Node 22 运行时**都已随仓库提供**，开箱即用。之所以内置运行时而不用
+你自己装的 Node，是因为 `better-sqlite3` 是原生模块、与 Node 大版本绑定 —— 固定运行时版本可以
+避免「依赖与 Node 版本不匹配」这类问题。
+
+仅当你需要改代码、或想改用自己安装的 Node 时，才需要在本机装有 Node 22 的前提下重新安装依赖：
 
 ```bat
 npm install
 ```
-
-> `better-sqlite3` 是原生模块，需与本机 Node 版本匹配，Windows 建议直接用自带的
-> `runtime\node.exe`（v22）；其他平台安装 Node 22 后亦可正常 `npm install`（官方预编译二进制）。
 
 ---
 
@@ -167,23 +179,105 @@ npm install
 `server/db/.crypto_secret` 生成一个本机随机密钥（该数据库连同 `.crypto_secret` 一起拷走仍可解密，
 只拷 `data.db` 则不能）。长期使用建议显式设置环境变量。
 
-### 2. 生图（ComfyUI 是核心，强烈建议安装）
+### 2. 生图（默认 anima-turbo-cg 极简模式；追求画质请上 ComfyUI）
 
-**ComfyUI 在本项目中不是可有可无的装饰，而是演出机制的核心**：角色立绘、剧情 CG、角色登场 CG、
+**生图不是可有可无的装饰，而是演出机制的核心**：角色立绘、剧情 CG、角色登场 CG、
 头像全部由它生成并归档进存档（CG 画廊与角色名册都依赖这些产物）。不配置生图时只能退回占位图与默认头像，
-「视觉小说」的观感会大幅下降 —— 所以请务必装好 ComfyUI 再玩。
+「视觉小说」的观感会大幅下降 —— 所以请务必把生图跑起来。
 
-本项目默认走**本机或局域网 ComfyUI**：
+本项目的**默认生图引擎是 `anima-turbo-cg`**（极简模式，开箱默认选中、参数已填好）。
 
-1. 在「设置 → 生图」填写 ComfyUI 地址（如 `http://127.0.0.1:8188`）
-2. **提供工作流 JSON**：根目录的 `GALCG.json`（CG）与 `portrait_x.json`（立绘）默认是**空占位文件**，
+> 📦 **anima-turbo-cg 是独立项目，需要单独下载并运行**：仓库地址
+> **<https://github.com/zHdna/anima-turbo-cg>**
+> 代码与文档在仓库里；**模型与后端包以 zip 形式放在该仓库的 Releases** 中
+> （六个 zip：模型三件套约 3.05 GiB + 后端包 16 MB ~ 852 MB，合计约 3.93 GiB），
+> 请到那里下载，它不在本仓库内。解压方式见该项目的 README「获取与安装」。
+>
+> ⚠️ 本仓库只负责「按 anima-turbo-cg 的接口去调用它」，**不会自动把它启动起来**。
+> **没有启动它时，生图会失败**（日志里是连接被拒绝）—— 此时请先启动它，或改用 ComfyUI。
+
+#### 路线 A：anima-turbo-cg —— 极简模式（默认，推荐先跑通）
+
+**定位：够用、零依赖、几分钟就能跑起来。它是「极简模式」，不是画质天花板。**
+
+| 特点 | 说明 |
+| --- | --- |
+| 体积 | 约 **4.7 GB**（模型 3.5 GB + 三套后端包 1.24 GB），对比 ComfyUI 方案约 11 GB |
+| 依赖 | **无 Python、无 torch、无 ComfyUI**，内核是 `stable-diffusion.cpp`，解压即用 |
+| 硬件 | NVIDIA 显卡（可用 CUDA 后端）、AMD / Intel 显卡（Vulkan）**以及纯 CPU** 都能跑 |
+| 出图 | 1024² / 6 步下 GPU 单张**只需几秒**，纯 CPU 约 4~5 分钟；风格为二次元·2.5D |
+| 代价 | 单模型、无 ControlNet / LoRA / 精修链，**细节与可控性明显不如 ComfyUI 工作流** |
+
+**使用步骤**：
+
+1. **下载 anima-turbo-cg**：到 <https://github.com/zHdna/anima-turbo-cg> 取代码与文档，
+   再从其 **Releases** 下载模型与后端包 zip（解压位置见该项目 README 的「获取与安装」），
+   组成完整的 `anima-turbo-cg\` 目录（与 AI-GAL 并列存放即可，二者互不依赖路径）；
+2. 双击它的 **`start.bat`**：自检模型 → 探测后端 → 预热 → 服务起在 `http://127.0.0.1:8100/`；
+   看到 `[ok] server ready` 就是好了。**关掉那个黑窗口即停止服务**，不会在后台占用显存。
+3. 回到 AI-GAL：**设置 → 生图 → 生成引擎** 选 **「anima-turbo-cg（极简本地生图·默认）」**。
+   端点是内置默认值，正常情况下**什么都不用改**，直接保存即可：
+
+   | 项 | 默认值 |
+   | --- | --- |
+   | 引擎 | `anima-turbo-cg` |
+   | API 地址 | `http://127.0.0.1:8100/v1/images/generations` |
+   | API Key | `local`（该服务不校验 Key，填任意非空值） |
+   | 生图模型 | `sd-cpp-local` |
+   | 图片尺寸 | `1024x1024` |
+
+   想确认连通性，点一下旁边的**「拉取」**按钮：能列出 `sd-cpp-local` 就说明接上了。
+
+> **纯 CPU 用户请注意**：anima-turbo-cg 收到请求后是**同步出图**的，
+> 1024² 在 CPU 上要约 4~5 分钟。请把「图片尺寸」改成 **512x512 或 768x768**（512² 约 1 分钟）。
+> AI-GAL 对 anima 引擎的等待上限是 10 分钟，够用；但小尺寸仍然是纯 CPU 上更舒服的选择。
+
+> **提示词建议**：anima-turbo 是蒸馏模型，**英文标签式**效果最稳，例如
+> `1girl, solo, portrait, masterpiece, best quality, detailed eyes, cinematic lighting`。
+> 中文也能识别（文本编码器是多语言的），但**别写** `photorealistic, raw photo` 这类写实词 ——
+> 它是二次元 / 2.5D 取向，写实前缀反而出塑料感。步数 / CFG 由 anima-turbo-cg 自己的
+> `config.json` 决定（官方推荐 **6 步 / CFG 1.0**），AI-GAL 不发送这些字段。
+
+#### 路线 B：ComfyUI —— 想要更好的图像质量，就用它
+
+**anima-turbo-cg 是极简模式；如果你在意画质、想要 LoRA / ControlNet / 自定义采样链，
+请安装 ComfyUI 并使用自己的工作流。** 这是本项目画质的上限所在，也是唯一能自由换模型、换工作流的路线。
+
+1. 在「设置 → 生图」把 **生成引擎** 改为 **「ComfyUI（画质最佳·需工作流）」**；
+2. 填写 ComfyUI 地址（默认 `http://127.0.0.1:8188`）；
+3. **提供工作流 JSON**：根目录的 `GALCG.json`（CG）与 `portrait_x.json`（立绘）默认是**空占位文件**，
    需要把自己 ComfyUI 里导出的工作流（API 格式 JSON）写入这两个文件，
-   或在设置里填写自己工作流文件的名字（放在项目根目录）
-3. 工作流引用的模型需在你的 ComfyUI `models/` 目录中已存在；提示词节点会自动探测，无需手动填节点 ID
+   或在设置里填写自己工作流文件的名字（放在项目根目录）；
+4. 工作流引用的模型需在你的 ComfyUI `models/` 目录中已存在；提示词节点会自动探测，无需手动填节点 ID。
+
+> 📌 **两个引擎可以随时切换**，设置里选哪个就是哪个（`生成引擎` 下拉框），互不影响。
+> 切换后请点「保存图像设置」。
+>
+> ⚠️ 两种引擎在设置里是**两套独立的地址**：anima-turbo-cg 用 `API 地址`（8100），
+> ComfyUI 用 `ComfyUI 服务器地址`（8188）—— 端口不同，别填串了。
 
 > **线上生图 API（可选择，但未测试）**：设置里的模式也支持填写 `openai` 兼容或 `stability` 格式的
 > **线上生图 API**（填 `api_url` / `api_key` / 模型名即可调用）。但该路径**尚未经过测试**，
-> 效果、稳定性与标签兼容性均不做保证；想要完整体验（尤其立绘与登场 CG 的一致性），请使用 ComfyUI。
+> 效果、稳定性与标签兼容性均不做保证；想要完整体验（尤其立绘与登场 CG 的一致性），
+> 请使用 anima-turbo-cg 或 ComfyUI。
+
+> **关于超时**：AI-GAL 对 `openai` / `stability` 这类**线上接口**的超时是 120 秒。
+> anima-turbo-cg 走独立分支，等待上限是 **10 分钟**，不受此限制。
+
+#### 生图排错（最快自查路径）
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 日志 `ECONNREFUSED 127.0.0.1:8100` | **anima-turbo-cg 没启动**。去它的目录双击 `start.bat`，等出现 `[ok] server ready` |
+| 日志 `EPROTO` / TLS 相关错误 | 引擎选成了 `openai`，但地址填的是 `http://127.0.0.1:8100`。**把引擎改回 `anima-turbo-cg`** |
+| 日志 `端口 8100 ...` / 生图全部失败但服务在跑 | 端口被别的程序占用；关掉冲突程序，或改 anima-turbo-cg 的 `config.json` 端口并在 AI-GAL 里同步改 `API 地址` |
+| 出图很慢 / 卡住 | 纯 CPU：把「图片尺寸」改成 `512x512` 或 `768x768`；GPU 首张图慢是着色器编译，属正常 |
+| 画质差：过曝 / 发黄 / 塑料感 | anima-turbo-cg 的 **CFG 被调高了**，改回 `1.0`（改它的 `config.json`，或直接用它的 WebUI 改） |
+| 画面空洞、细节少 | 提示词太短；补上 主体 + 画质词 + 光影，步数用 6 |
+| 每次出图都一样 | anima-turbo-cg 的 `config.json` 里 `params.seed` 必须是 `-1`（随机） |
+| 立绘 / CG 一致性差、想要更好画质 | 这是极简模式的固有上限 —— **改用 ComfyUI + 自己的工作流**（路线 B） |
+| 切换引擎后设置没生效 | 引擎下拉框改完必须点「保存图像设置」；两个引擎的地址字段是分开的 |
+
 
 ### 3. TTS 语音（可选）
 
@@ -219,10 +313,11 @@ AI-GAL/
 ├─ README.md                      本文件
 ├─ game01.jpg                     README 演示截图
 ├─ WORLDBOOK_ACTIVATION_GUIDE.md 世界书激活机制说明（用户文档）
-├─ GALCG.json                     默认 CG 工作流（空占位，需自行填入）
-├─ portrait_x.json                默认立绘工作流（空占位，需自行填入）
+├─ GALCG.json                     默认 CG 工作流（空占位，仅 ComfyUI 模式需要）
+├─ portrait_x.json                默认立绘工作流（空占位，仅 ComfyUI 模式需要）
 ├─ qwen3-tts-01.json              ComfyUI Qwen3-TTS 工作流（可选功能）
-├─ runtime/node.exe               自带 Node 运行时
+├─ runtime/node.exe               自带 Node 运行时（便携版 Node 22）
+├─ node_modules/                  依赖库（随仓库分发，开箱即用）
 ├─ server/                        后端
 │  ├─ index.js                    入口 / 路由挂载
 │  ├─ crypto.js                   API Key 加解密
