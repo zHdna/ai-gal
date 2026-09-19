@@ -340,6 +340,8 @@
       avatarR.classList.remove('on');
     }
     setTimeout(updateNarrHint, 30);
+    // 演到最后一段才把行动选项浮到画面中央；往回翻或中间段一律收起
+    syncChoices();
     if (!opts.silent) VN.shell && VN.shell.vibrate && VN.shell.vibrate(6);
   }
 
@@ -358,10 +360,29 @@
     if (num) num.textContent = String(val);
   }
 
+  /** 当前回合可选的行动选项（来自最新一条 .story-block） */
+  var pendingChoices = [];
+  /** 本回合是否已演到最后一段 —— 选项只在这时出现在画面中央 */
+  function atLastSegment() {
+    return S.segments.length > 0 && S.idx >= S.segments.length - 1;
+  }
+  /** 按「是否到最后一段」决定选项显示与否（与桌面端 .app .choices 的行为一致） */
+  function syncChoices() {
+    // 回顾历史时不显示（历史回合的选项不可点）
+    // 欢迎引导态（未选角色/未开对话）也不显示，避免和引导文案叠在一起
+    var welcome = document.getElementById('vnWelcome');
+    var welcomeOn = !!(welcome && !welcome.classList.contains('hidden'));
+    if (S.reviewBlockId || welcomeOn || !atLastSegment()) {
+      if (choicesEl) { choicesEl.innerHTML = ''; choicesEl.classList.add('hidden'); }
+      return;
+    }
+    renderChoices(pendingChoices);
+  }
+
   function renderChoices(list) {
     if (!choicesEl) return;
     choicesEl.innerHTML = '';
-    if (!list || !list.length) return;
+    if (!list || !list.length) { choicesEl.classList.add('hidden'); return; }
     list.forEach(function (text) {
       var b = document.createElement('button');
       b.className = 'vn-ch';
@@ -373,6 +394,11 @@
       });
       choicesEl.appendChild(b);
     });
+    // 重新触发入场动画（先移除再强制回流）
+    choicesEl.classList.remove('hidden');
+    choicesEl.style.animation = 'none';
+    void choicesEl.offsetWidth;
+    choicesEl.style.animation = '';
   }
 
   /** 点击行动选项：填入输入框并发送（复用 app.js 的发送逻辑） */
@@ -383,7 +409,8 @@
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     send.click();
-    choicesEl.innerHTML = '';
+    pendingChoices = [];
+    if (choicesEl) { choicesEl.innerHTML = ''; choicesEl.classList.add('hidden'); }
     VN.shell && VN.shell.toast && VN.shell.toast('已选择：' + text);
   }
   VN.chooseAction = chooseAction;
@@ -557,7 +584,8 @@
       send.addEventListener('click', function () {
         setStreaming(true);
         // 发送后收起选项
-        if (choicesEl) choicesEl.innerHTML = '';
+        pendingChoices = [];
+        if (choicesEl) { choicesEl.innerHTML = ''; choicesEl.classList.add('hidden'); }
         setTimeout(function () { setStreaming(false); syncFromDom(true); }, 400);
       });
     }
@@ -763,10 +791,11 @@
     VN.shell && VN.shell.toast && VN.shell.toast('已回到最新进度');
   }
 
-  /** 选项只在「最新一条」时可点选（历史消息属于已发生的回合） */
+  /** 选项只在「最新一条」时可点选（历史消息属于已发生的回合）
+   *  注意：这里只记录候选项，真正显示由 syncChoices() 按「是否到最后一段」决定。 */
   function setChoicesFromBlock(block) {
-    if (S.reviewBlockId) { renderChoices([]); return; }
-    renderChoices(extractChoices(block));
+    pendingChoices = S.reviewBlockId ? [] : extractChoices(block);
+    syncChoices();
   }
 
   function closeHistory() {

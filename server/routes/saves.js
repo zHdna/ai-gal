@@ -163,26 +163,6 @@ module.exports = (db) => {
     }
   });
 
-  // Character colors (per-save)
-  router.get('/:id/colors', (req, res) => {
-    const save = db.prepare('SELECT * FROM saves WHERE id = ?').get(req.params.id);
-    if (!save) return res.status(404).json({ error: 'Save not found' });
-    try {
-      const colors = JSON.parse(fs.readFileSync(path.join(save.save_path, 'character_colors.json'), 'utf-8'));
-      res.json({ colors });
-    } catch {
-      res.json({ colors: {} });
-    }
-  });
-
-  router.put('/:id/colors', (req, res) => {
-    const save = db.prepare('SELECT * FROM saves WHERE id = ?').get(req.params.id);
-    if (!save) return res.status(404).json({ error: 'Save not found' });
-    fs.mkdirSync(save.save_path, { recursive: true });
-    fs.writeFileSync(path.join(save.save_path, 'character_colors.json'), JSON.stringify(req.body.colors || {}, null, 2), 'utf-8');
-    res.json({ message: 'Colors saved' });
-  });
-
   // Character roster
   router.get('/:id/roster', (req, res) => {
     const save = db.prepare('SELECT * FROM saves WHERE id = ?').get(req.params.id);

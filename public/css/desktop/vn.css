@@ -2604,24 +2604,6 @@
       background: rgba(54, 224, 216, .10);
     }
 
-    /* 「回顾」里的删除当前对话：危险色，别和数据筛选按钮混淆 */
-    .app .hb.danger {
-      color: var(--rose);
-      border-color: rgba(255, 125, 168, .34);
-      background: rgba(255, 125, 168, .08);
-    }
-
-    .app .hb.danger:hover {
-      color: #fff;
-      border-color: var(--rose);
-      background: rgba(255, 125, 168, .22);
-    }
-
-    .app .hb.danger:disabled {
-      opacity: .5;
-      cursor: default;
-    }
-
     .app .hist .exp {
       flex: 0 0 auto;
       color: var(--text-mut);
@@ -2692,6 +2674,48 @@
     .app .hist .full .note {
       color: var(--text-mut);
       font-size: 10.5px;
+    }
+
+    /* 单条回复的操作（删除 / 重新生成） */
+    .app .hist .full .hist-ops {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 8px 0 2px;
+    }
+
+    .app .hist .full .hop {
+      padding: 5px 11px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--bg-input);
+      color: var(--text-2);
+      font-size: 10.5px;
+      letter-spacing: .03em;
+      cursor: pointer;
+      transition: .16s;
+    }
+
+    .app .hist .full .hop:hover {
+      color: var(--text);
+      border-color: var(--line-2);
+    }
+
+    .app .hist .full .hop.danger {
+      color: var(--rose);
+      border-color: rgba(255, 125, 168, .32);
+      background: rgba(255, 125, 168, .07);
+    }
+
+    .app .hist .full .hop.danger:hover {
+      color: #fff;
+      border-color: var(--rose);
+      background: rgba(255, 125, 168, .2);
+    }
+
+    .app .hist .full .hop:disabled {
+      opacity: .5;
+      cursor: default;
     }
 
     .app .hist .full .jump {

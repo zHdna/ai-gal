@@ -613,6 +613,22 @@
     return allBlocks().length > 0;
   }
 
+  /** 是否已经"读到最新"：正在看最新那一楼的最后一段。
+      后台生图（管家触发 / 登场 CG）往往在这一楼演完之后才落地；此时舞台必须跟着换到新 CG，
+      否则会一直停在【同一楼的第一张】（cgForSeg 按段摊分，段没变就永远取第 0 张）
+      —— 这正是"后台生成 1~2 张、前端才刷新"的来源。 */
+  function atLatestSegment() {
+    if (S.reviewBlockId) return false;
+    var blocks = allBlocks();
+    if (!blocks.length) return false;
+    var last = blocks[blocks.length - 1];
+    var cur = currentBlock();
+    if (!cur) return true;                    /* 外壳尚未定位到某一楼 → 视为"在看最新" */
+    if (cur !== last) return false;
+    if (!(S.segs || []).length) return true;  /* 段还没算出来 → 同上 */
+    return (S.cur || 0) >= S.segs.length - 1;
+  }
+
   /** 舞台最终用哪张：手动切换（上方箭头）优先 → 按文本分配 → 都没有才退回角色卡卡面 */
   function currentCg() {
     if (!hasActiveStory()) return null;   /* 没进游戏 / 已退出游戏 → 不出图 */
@@ -622,6 +638,12 @@
       return { url: m.url, count: m.blockNo || (1 << 30), manual: true };
     }
     var auto = cgForSeg(S.cur);
+    /* 已经读到最新一段时：若最新一张 CG 比"按段分配"的那张更新，就用最新的。
+       这样后台新出的 CG 会在几秒内自动上舞台，而不必等下一轮/下一段。 */
+    if (atLatestSegment()) {
+      var n2 = newestCg();
+      if (n2 && (!auto || n2.url !== auto.url)) return n2;
+    }
     if (auto) return { url: auto.url, count: auto.blockNo || (1 << 30) };
     var n = newestCg();
     return n;
@@ -1591,6 +1613,12 @@
 
     var out = [];
     var nShown = 0, maxRound = 0;
+    // 「重新生成」只给最后一轮（中间轮次的上下文已被后续楼层改写，重发不会自洽）
+    var maxRoundRound = 0;
+    blocks.forEach(function (b) {
+      var r = Number(b.dataset.round == null || b.dataset.round === '' ? 0 : b.dataset.round) || 0;
+      if (r > maxRoundRound) maxRoundRound = r;
+    });
     order.forEach(function (r) {
       var group = byRound[r].filter(function (b) { return segsOf(b).length && scopeMatches(b, scope); });
       if (!group.length) return;
@@ -1611,6 +1639,7 @@
 
       var segCount = group.reduce(function (n, b) { return n + segsOf(b).length; }, 0);
       var who = q ? '你' : charName();
+      var isLatestRound = Number(r) === maxRoundRound;
       out.push(
         '<div class="hist' + (q ? ' me' : '') + (hidden ? ' ishidden' : '') + '" data-round="' + escapeHtml(r) + '">' +
         '<span class="who">' + escapeHtml((Number(r) ? '第 ' + r + ' 轮' : '开场')) + '</span>' +
@@ -1620,6 +1649,10 @@
         '<div class="full">' +
         '<p class="meta">' + escapeHtml(who + ' · ' + (Number(r) ? '第 ' + r + ' 轮' : '开场') + ' · ' + group.length + ' 楼 / ' + segCount + ' 段' +
           (hidden ? ' · 已隐藏（AI 不读）' : '') + (times ? ' · ' + times : '')) + '</p>' +
+        '<div class="hist-ops">' +
+        '<button class="hop danger" data-hist-op="del" data-round="' + escapeHtml(r) + '" title="删除这一轮的 AI 回复（含管家 Agent 处理记录），保留你的发言">🗑 删除这条回复</button>' +
+        (isLatestRound ? '<button class="hop" data-hist-op="regen" data-round="' + escapeHtml(r) + '" title="删除这一轮的回复并重新生成">↻ 重新生成</button>' : '') +
+        '</div>' +
         (q ? segList(q, '问') : '') +
         (a ? segList(a, '答') : '') +
         '</div></div>'
@@ -1645,6 +1678,29 @@
         toast('已跳到历史段落（再按 → 可继续逐段看）');
       });
     });
+    /* 单条回复的删除 / 重新生成 */
+    $$('.hist .hop', body2).forEach(function (b) {
+      on(b, 'click', function (e) {
+        e.stopPropagation();
+        var round = b.dataset.round;
+        var op = b.dataset.histOp;
+        var n = aiBlocksOfRound(round).length;
+        if (!n) { toast('这一轮没有可删除的 AI 回复'); return; }
+        if (op === 'regen') {
+          if (!confirm('删除「第 ' + round + ' 轮」的 AI 回复并重新生成？\n（你的发言会保留，作为重新生成的输入）')) return;
+          regenerateRound(round);
+          return;
+        }
+        if (!confirm('删除「第 ' + round + ' 轮」的 AI 回复？\n会一并删除该轮的管家 Agent 处理记录（含思维链 / portrait / CG 判定）。\n你的发言会保留。')) return;
+        b.disabled = true;
+        deleteRoundReply(round).then(function (dropped) {
+          toast('已删除该轮回复' + (dropped ? '，并清掉 ' + dropped + ' 条管家处理记录' : ''));
+        }).catch(function (err) {
+          toast('删除失败：' + (err && err.message ? err.message : err));
+          b.disabled = false;
+        });
+      });
+    });
     var all = byId('histExpandAll');
     if (all) all.textContent = '展开全部';
     syncHistScopeButtons(scope);
@@ -1668,62 +1724,112 @@
     this.classList.toggle('on', anyClosed);
   });
 
-  /* ---------------- 12.5 「回顾」里删除当前对话/存档 ----------------
-     用途：生成出错（格式崩了、内容废了）时，直接把这个对话整个删掉重新生成，
-     而不是在坏记录上继续接。删的是【当前存档】：对话记录 + 该存档的缓存文件都会删掉，
-     等价于左侧游戏列表里那个 ✕。删除后回到「选角色卡开始」的状态。 */
-  function currentSaveRef() {
-    var conv = App.currentConversation || {};
-    var saveId = App._currentSaveId || conv.save_id || '';
-    var convId = conv.id || '';
-    var label = saveId || conv.title || (App.currentCharacter && App.currentCharacter.name) || '当前对话';
-    return { saveId: saveId, convId: convId, label: label };
+  /* ---------------- 12.5 「回顾」里删除单条回复 / 重新生成 ----------------
+     用途：某一轮 AI 生成效果不佳（格式崩了、内容废了）时，只删掉【这一轮的 AI 回复】
+     再重新生成，而不是把整段对话删掉重来。
+     · 删除范围：该轮的 AI 楼层（messages 表里那条 assistant）＋ 该轮【管家 Agent 的处理记录】
+       （幕后控制台的调试卡片，含思维链 / portrait / CG 判定），以及服务端 event_log 里的对应记忆行
+       （DELETE /api/messages/:id 内部会调 cleanupEventLog）。
+     · 用户自己的发言保留 —— 那是「重新生成」的输入。
+     · 只有【最后一轮】才提供「重新生成」：中间轮次的上下文已经被后续楼层改写，
+       直接重发生成的结果不会与后续剧情自洽。 */
+  function roundOfHistRow(row) {
+    var r = row.getAttribute('data-round');
+    return r == null ? '' : String(r);
   }
-  function resetAfterDelete() {
-    try {
-      App.currentConversation = null;
-      App.messages = [];
-      App.totalMessages = 0;
-      App._messagesFullyLoaded = false;
-      App.userStatus = {};
-      App.galleryImages = [];
-      App.cgGallery = [];
-      App._currentSaveId = '';
-    } catch (e) { }
-    var area = messagesArea();
-    if (area) area.innerHTML = '';
-    var ws = byId('welcomeScreen'), cc = byId('chatContainer');
-    if (ws) ws.classList.remove('hidden');
-    if (cc) cc.classList.add('hidden');
-    var t = byId('conversationTitle');
-    if (t) t.textContent = '选择角色开始对话';
-    S.blockId = null; S.segs = []; S.cur = 0; S.reviewBlockId = null;
-    try { if (typeof renderStatusBar === 'function') renderStatusBar(); } catch (e) { }
-    try { if (typeof renderGallery === 'function') renderGallery(); } catch (e) { }
-    try { if (typeof renderCharacterList === 'function') renderCharacterList(); } catch (e) { }
-    render();
-    updateHeader();
+  /** 该轮里的 AI 楼层（.story-block.assistant） */
+  function aiBlocksOfRound(round) {
+    return allBlocks().filter(function (b) {
+      return !b.classList.contains('user') && String(b.dataset.round == null ? '' : b.dataset.round) === String(round);
+    });
   }
-  on(byId('histDeleteConv'), 'click', function () {
-    var ref = currentSaveRef();
-    if (!ref.saveId && !ref.convId) { toast('当前没有可删除的对话'); return; }
-    if (!confirm('确定删除当前对话「' + ref.label + '」？\n对话记录与缓存文件会被永久删除（不可恢复），用于重新生成。')) return;
-    var btn = this;
-    btn.disabled = true;
-    var done = function () { btn.disabled = false; };
-    var p = ref.saveId
-      ? fetch('/api/saves/' + encodeURIComponent(ref.saveId), { method: 'DELETE' })
-      : fetch('/api/conversations/' + encodeURIComponent(ref.convId), { method: 'DELETE' });
-    p.then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      toast('对话已删除，可从左侧重新选卡开始');
+  function userBlocksOfRound(round) {
+    return allBlocks().filter(function (b) {
+      return b.classList.contains('user') && String(b.dataset.round == null ? '' : b.dataset.round) === String(round);
+    });
+  }
+  /** 删掉该轮在「幕后控制台」里的调试卡片（主 Agent + 管家 Agent 成对出现） */
+  function dropDebugCardsOfRound(round) {
+    var removed = 0;
+    ['debugMainAgentContent', 'debugButlerContent'].forEach(function (id) {
+      var box = byId(id);
+      if (!box) return;
+      $$('.debug-card', box).forEach(function (c) {
+        var r = c.getAttribute('data-round');
+        if (r != null && String(r) === String(round)) { c.remove(); removed++; }
+      });
+    });
+    return removed;
+  }
+  function deleteRoundReply(round) {
+    var ai = aiBlocksOfRound(round);
+    if (!ai.length) { toast('这一轮没有可删除的 AI 回复'); return Promise.resolve(0); }
+    var ids = ai.map(function (b) { return b.dataset.id; }).filter(function (x) { return x && x.indexOf('stream-') !== 0 && x.indexOf('temp-') !== 0; });
+    var chain = Promise.resolve();
+    ids.forEach(function (id) {
+      chain = chain.then(function () {
+        return fetch('/api/messages/' + encodeURIComponent(id), { method: 'DELETE' }).then(function (r) {
+          if (!r.ok && r.status !== 404) throw new Error('HTTP ' + r.status);
+        });
+      });
+    });
+    return chain.then(function () {
+      // 前端同步清理：楼层 + AppState + 管家调试记录
+      ai.forEach(function (b) {
+        if (S.reviewBlockId === b.dataset.id) S.reviewBlockId = null;
+        b.remove();
+      });
+      try {
+        App.messages = (App.messages || []).filter(function (m) { return ids.indexOf(m.id) < 0; });
+      } catch (e) { }
+      var dropped = dropDebugCardsOfRound(round);
+      try { renderConsole(); } catch (e) { }
+      syncFromDom(true);
+      renderHistory();
+      return dropped;
+    });
+  }
+  /** 用该轮的用户发言重新生成一条回复（等价于「原地重发」，不会留下重复的用户楼层） */
+  function regenerateRound(round) {
+    var users = userBlocksOfRound(round);
+    var last = users[users.length - 1];
+    var content = last ? blockText(last).trim() : '';
+    if (!content) { toast('找不到这一轮的用户发言，无法重新生成'); return; }
+    var userIds = users.map(function (b) { return b.dataset.id; })
+      .filter(function (x) { return x && x.indexOf('stream-') !== 0 && x.indexOf('temp-') !== 0; });
+    // 先删旧回复；再把该轮原有的用户发言也删掉（内容已抓在手里），
+    // 否则重发会产生第二条一模一样的用户楼层，画面上看着像重复了一遍。
+    deleteRoundReply(round).then(function () {
+      var chain = Promise.resolve();
+      userIds.forEach(function (id) {
+        chain = chain.then(function () {
+          return fetch('/api/messages/' + encodeURIComponent(id), { method: 'DELETE' }).then(function (r) {
+            if (!r.ok && r.status !== 404) throw new Error('HTTP ' + r.status);
+          });
+        });
+      });
+      return chain.then(function () {
+        users.forEach(function (b) {
+          if (S.reviewBlockId === b.dataset.id) S.reviewBlockId = null;
+          b.remove();
+        });
+        try { App.messages = (App.messages || []).filter(function (m) { return userIds.indexOf(m.id) < 0; }); } catch (e) { }
+        syncFromDom(true);
+      });
+    }).then(function () {
+      if (typeof sendMessage !== 'function') { toast('当前环境无法发送，请手动重发'); return; }
+      var inp = byId('messageInput');
+      if (inp) {
+        inp.value = content;
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+      }
       closeSheets();
-      resetAfterDelete();
-      if (typeof loadConversations === 'function') { try { loadConversations(); } catch (e) { } }
+      sendMessage();
+      toast('已删除旧回复，正在重新生成…');
     }).catch(function (e) {
-      toast('删除失败：' + (e && e.message ? e.message : e));
-    }).then(done, done);
-  });
+      toast('重新生成失败：' + (e && e.message ? e.message : e));
+    });
+  }
 
   /* ---------------- 13. 控制台：真实调试卡片逐条展开 ---------------- */
   function debugCards(container) {

@@ -117,11 +117,10 @@ function getCharColor(name) {
   }
   // 已分配 → 返回
   if (AppState.characterColors[name]) return AppState.characterColors[name];
-  // 新分配
+  // 新分配（仅内存：不再落盘 character_colors.json —— 那是旧前端渲染机制的遗留）
   const color = CHAR_PALETTE[_paletteIndex % CHAR_PALETTE.length];
   _paletteIndex++;
   AppState.characterColors[name] = { ...color, index: _paletteIndex - 1 };
-  saveCharacterColors();
   return AppState.characterColors[name];
 }
 
@@ -132,40 +131,20 @@ function getCurrentBubbleColor(name) {
   return color[isLight ? 'light' : 'dark'];
 }
 
-async function saveCharacterColors() {
+/**
+ * 载入本存档的角色名册（头像/体貌/好感度等）。
+ * 旧实现在这里还顺带读了 character_colors.json（旧前端的角色配色机制，现已移除）；
+ * 配色现在只在内存里按名册顺序分配，不再落盘。
+ */
+async function loadCharacterRoster() {
   if (!AppState.currentConversation) return;
   try {
     const saves = await SavesAPI.list().catch(() => []);
     const save = saves.find(s => s.conversation_id === AppState.currentConversation.id);
-    if (save) {
-      await request('/saves/' + save.id + '/colors', {
-        method: 'PUT',
-        body: { colors: AppState.characterColors, roster: AppState.characterRoster }
-      });
-    }
-  } catch { /* ignore */ }
-}
-
-async function loadCharacterColors() {
-  if (!AppState.currentConversation) return;
-  try {
-    const saves = await SavesAPI.list().catch(() => []);
-    const save = saves.find(s => s.conversation_id === AppState.currentConversation.id);
-    if (save) {
-      const resp = await request('/saves/' + save.id + '/colors').catch(() => null);
-      if (resp && resp.colors) {
-        AppState.characterColors = resp.colors;
-        _paletteIndex = Math.max(0, ...Object.values(resp.colors).map(c => (c.index || 0) + 1));
-      }
-      // Also load character roster
-      const rosterResp = await request('/saves/' + save.id + '/roster').catch(() => null);
-      if (rosterResp && rosterResp.roster) {
-        AppState.characterRoster = rosterResp.roster;
-        // Restore colors from roster
-        Object.entries(rosterResp.roster).forEach(([name, data]) => {
-          if (data._color) AppState.characterColors[name] = data._color;
-        });
-      }
+    if (!save) return;
+    const rosterResp = await request('/saves/' + save.id + '/roster').catch(() => null);
+    if (rosterResp && rosterResp.roster) {
+      AppState.characterRoster = rosterResp.roster;
     }
   } catch { /* ignore */ }
 }
@@ -1745,10 +1724,14 @@ async function loadConversation(conversationId) {
         }
       }
     } catch { }
-    await loadCharacterColors();
+    await loadCharacterRoster();
 
     // 渲染画廊（CG + 普通图片）
     renderGallery();
+
+    // 打开存档即启动常驻画廊 watcher：后台生图（管家触发的 CG / 登场 CG / 新头像）
+    // 是 fire-and-forget 的，回合结束后还在跑，必须有人一直盯着才会实时进画面。
+    startGalleryPoll();
 
     // 切换对话时清空调试面板
     clearDebugPanel();
@@ -4517,7 +4500,7 @@ function renderMainAgentDebugEntry(formatted, rawContent, timeStr, roundNum) {
   }
   summary += ' ...';
 
-  let card = `<div class="debug-card" id="${entryId}">
+  let card = `<div class="debug-card" id="${entryId}" data-round="${escapeAttr(String(roundNum))}">
     <div class="debug-card-header" onclick="toggleDebugCard('${entryId}')">
       <span class="debug-card-arrow">&#9654;</span>
       <span class="debug-card-round">第${roundNum}轮</span>
@@ -4569,7 +4552,7 @@ function renderButlerDebugEntry(butlerResult, timeStr, roundNum) {
   if (butlerResult.actions?.length) summary += butlerResult.actions.length + '选项 ';
   summary = summary.trim() || '(无内容)';
 
-  let card = `<div class="debug-card" id="${entryId}">
+  let card = `<div class="debug-card" id="${entryId}" data-round="${escapeAttr(String(roundNum))}">
     <div class="debug-card-header" onclick="toggleDebugCard('${entryId}')">
       <span class="debug-card-arrow">&#9654;</span>
       <span class="debug-card-round">第${roundNum}轮</span>
@@ -4743,8 +4726,8 @@ async function sendMessage() {
 
           if (result.formatted && typeof result.formatted === 'object') {
             aiMsgDiv.innerHTML = renderAIBlock(result.formatted, result.content, new Date().toISOString());
-            // 向调试面板推送完整输出
-            appendDebugEntry(result.formatted, result.content, formatTime(new Date().toISOString()), result.butler);
+            // 向调试面板推送完整输出（带上真实轮次，便于「回顾」删除该轮时一并清掉记录）
+            appendDebugEntry(result.formatted, result.content, formatTime(new Date().toISOString()), result.butler, currentRound);
           } else {
             aiMsgDiv.innerHTML = renderAIBlock(null, result.content, new Date().toISOString());
           }
@@ -4940,7 +4923,7 @@ async function scriptGenerate(content, opts = {}) {
         processAIResponse(result);
         if (result.formatted && typeof result.formatted === 'object') {
           aiMsgDiv.innerHTML = renderAIBlock(result.formatted, result.content, new Date().toISOString());
-          appendDebugEntry(result.formatted, result.content, formatTime(new Date().toISOString()), result.butler);
+          appendDebugEntry(result.formatted, result.content, formatTime(new Date().toISOString()), result.butler, currentRound);
         } else {
           aiMsgDiv.innerHTML = renderAIBlock(null, result.content, new Date().toISOString());
         }
@@ -6621,9 +6604,15 @@ function getBarClass(pctOrKey) {
 
 // ============ 调试面板 ============
 
-function appendDebugEntry(formatted, rawContent, timeStr, butlerResult) {
+/**
+ * 追加调试条目。
+ * @param {number} [storyRound] 该回复在剧情里的轮次（= .story-block 的 data-round）。
+ *   必须传真实轮次：卡片带 data-round 后，「回顾」里删除某轮回复时才能把
+ *   该轮的主 Agent + 管家 Agent 处理记录一起清掉。缺省退回内部计数器。
+ */
+function appendDebugEntry(formatted, rawContent, timeStr, butlerResult, storyRound) {
   AppState.debugRoundCounter++;
-  const roundNum = AppState.debugRoundCounter;
+  const roundNum = (storyRound == null || storyRound === '') ? AppState.debugRoundCounter : storyRound;
   const MAX_DEBUG_ENTRIES = 50; // 限制调试条目数量，防止DOM累积导致浏览器卡死
 
   // 主Agent面板
@@ -6771,113 +6760,108 @@ async function updateMessage(msgId, newContent) {
 
 // ============ CG 画廊轮询 ============
 
-async function pollCGGallery(retries = 30) {
-  const saveId = getCurrentSaveId();
-  if (!saveId) return;
-  const initialTimestamp = (AppState.cgGallery || [])[0]?.timestamp || '';
-  for (let i = 0; i < retries; i++) {
-    await new Promise(r => setTimeout(r, 2000));
-    try {
-      const resp = await request('/saves/' + saveId + '/cg-gallery');
-      if (resp?.gallery) {
-        const newTimestamp = resp.gallery[0]?.timestamp || '';
-        if (newTimestamp !== initialTimestamp || resp.gallery.length !== (AppState.cgGallery || []).length) {
-          AppState.cgGallery = resp.gallery;
-          renderGallery();
-          console.log('[CG] Gallery updated');
-          return;
-        }
-      }
-    } catch { /* retry */ }
-  }
+/**
+ * 兼容旧调用点：直接转成常驻 watcher。
+ * 旧实现是「2s × retries，且一有变化就 return」—— 一有变化就退出的语义
+ * 必然漏掉后台接着生成的第 2、3 张 CG，所以这里不再自己轮询。
+ */
+async function pollCGGallery() {
+  startGalleryPoll();
+  return;
 }
 
-// ============ 统一画廊轮询（imagePending 触发） ============
+// ============ 统一画廊轮询（常驻 watcher） ============
+//
+// ⚠️ 为什么必须"常驻"而不是"发一轮问一轮"：
+//   服务端触发某个 CG 是 fire-and-forget 的（chat.js 里 `fetch('/api/images/generate')`
+//   没有被 await）—— 回合的 SSE 早就结束了，生图还在后台跑。旧的实现只在
+//   「本轮结束」时起一个有限轮询（pollCGGallery 2s×30 且【一有变化就 return】；
+//   startGalleryPoll 3s→5s 且【3 分钟硬停】），于是后台接着出的第 2、3 张 CG
+//   没有任何人在看 —— 必须等下一轮开始才会被顺带刷出来（用户报的"后台生成1~2张
+//   前端才刷新"就是这个）。这里改成：只要打开着存档就一直轻量轮询，
+//   任何时刻出现的 CG / 新头像都能在几秒内进画面。
 
 let _galleryPollTimer = null;
+let _galleryPollSaveId = '';
+let _galleryPollLastSig = '';
+
+/** 画廊指纹：数量 + 首张时间戳（覆盖"新增"与"重新生成同数量"两种情况） */
+function cgGallerySignature(gallery) {
+  const g = gallery || [];
+  return g.length + '|' + (g[0]?.timestamp || '') + '|' + (g[0]?.filename || g[0]?.file || '');
+}
 
 /**
- * 启动画廊轮询：后端通知 imagePending 后调用
- * 同时检测 CG 画廊更新和角色头像更新
- * 轮询间隔：前30秒每3秒，之后每5秒，最多3分钟
+ * 启动（或重定向）画廊常驻轮询。
+ * 幂等：同一存档重复调用不会叠加定时器；切换存档会自动改看新存档。
  */
-function startGalleryPoll() {
-  // 防止重复启动
-  if (_galleryPollTimer) return;
-
+function startGalleryPoll(intervalMs) {
   const saveId = getCurrentSaveId();
   if (!saveId) return;
 
-  const initialCGCount = (AppState.cgGallery || []).length;
-  let phase = 'fast'; // fast=3s, slow=5s
-  let totalElapsed = 0;
-  const MAX_DURATION = 180000; // 3 minutes max
+  // 已在看同一个存档 → 不重复启动（保留现有节拍，避免每轮重置成高频）
+  if (_galleryPollTimer && _galleryPollSaveId === saveId) return;
 
-  console.log('[GalleryPoll] Starting, initial CG count:', initialCGCount);
+  // 换存档 / 首次启动：清掉旧定时器，重新起
+  if (_galleryPollTimer) { clearTimeout(_galleryPollTimer); _galleryPollTimer = null; }
+
+  _galleryPollSaveId = saveId;
+  _galleryPollLastSig = cgGallerySignature(AppState.cgGallery);
+  const baseInterval = Math.max(1500, Number(intervalMs) || 3000);
+
+  console.log('[GalleryPoll] 常驻轮询启动, save=', saveId, 'interval=', baseInterval);
 
   async function tick() {
-    if (!_galleryPollTimer) return; // stopped
+    if (!_galleryPollTimer) return;               // 已停止
 
-    const interval = phase === 'fast' ? 3000 : 5000;
-    totalElapsed += interval;
-
-    if (totalElapsed > MAX_DURATION) {
+    // 存档变了（切档/新开）→ 用新的 saveId 重启
+    const cur = getCurrentSaveId();
+    if (cur && cur !== _galleryPollSaveId) {
       _galleryPollTimer = null;
-      console.log('[GalleryPoll] Timeout, stopping');
+      startGalleryPoll(baseInterval);
       return;
     }
+    // 没有存档（回到选卡态）→ 停
+    if (!cur) { _galleryPollTimer = null; return; }
 
-    // Switch to slow phase after 30s
-    if (phase === 'fast' && totalElapsed >= 30000) {
-      phase = 'slow';
-      console.log('[GalleryPoll] Switching to slow poll (5s)');
+    // 页面在后台时不发请求（省流量/省电）；回到前台时立刻补一拍，
+    // 所以切出去再切回来能马上看到期间生成的 CG。
+    if (document.hidden) {
+      _galleryPollTimer = setTimeout(tick, 2000);
+      return;
     }
 
     let updated = false;
 
     try {
-      const resp = await request('/saves/' + saveId + '/cg-gallery');
-      if (resp?.gallery) {
-        // Detect new CG entries (count increase)
-        if (resp.gallery.length !== initialCGCount) {
+      const resp = await request('/saves/' + _galleryPollSaveId + '/cg-gallery');
+      if (resp && Array.isArray(resp.gallery)) {
+        const sig = cgGallerySignature(resp.gallery);
+        if (sig !== _galleryPollLastSig) {
+          _galleryPollLastSig = sig;
           AppState.cgGallery = resp.gallery;
           updated = true;
-          console.log('[GalleryPoll] CG updated, count:', resp.gallery.length);
-        }
-        // Detect timestamp change (regenerated CG on same count)
-        if (resp.gallery.length === initialCGCount && initialCGCount > 0) {
-          const newTs = resp.gallery[0]?.timestamp || '';
-          const oldTs = (AppState.cgGallery || [])[0]?.timestamp || '';
-          if (newTs !== oldTs) {
-            AppState.cgGallery = resp.gallery;
-            updated = true;
-            console.log('[GalleryPoll] CG updated (timestamp changed)');
-          }
+          console.log('[GalleryPoll] CG 更新, count=', resp.gallery.length);
         }
       }
-    } catch { /* ignore */ }
+    } catch { /* 网络抖动：下个节拍再试 */ }
 
     try {
-      const rosterResp = await request('/saves/' + saveId + '/roster');
+      const rosterResp = await request('/saves/' + _galleryPollSaveId + '/roster');
       if (rosterResp?.roster) {
         let avatarUpdated = false;
         for (const [name, data] of Object.entries(rosterResp.roster)) {
           const newAv = data.avatar;
           const oldAv = AppState.characterRoster[name]?.avatar;
-          // Detect: new real avatar (not pending/empty) that we didn't have before
-          // or avatar changed from pending → actual file
           const isNewRealAvatar = newAv && newAv !== 'pending' && newAv !== '';
           const hadNoRealAvatar = !oldAv || oldAv === 'pending' || oldAv === '';
-          if (isNewRealAvatar && hadNoRealAvatar) {
-            avatarUpdated = true;
-            break;
-          }
+          if (isNewRealAvatar && hadNoRealAvatar) { avatarUpdated = true; break; }
         }
         if (avatarUpdated) {
           AppState.characterRoster = rosterResp.roster;
-          await loadCharacterColors();
+          await loadCharacterRoster();
           updateRenderedAvatars();
-          // Also force avatar images to reload by adding cache-busting timestamp
+          // 头像文件是新的：加时间戳强制浏览器重新取图，否则会一直用缓存的旧图
           document.querySelectorAll('.dialogue-avatar img').forEach(img => {
             const src = img.getAttribute('src');
             if (src && src.includes('/avatar/')) {
@@ -6886,26 +6870,43 @@ function startGalleryPoll() {
             }
           });
           updated = true;
-          console.log('[GalleryPoll] Portrait updated');
+          console.log('[GalleryPoll] 新头像已就绪');
         }
       }
     } catch { /* ignore */ }
 
-    if (updated) {
-      renderGallery();
-    }
+    if (updated) renderGallery();
 
-    // Schedule next tick
-    const nextInterval = phase === 'fast' ? 3000 : 5000;
-    _galleryPollTimer = setTimeout(tick, nextInterval);
+    // 常驻继续：只要没被 stopGalleryPoll() 停掉，就照 baseInterval 排下一拍。
+    // （不再有"3 分钟硬停"—— 后台生图什么时候结束都不确定，停了就再也刷不出来。）
+    _galleryPollTimer = setTimeout(tick, baseInterval);
   }
 
-  // Start first tick after 3s (give backend time to start generating)
-  _galleryPollTimer = setTimeout(tick, 3000);
+  // 立即起拍：先给后端一点点时间，再进入常驻
+  _galleryPollTimer = setTimeout(tick, 1200);
 }
 
+// 页面重新可见（切回来 / 解锁手机）时立刻补一次画廊，不等下一个节拍。
+// 这样"切出去一会儿再切回来"能马上看到期间后台生成的 CG。
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) return;
+  const saveId = getCurrentSaveId();
+  if (!saveId) return;
+  request('/saves/' + saveId + '/cg-gallery').then(resp => {
+    if (!resp || !Array.isArray(resp.gallery)) return;
+    const sig = cgGallerySignature(resp.gallery);
+    if (sig !== _galleryPollLastSig) {
+      _galleryPollLastSig = sig;
+      AppState.cgGallery = resp.gallery;
+      renderGallery();
+    }
+  }).catch(() => { });
+  // 还没在跑就补起来（例如从后台标签页直接切回游戏）
+  startGalleryPoll();
+});
+
 /**
- * 停止画廊轮询
+ * 停止画廊轮询（切存档 / 退出登录时调用）
  */
 function stopGalleryPoll() {
   if (_galleryPollTimer) {
@@ -6913,6 +6914,8 @@ function stopGalleryPoll() {
     _galleryPollTimer = null;
     console.log('[GalleryPoll] Stopped');
   }
+  _galleryPollSaveId = '';
+  _galleryPollLastSig = '';
 }
 
 // ============ 头像灯箱 ============
@@ -6981,7 +6984,7 @@ async function pollPortraitReady(charName, retries = 30) {
       const resp = await request('/saves/' + saveId + '/roster');
       if (resp && resp.roster && resp.roster[charName] && resp.roster[charName].avatar) {
         // 头像已生成，刷新名册
-        await loadCharacterColors();
+        await loadCharacterRoster();
         // 更新已渲染的对话头像
         updateRenderedAvatars();
         console.log('[Portrait] Avatar ready for:', charName);
