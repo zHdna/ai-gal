@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>AI-GAL · 访问密码</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #060B18;
+      --panel: rgba(14, 22, 40, .92);
+      --line: rgba(120, 160, 220, .22);
+      --text: #EAF1FF;
+      --muted: #93A6C8;
+      --accent: #36E0D8;
+      --danger: #FF7DA8;
+      --field: rgba(8, 14, 28, .86);
+    }
+
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg: #E9EEF7;
+      --panel: rgba(255, 255, 255, .96);
+      --line: rgba(30, 60, 110, .18);
+      --text: #121D35;
+      --muted: #5A6C8A;
+      --accent: #1B9E97;
+      --danger: #C24A78;
+      --field: rgba(255, 255, 255, .92);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 22px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Roboto, sans-serif;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 360px;
+      padding: 26px 22px 22px;
+      border-radius: 18px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, .38);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      margin-bottom: 4px;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 12px var(--accent);
+    }
+
+    h1 {
+      font-size: 17px;
+      margin: 14px 0 6px;
+      font-weight: 700;
+    }
+
+    p.hint {
+      margin: 0 0 18px;
+      font-size: 12.5px;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+
+    label {
+      display: block;
+      font-size: 11.5px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      letter-spacing: .04em;
+    }
+
+    input[type="password"] {
+      width: 100%;
+      padding: 12px 13px;
+      font-size: 15px;
+      color: var(--text);
+      background: var(--field);
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      outline: none;
+      transition: border-color .18s, box-shadow .18s;
+    }
+
+    input[type="password"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(54, 224, 216, .16);
+    }
+
+    button {
+      width: 100%;
+      margin-top: 14px;
+      padding: 12px 14px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #04201F;
+      background: var(--accent);
+      border: none;
+      border-radius: 11px;
+      cursor: pointer;
+      transition: opacity .18s, transform .12s;
+    }
+
+    button:active { transform: scale(.985); }
+    button:disabled { opacity: .55; cursor: default; }
+
+    .err {
+      margin-top: 12px;
+      font-size: 12.5px;
+      color: var(--danger);
+      min-height: 17px;
+    }
+
+    .foot {
+      margin-top: 16px;
+      padding-top: 13px;
+      border-top: 1px solid var(--line);
+      font-size: 11.5px;
+      line-height: 1.65;
+      color: var(--muted);
+    }
+
+    .foot code {
+      font-family: 'Fira Code', Consolas, monospace;
+      font-size: 11.5px;
+      color: var(--text);
+      background: var(--field);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 1px 5px;
+    }
+
+    .theme-btn {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      margin: 0;
+      font-size: 15px;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 11px;
+    }
+
+    .theme-btn:hover { color: var(--text); }
+  </style>
+</head>
+
+<body>
+  <button class="theme-btn" id="btnTheme" title="切换亮/暗">🌙</button>
+
+  <div class="card">
+    <div class="brand"><span class="dot"></span> AI-GAL</div>
+    <h1>需要访问密码</h1>
+    <p class="hint">这台设备不是本机访问，请输入访问密码后继续。</p>
+
+    <label for="pw">访问密码</label>
+    <input type="password" id="pw" autocomplete="current-password" inputmode="text" placeholder="请输入密码">
+    <button id="btnLogin">进入</button>
+    <div class="err" id="err"></div>
+
+    <div class="foot">
+      忘记了密码？<strong>到运行 AI-GAL 的那台电脑上</strong>打开界面，在「系统菜单 → 访问密码」里重置。
+      默认密码是 <code>12345</code>，建议尽快改掉。
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var pw = document.getElementById('pw');
+      var btn = document.getElementById('btnLogin');
+      var err = document.getElementById('err');
+      var themeBtn = document.getElementById('btnTheme');
+
+      // 与主界面一致：明/暗两套主题，存 localStorage
+      function applyTheme(mode) {
+        document.documentElement.setAttribute('data-theme', mode === 'light' ? 'light' : 'dark');
+        themeBtn.textContent = mode === 'light' ? '☀️' : '🌙';
+        try { localStorage.setItem('rp-theme-mode', mode); } catch (e) { }
+      }
+      var saved = 'dark';
+      try { saved = localStorage.getItem('rp-theme-mode') === 'light' ? 'light' : 'dark'; } catch (e) { }
+      applyTheme(saved);
+      themeBtn.addEventListener('click', function () {
+        var cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        applyTheme(cur);
+      });
+
+      // 已经是本机 / 已登录 → 直接放行，不用看到这一页
+      fetch('/api/auth/status', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+          if (s.isLocal || s.authed || !s.hasPassword) location.replace(s.isLocal ? '/' : '/');
+        })
+        .catch(function () { });
+
+      function submit() {
+        var v = pw.value;
+        if (!v) { err.textContent = '请输入密码'; pw.focus(); return; }
+        btn.disabled = true;
+        err.textContent = '';
+        fetch('/api/auth/login', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: v })
+        }).then(function (r) {
+          return r.json().catch(function () { return {}; }).then(function (d) {
+            if (r.ok) { location.replace('/'); return; }
+            if (r.status === 429) { err.textContent = d.error || '尝试次数过多，请稍后再试'; return; }
+            err.textContent = d.error || '密码不正确';
+            pw.value = '';
+            pw.focus();
+          });
+        }).catch(function () {
+          err.textContent = '无法连接服务器';
+        }).then(function () { btn.disabled = false; });
+      }
+
+      btn.addEventListener('click', submit);
+      pw.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+      pw.focus();
+    })();
+  </script>
+</body>
+
+</html>

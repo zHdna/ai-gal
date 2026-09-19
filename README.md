@@ -19,6 +19,7 @@
 - **三个 AI 分工流水线**：主 AI 生成剧情（### story / dialog / status / actions 分段），管家 AI 完成
   氛围（mood）分析、行动选项生成、记忆摘要、生图触发判断，画师 AI 撰写生图提示词（详见第二节）
 - **世界书**：关键词 / 常驻 / 关闭三种激活模式，见 `WORLDBOOK_ACTIVATION_GUIDE.md`
+- **界面与操作说明**：主界面、菜单、各项设置怎么用、注意事项，见 `操作说明.md`
 - **MVU 变量卡兼容**：支持 `<UpdateVariables>`、JSONPatch、SAM 等变量系统，内置世界状态检视器
 - **STscript 兼容**：脚本命令与脚本变量（全局 / 会话级）
 - **记忆代理**：每轮生成一句记忆摘要，累计后自动整理成表格注入上下文，长对话不丢剧情
@@ -346,6 +347,7 @@ AI-GAL/
 ├─ README.md                      本文件
 ├─ game01.jpg                     README 演示截图
 ├─ WORLDBOOK_ACTIVATION_GUIDE.md 世界书激活机制说明（用户文档）
+├─ 操作说明.md                    界面与操作说明：主界面 / 菜单 / 设置 / 注意事项（用户文档）
 ├─ GALCG.json                     默认 CG 工作流（空占位，仅 ComfyUI 模式需要）
 ├─ portrait_x.json                默认立绘工作流（空占位，仅 ComfyUI 模式需要）
 ├─ qwen3-tts-01.json              ComfyUI Qwen3-TTS 工作流（可选功能）

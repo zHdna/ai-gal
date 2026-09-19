@@ -2049,6 +2049,112 @@
     openViewer(u, cast.cur ? cast.cur.name : '');
   });
 
+  /* ---------------- 15.1 访问密码（远程访问保护） ----------------
+     规则：本机访问免密；非本机访问整个服务都要密码。密码只有一个，默认 12345。
+     改密码 / 重置**只能在本机**做（服务端同样会校验来源 IP），所以这里也据此提示。 */
+  var pwModal = byId('pwModal');
+  var pwState = { isLocal: false, hasPassword: false, usingDefaultPassword: false, loaded: false };
+
+  function pwSetNote() {
+    var note = byId('pwNote');
+    if (!note) return;
+    if (!pwState.isLocal) {
+      note.className = 'pw-note warn';
+      note.innerHTML = '当前不是本机访问，<b>无法修改或重置密码</b>。<br>请到运行 AI-GAL 的那台电脑上打开本窗口操作。';
+      return;
+    }
+    note.className = 'pw-note';
+    if (pwState.usingDefaultPassword) {
+      note.innerHTML = '当前仍是<b>默认密码 12345</b>，建议马上改成自己的密码。<br>本机访问免密；局域网 / 外网访问需要这个密码。';
+    } else {
+      note.innerHTML = '已设置自定义密码。<br>本机访问免密；局域网 / 外网访问需要这个密码。';
+    }
+  }
+
+  function pwSetStateLabel() {
+    var el = byId('menuAccessPwState');
+    if (!el) return;
+    if (!pwState.loaded) { el.textContent = '本机免密 · 远程需密码'; return; }
+    if (!pwState.isLocal) { el.textContent = '远程访问 · 需在主机修改'; return; }
+    el.textContent = pwState.usingDefaultPassword ? '⚠ 仍是默认密码 12345' : '已设置自定义密码';
+  }
+
+  function loadAuthStatus() {
+    return fetch('/api/auth/status', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        pwState.isLocal = !!s.isLocal;
+        pwState.hasPassword = !!s.hasPassword;
+        pwState.usingDefaultPassword = !!s.usingDefaultPassword;
+        pwState.loaded = true;
+        pwSetStateLabel();
+        pwSetNote();
+        return s;
+      })
+      .catch(function () { return null; });
+  }
+
+  function openPwModal() {
+    if (pwModal) pwModal.classList.add('on');
+    var err = byId('pwErr'); if (err) err.textContent = '';
+    var a = byId('pwNew'), b = byId('pwNew2');
+    if (a) a.value = ''; if (b) b.value = '';
+    loadAuthStatus().then(function () {
+      /* 非本机不给改：把输入区禁掉，免得白填 */
+      var disabled = !pwState.isLocal;
+      [byId('pwNew'), byId('pwNew2'), byId('pwSave'), byId('pwResetDefault')].forEach(function (el) {
+        if (el) el.disabled = disabled;
+      });
+    });
+  }
+  function closePwModal() { if (pwModal) pwModal.classList.remove('on'); }
+
+  on(byId('menuAccessPw'), 'click', function () { closeMenu(); openPwModal(); });
+  on(byId('pwModalClose'), 'click', closePwModal);
+  on(pwModal, 'click', function (e) { if (e.target === pwModal) closePwModal(); });
+
+  on(byId('pwSave'), 'click', function () {
+    var err = byId('pwErr');
+    var a = byId('pwNew'), b = byId('pwNew2');
+    var v1 = a ? a.value : '', v2 = b ? b.value : '';
+    if (err) err.textContent = '';
+    if (!v1 || v1.length < 4) { if (err) err.textContent = '密码至少 4 位'; return; }
+    if (v1 !== v2) { if (err) err.textContent = '两次输入的密码不一致'; return; }
+    var btn = this; btn.disabled = true;
+    fetch('/api/auth/password', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: v1 })
+    }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { if (err) err.textContent = res.d.error || '保存失败'; return; }
+        toast('访问密码已更新');
+        if (a) a.value = ''; if (b) b.value = '';
+        pwState.usingDefaultPassword = !!res.d.usingDefaultPassword;
+        pwSetNote(); pwSetStateLabel();
+      })
+      .catch(function () { if (err) err.textContent = '无法连接服务器'; })
+      .then(function () { btn.disabled = false; });
+  });
+
+  on(byId('pwResetDefault'), 'click', function () {
+    var err = byId('pwErr');
+    if (err) err.textContent = '';
+    if (!confirm('重置为默认密码 12345？\n重置后，任何知道这个默认密码的人都能从局域网访问。')) return;
+    var btn = this; btn.disabled = true;
+    fetch('/api/auth/reset', { method: 'POST', credentials: 'same-origin' })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { if (err) err.textContent = res.d.error || '重置失败'; return; }
+        toast('已重置为默认密码 12345');
+        pwState.usingDefaultPassword = true;
+        pwSetNote(); pwSetStateLabel();
+      })
+      .catch(function () { if (err) err.textContent = '无法连接服务器'; })
+      .then(function () { btn.disabled = false; });
+  });
+
+
   /* ---------------- 15. 菜单 / 顶栏按钮 ---------------- */
   var menu = byId('menu');
   function openMenu() { menu && menu.classList.add('on'); }
@@ -2655,6 +2761,16 @@
     hookApplyBg();
     hookRenderGallery();
     ensureConversations().then(function () { decorateConvRows(byId('characterList')); });
+    /* 读一次访问密码状态：更新系统菜单里的提示；若仍是默认密码，首次进来提醒改掉 */
+    loadAuthStatus().then(function (s) {
+      if (!s || !s.isLocal || !s.usingDefaultPassword) return;
+      var key = 'aigal_pw_prompt_done';
+      try { if (localStorage.getItem(key) === '1') return; } catch (e) { }
+      setTimeout(function () {
+        try { localStorage.setItem(key, '1'); } catch (e) { }
+        toast('访问密码仍是默认的 12345 —— 建议在「菜单 → 访问密码」里改掉');
+      }, 2500);
+    });
     observeMessages();
     render();
     updateHeader();

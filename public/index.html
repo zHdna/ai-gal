@@ -896,6 +896,13 @@ confidence = 0.88</pre>
         </div>
 
         <div class="mgroup">
+          <h4>安 全</h4>
+          <div class="mgrid">
+            <button class="mi" id="menuAccessPw"><span class="ic">🔒</span><span class="tx"><b>访问密码</b><small id="menuAccessPwState">本机免密 · 远程需密码</small></span></button>
+          </div>
+        </div>
+
+        <div class="mgroup">
           <h4>调 试</h4>
           <div class="mgrid">
             <button class="mi" data-open="sheetConsole"><span class="ic">🐞</span><span class="tx"><b>幕后控制台</b><small>主 Agent / 管家 AI</small></span></button>
@@ -929,6 +936,37 @@ confidence = 0.88</pre>
         </div>
         <div class="cm-body" id="conModalBody"></div>
         <div class="cm-foot"><span>完整输出 + 思维链（Chain-of-Thought）；内容来自调试面板原始记录，未截断。</span><small>Esc 或点空白处关闭</small></div>
+      </div>
+    </div>
+
+    <!-- 访问密码（远程访问保护）：仅本机可改 / 重置 -->
+    <div class="con-modal" id="pwModal">
+      <div class="cm-panel" role="dialog" aria-modal="true" aria-label="访问密码">
+        <div class="cm-head">
+          <span class="cm-kind">🔒 安全</span>
+          <span class="cm-title">访问密码</span>
+          <button class="cm-btn cm-x" id="pwModalClose" title="关闭（Esc）">✕</button>
+        </div>
+        <div class="cm-body" id="pwModalBody">
+          <p class="pw-note" id="pwNote">加载中…</p>
+          <div class="pw-row">
+            <label for="pwNew">新密码</label>
+            <input type="password" id="pwNew" autocomplete="new-password" placeholder="至少 4 位">
+          </div>
+          <div class="pw-row">
+            <label for="pwNew2">确认新密码</label>
+            <input type="password" id="pwNew2" autocomplete="new-password" placeholder="再输一次">
+          </div>
+          <p class="pw-err" id="pwErr"></p>
+          <div class="pw-actions">
+            <button class="pw-btn primary" id="pwSave">保存密码</button>
+            <button class="pw-btn" id="pwResetDefault">重置为默认 12345</button>
+          </div>
+          <p class="pw-tip">
+            规则：<b>本机访问（这台电脑）不需要密码</b>；<b>局域网 / 外网访问整个界面都需要密码</b>。<br>
+            移动端用户忘记密码时，请在本机打开本窗口重置。
+          </p>
+        </div>
       </div>
     </div>
 

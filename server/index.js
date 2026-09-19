@@ -92,15 +92,26 @@ if (!DISABLE_MOBILE_FRONTEND) {
   });
 }
 
+// Initialize DB
+const db = initDatabase();
+
+// ── 访问密码（远程访问保护）──
+// 本机（127.0.0.1 / ::1）免密；非本机访问全站都需要先过密码。
+// ⚠️ 顺序很关键：必须挂在【静态资源与业务路由之前】，否则 express.static 会先
+// 把页面/图片发出去，门禁形同虚设。
+const mobileAuth = require('./mobileAuth');
+mobileAuth.ensureDefaultPassword(db);      // 首次启动写入默认密码 12345
+// /login 是密码页的固定入口（static 不会自动把 /login 映射到 login.html）
+app.get('/login', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
+mobileAuth.registerRoutes(app, db);        // /api/auth/*（登录页要用，未登录也放行）
+app.use(mobileAuth.gate(db));
+
 // Serve static files with no-cache for development
 app.use(express.static(PUBLIC_DIR, { etag: false, lastModified: false, setHeaders: (res) => { res.setHeader('Cache-Control', 'no-cache'); } }));
 // profile/ 与 public/uploads/ 是**可写**数据（随 DATA_ROOT 外置，见 server/paths.js），
 // 单独挂载到与原先相同的 URL 上，前端不必改任何路径。
 app.use('/profile', express.static(require('./paths').PROFILE_DIR));
 app.use('/uploads', express.static(require('./paths').UPLOADS_DIR));
-
-// Initialize DB
-const db = initDatabase();
 
 // --- Routes ---
 app.use('/api/providers', require('./routes/providers')(db));
