@@ -37,6 +37,10 @@ extraResources:
   - { from: ../portrait_x.json, to: app-payload/portrait_x.json }
   - { from: ../qwen3-tts-01.json, to: app-payload/qwen3-tts-01.json }
   - { from: ../LICENSE,       to: app-payload/LICENSE }
+  # 用户文档随包发一份：装完想知道某个按钮/设置怎么用，可以直接在安装目录里翻
+  - { from: ../README.md,     to: app-payload/README.md }
+  - { from: ../操作说明.md,     to: app-payload/操作说明.md }
+  - { from: ../WORLDBOOK_ACTIVATION_GUIDE.md, to: app-payload/WORLDBOOK_ACTIVATION_GUIDE.md }
 
 win:
   target:
