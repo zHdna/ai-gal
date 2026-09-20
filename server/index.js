@@ -65,6 +65,27 @@ function isMobileRequest(req) {
   return false;
 }
 
+// Initialize DB
+const db = initDatabase();
+
+// ── 访问密码（远程访问保护）──
+// 本机（127.0.0.1 / ::1）免密；非本机访问全站都需要先过密码。
+// ⚠️ 顺序很关键：必须挂在【静态资源与业务路由之前】，否则 express.static 会先
+// 把页面/图片发出去，门禁形同虚设。
+const mobileAuth = require('./mobileAuth');
+mobileAuth.ensureDefaultPassword(db);      // 首次启动写入默认密码 12345
+// /login 是密码页的固定入口（static 不会自动把 /login 映射到 login.html）
+app.get('/login', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
+mobileAuth.registerRoutes(app, db);        // /api/auth/*（登录页要用，未登录也放行）
+app.use(mobileAuth.gate(db));
+
+// ===== 移动端前端路由 =====
+// ⚠️ 顺序：必须在访问密码门禁【之后】、静态资源之前。
+//   · 非本机且未通过密码 → 门禁已 302 到 /login，根本到不了这里；
+//   · 本机 / 已登录 → 门禁放行后，按 UA 决定返回 mobile.html 或 index.html。
+//   此前这块挂在 gate【之前】，根路径 '/' 直接 sendFile 绕过门禁：页面能加载，
+//   但其引用的 JS/CSS（非白名单）被 gate 拦成 302→/login（HTML）当作脚本/样式解析失败
+//   → 移动端「卡在默认界面不动」、登录页也弹不出来。现已修正。
 if (!DISABLE_MOBILE_FRONTEND) {
   // 根路径：手机/平板 → mobile.html；桌面 → index.html
   app.get('/', (req, res) => {
@@ -91,20 +112,6 @@ if (!DISABLE_MOBILE_FRONTEND) {
     res.redirect(302, '/mobile.html');
   });
 }
-
-// Initialize DB
-const db = initDatabase();
-
-// ── 访问密码（远程访问保护）──
-// 本机（127.0.0.1 / ::1）免密；非本机访问全站都需要先过密码。
-// ⚠️ 顺序很关键：必须挂在【静态资源与业务路由之前】，否则 express.static 会先
-// 把页面/图片发出去，门禁形同虚设。
-const mobileAuth = require('./mobileAuth');
-mobileAuth.ensureDefaultPassword(db);      // 首次启动写入默认密码 12345
-// /login 是密码页的固定入口（static 不会自动把 /login 映射到 login.html）
-app.get('/login', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
-mobileAuth.registerRoutes(app, db);        // /api/auth/*（登录页要用，未登录也放行）
-app.use(mobileAuth.gate(db));
 
 // Serve static files with no-cache for development
 app.use(express.static(PUBLIC_DIR, { etag: false, lastModified: false, setHeaders: (res) => { res.setHeader('Cache-Control', 'no-cache'); } }));

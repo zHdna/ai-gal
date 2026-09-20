@@ -272,6 +272,47 @@ module.exports = (db) => {
     res.json({ message: 'Conversation updated' });
   });
 
+  // === Memory: "ignore earlier dialogue, keep the table" ===
+  // Context-layer only — no message rows are ever deleted, so this is fully reversible.
+  // POST body: { before: <round> }  → exclude dialogue rounds < `before` from the prompt.
+  router.post('/:id/memory-trim', (req, res) => {
+    const conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(req.params.id);
+    if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+    const before = parseInt(req.body?.before);
+    if (!Number.isFinite(before) || before < 1) {
+      return res.status(400).json({ error: 'before (round >= 1) required' });
+    }
+
+    db.prepare('UPDATE conversations SET memory_trim_before = ?, memory_trim_round = ?, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(before, before, req.params.id);
+
+    console.log('[Memory] Conversation ' + req.params.id + ' now ignores dialogue before round ' + before);
+    res.json({ message: 'Earlier dialogue will be ignored from now on', before });
+  });
+
+  // Revert: bring the full dialogue history back into context.
+  router.delete('/:id/memory-trim', (req, res) => {
+    const conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(req.params.id);
+    if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+    db.prepare('UPDATE conversations SET memory_trim_before = 0, memory_trim_round = 0, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(req.params.id);
+
+    console.log('[Memory] Conversation ' + req.params.id + ' restored full dialogue history');
+    res.json({ message: 'Full dialogue history restored', before: 0 });
+  });
+
+  // Current trim state (used by the data centre banner)
+  router.get('/:id/memory-trim', (req, res) => {
+    const conv = db.prepare('SELECT memory_trim_before, memory_trim_round FROM conversations WHERE id = ?').get(req.params.id);
+    if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+    res.json({
+      before: Number(conv.memory_trim_before) || 0,
+      round: Number(conv.memory_trim_round) || 0,
+    });
+  });
+
   // Delete conversation (cascades to messages)
   router.delete('/:id', (req, res) => {
     // Delete child records first (FK constraints)

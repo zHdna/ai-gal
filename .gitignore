@@ -26,6 +26,10 @@ public/uploads/
 # Character profile art / NPC portraits
 profile/
 
+# 桌面版/本地运行时写出的机器相关配置（端口等），不应入库
+# （server/desktop-config.js 会在 DATA_ROOT 下读写它；从源码直接跑时会落在仓库根）
+desktop-config.json
+
 # ---- Logs & scratch ----
 *.log
 *.out

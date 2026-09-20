@@ -354,6 +354,24 @@ const ConversationAPI = {
     });
   },
 
+  /** 忽略 before 轮之前的对话（只保留记忆表格）；不删消息，可撤销 */
+  memoryTrim(id, before) {
+    return request(`/conversations/${id}/memory-trim`, {
+      method: 'POST',
+      body: { before },
+    });
+  },
+
+  /** 撤销「忽略对话」，恢复完整历史 */
+  memoryTrimUndo(id) {
+    return request(`/conversations/${id}/memory-trim`, { method: 'DELETE' });
+  },
+
+  /** 查询当前忽略状态 */
+  memoryTrimState(id) {
+    return request(`/conversations/${id}/memory-trim`);
+  },
+
   /** 清空对话消息（保留对话本身） */
   clearMessages(id) {
     return request(`/conversations/${id}/messages`, {
@@ -565,6 +583,10 @@ const ChatAPI = {
                 case 'aborted':
                   callbacks.onError?.('Generation aborted');
                   break;
+                case 'memory-drop-prompt':
+                  // 第 M 轮：服务端询问是否忽略之前的对话、只保留记忆表格
+                  callbacks.onMemoryDropPrompt?.(data);
+                  break;
                 default:
                   // Try to auto-detect by data shape
                   if (data.token !== undefined) {
@@ -672,6 +694,11 @@ const MemoryAgentAPI = {
       method: 'PUT',
       body: { conversation_id: conversationId, log },
     });
+  },
+
+  /** 每轮记忆状态（黄=已登记 / 绿=已注入 / 红=内容缺失） */
+  getMemoryStatus(conversationId) {
+    return request('/memory-agent/memory-status?conversation_id=' + encodeURIComponent(conversationId));
   },
 };
 

@@ -552,7 +552,7 @@
     var items = (gal.length ? gal.map(function (g) {
       var file = String(g.file || g.filename || g.url || g.image || '');
       var ts = Date.parse(g.timestamp || g.created_at || '') || 0;
-      return { file: file, url: imgUrlFor(file), ts: ts, cap: String(g.character || g.description || ''), msgId: '', order: -1, blockNo: 0 };
+      return { file: file, url: imgUrlFor(file), ts: ts, cap: String((g.sceneEnd && (g.description || g.name)) || g.character || g.description || ''), msgId: '', order: -1, blockNo: 0 };
     }) : legacy.map(function (u) {
       /* 旧画廊只有 URL：文件名里的毫秒时间戳（_____1789582234346.jpg）就是生成时间 */
       var file = String(u).split('/').pop();
@@ -1452,6 +1452,44 @@
      ⇒ 数据明明有（实测该存档 35 条），面板永远显示「暂无」。现在外壳自己取数并缓存，
      取到后再刷一次面板；旧面板那条路仍保留（记忆条目点击编辑要用它的 openMemoryEdit）。 */
   var memCache = { save: '', rows: null, fetching: false };
+  var memStatus = { save: '', byRound: {}, injectedAt: 0, round: 0, fetching: false };
+
+  /* 三色灯状态：黄=已登记（已写入 event_log.md，尚未进入任何一次注入）
+                  绿=已注入（已包含在注入的记忆表格中）
+                  红=内容缺失（该轮没有摘要，或摘要为空） */
+  function memoryStatus() {
+    var sid = saveId();
+    var cid = (App.currentConversation && App.currentConversation.id) || '';
+    if (!cid) return memStatus;
+    if (memStatus.save === cid) return memStatus;
+    if (memStatus.fetching) return memStatus;
+    memStatus.fetching = true;
+    memStatus.save = cid;
+    fetch('/api/memory-agent/memory-status?conversation_id=' + encodeURIComponent(cid))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        memStatus.fetching = false;
+        if (!j) return;
+        memStatus.injectedAt = j.injectedAt || 0;
+        memStatus.round = j.round || 0;
+        memStatus.byRound = {};
+        (j.entries || []).forEach(function (e) { memStatus.byRound[e.round] = e.status; });
+        if ($('.pane[data-pane="memory"]')) loadPane('memory');
+      })
+      .catch(function () { memStatus.fetching = false; });
+    return memStatus;
+  }
+
+  function memDotFor(key) {
+    var st = memoryStatus();
+    var m = String(key || '').match(/第(\d+)轮/);
+    if (!m) return '<span class="mem-dot mem-dot-none"></span>';
+    var s = st.byRound[Number(m[1])];
+    var cls = s === 'injected' ? 'green' : s === 'missing' ? 'red' : s === 'registered' ? 'yellow' : 'none';
+    var title = s === 'injected' ? '已注入' : s === 'missing' ? '内容缺失' : s === 'registered' ? '已登记' : '';
+    return '<span class="mem-dot mem-dot-' + cls + '"' + (title ? ' title="' + title + '"' : '') + '></span>';
+  }
+
   function memoryRows() {
     var sid = saveId();
     if (!sid) return memCache.rows || [];
@@ -1482,6 +1520,7 @@
     ensureData('memory');
     var el = $('.pane[data-pane="memory"]');
     if (!el) return;
+    var st = memoryStatus();
     var rows = memoryRows();
     if (!rows.length) {
       var mem = window._memoryEntries;
@@ -1497,9 +1536,22 @@
         }
       }
     }
-    if (!rows.length) { el.innerHTML = '<div class="card"><h5>记忆表格<span>暂无</span></h5><div class="empty-state">还没有记忆摘要（管家 AI 生成后出现）</div></div>'; return; }
-    el.innerHTML = '<div class="card"><h5>记忆表格<span>共 ' + rows.length + ' 条 · 管家 AI 摘要</span></h5>' + rows.map(function (r) {
-      return '<div class="mem"><div class="k">' + escapeHtml(r.k) + (r.tag ? '<em>' + escapeHtml(String(r.tag)) + '</em>' : '') + '</div><p class="v">' + escapeHtml(String(r.v)) + '</p></div>';
+
+    // 图例（需求：上方显示图例，然后对应记忆条目前用对应的灯）
+    var legend = '<div class="mem-legend">' +
+      '<span><span class="mem-dot mem-dot-yellow"></span>已登记</span>' +
+      '<span><span class="mem-dot mem-dot-green"></span>已注入</span>' +
+      '<span><span class="mem-dot mem-dot-red"></span>内容缺失</span>' +
+      (st.injectedAt ? '<em>最近注入：第 ' + st.injectedAt + ' 轮</em>' : '') +
+      '</div>';
+
+    if (!rows.length) {
+      el.innerHTML = '<div class="card"><h5>记忆表格<span>暂无</span></h5>' + legend +
+        '<div class="empty-state">还没有记忆摘要（管家 AI 生成后出现）</div></div>';
+      return;
+    }
+    el.innerHTML = '<div class="card"><h5>记忆表格<span>共 ' + rows.length + ' 条 · 管家 AI 摘要</span></h5>' + legend + rows.map(function (r) {
+      return '<div class="mem"><div class="k">' + memDotFor(r.k) + escapeHtml(r.k) + (r.tag ? '<em>' + escapeHtml(String(r.tag)) + '</em>' : '') + '</div><p class="v">' + escapeHtml(String(r.v)) + '</p></div>';
     }).join('') + '</div>';
   }
 
@@ -2187,6 +2239,63 @@
 
   on(byId('btnTheme'), 'click', function () { setTheme(themeMode === 'light' ? 'dark' : 'light'); });
   on(byId('btnHideUI'), 'click', function () { setHideUI(!app.classList.contains('ui-gone')); });
+
+  /* ---- 重新生成当前 CG：把这张 CG 的原始生图指令重发一次，旧的图会被覆盖 ----
+     用途：用户对画面不满意（构图/画风/人数不对）时，不用回到数据中心，
+     直接在对话框上方点一下即可重画；后台仍是 fire-and-forget，由常驻画廊 watcher 自动换图。 */
+  function currentStageCg() {
+    var img = byId('cgImg');
+    var url = img && img.getAttribute('src') ? img.getAttribute('src') : '';
+    var gal = (App.cgGallery || []);
+    if (!gal.length) return null;
+    /* 优先用"舞台上正在显示的那张"来匹配；匹配不到就用最新一张（生图默认替换最新条目） */
+    var hit = null;
+    if (url) {
+      var file = decodeURIComponent(String(url).split('/').pop().split('?')[0]);
+      hit = gal.filter(function (g) {
+        var f = String(g.filename || g.file || '');
+        return f && f === file;
+      })[0] || null;
+    }
+    var entry = hit || gal[0];
+    return { entry: entry, isNewest: !hit || entry === gal[0] };
+  }
+  on(byId('btnRegenCg'), 'click', function (e) {
+    e.stopPropagation();
+    var cur = currentStageCg();
+    if (!cur || !cur.entry) { toast('这个存档还没有 CG，先让管家 AI 触发生图'); return; }
+    var cg = cur.entry;
+    if (!cg.prompt) { toast('这张 CG 没有记录生图指令，无法重画'); return; }
+    var btn = this;
+    if (btn.disabled) return;
+    btn.disabled = true;
+    var old = btn.innerHTML;
+    btn.innerHTML = '⟳ 重画中';
+    fetch('/api/images/regenerate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: cg.prompt,
+        type: 'cg',
+        character_name: cg.character || '',
+        conversation_id: (App.currentConversation && App.currentConversation.id) || '',
+        /* 明确指定覆盖哪一张：否则服务端只认 gallery[0]，
+           用户在回顾旧 CG 时点重画会把最新那张覆盖掉。 */
+        old_filename: cg.filename || cg.file || ''
+      })
+    }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      toast('已提交重画，生成完成后会自动替换（约需数十秒）');
+      /* 生成是异步的：立刻把节拍调到最快，等常驻 watcher 抓到新图 */
+      startGalleryPoll(2000);
+    }).catch(function (err) {
+      toast('重画失败：' + (err && err.message ? err.message : err));
+    }).then(function () {
+      btn.disabled = false;
+      btn.innerHTML = old;
+    });
+  });
+
   on(byId('btnAuto'), 'click', function () { setAuto(!S.auto); });
   on(byId('btnSkip'), 'click', function () { S.cur = S.segs.length - 1; render(); toast('已跳到本轮最后一段'); });
   /* 逐段演出：上一段 / 下一段（设计稿里这两个按钮的绑定属于演示脚本，生产必须在外壳里重新绑） */

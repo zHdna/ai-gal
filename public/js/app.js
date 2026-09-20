@@ -4702,6 +4702,11 @@ async function sendMessage() {
           streamText += token;
           // 不显示裸文本，保持打字指示器直到完成
         },
+        onMemoryDropPrompt: (info) => {
+          // 第 M 轮（M 为注入间隔的整数倍）刚注入了完整记忆表格：
+          // 询问用户是否忽略更早的对话、只保留表格。选「是」只裁剪上下文，不删消息，可随时撤销。
+          try { promptMemoryDrop(info); } catch (e) { console.warn('[Memory] drop prompt failed:', e); }
+        },
         onDone: (result) => {
           // ⚠️ 服务端在「主AI输出为空 / 中转失败」时会先发 error 再发 done，而这个 done 携带
           // content:'' + formatted:{segments:[]}。onDone 在 onError 之后执行，若照渲染就会把
@@ -5502,7 +5507,9 @@ function renderGallery() {
   if (allCG.length > 0) {
     allCG.forEach((cg, i) => {
       const imgUrl = '/api/saves/' + getCurrentSaveId() + '/images/' + cg.filename;
-      const desc = cg.character + (' - NSFW场景');
+      const desc = cg.sceneEnd
+        ? (cg.description || '场景 · NSFW 流程结束')
+        : (cg.character + ' - NSFW场景');
       html += `
         <div class="cg-item" data-cg-index="${i}">
           <div class="cg-img-wrap">
@@ -5548,13 +5555,22 @@ function renderGallery() {
       btn.textContent = '⟳';
       btn.disabled = true;
       try {
-        const pollRetries = 30;
         await request('/images/regenerate', {
           method: 'POST',
-          body: { prompt: cg.prompt, type: 'cg', character_name: cg.character, conversation_id: AppState.currentConversation?.id }
+          body: {
+            prompt: cg.prompt,
+            type: 'cg',
+            character_name: cg.character,
+            conversation_id: AppState.currentConversation?.id,
+            // ⚠️ 必须带上这一张的文件名：服务端默认只替换 gallery[0]（最新那张），
+            // 不指定的话，用户对"中间某张"点重新生成，被覆盖的会是【最新】那张，
+            // 而用户点的这张原样不动（用户报过这个现象）。
+            old_filename: cg.filename || cg.file || ''
+          }
         });
         showToast('CG 重新生成已提交', 'success');
-        pollCGGallery(pollRetries);
+        // 常驻 watcher 会抓到替换结果；这里再把节拍提快一点，让新图尽快上屏
+        startGalleryPoll(2000);
       } catch (err) {
         showToast('重新生成失败', 'error');
       }
@@ -6304,6 +6320,63 @@ async function saveStatusToDisk() {
 
 // ============ 记忆表格 ============
 
+/**
+ * 第 M 轮（M 为注入间隔的整数倍）刚完成一次完整记忆表格注入，询问用户
+ * 是否忽略更早的对话、只保留表格。
+ * 选「是」只裁剪送模型的上下文（保留第 M 轮对话 + 1~M 轮表格 + 说明），
+ * 不删除任何消息，随时可在数据中心撤销。
+ */
+window.promptMemoryDrop = function (info) {
+  const conv = AppState.currentConversation;
+  if (!conv) return;
+  const round = info && info.round ? info.round : 0;
+  const keepFrom = info && info.keep_from ? info.keep_from : round;
+
+  // 避免同一轮重复弹窗
+  if (window._memDropPromptedRound === round) return;
+  window._memDropPromptedRound = round;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal';
+  overlay.id = 'memoryDropModal';
+  overlay.innerHTML = `
+    <div class="modal-overlay"></div>
+    <div class="modal-content" style="max-width:460px">
+      <div class="modal-header">
+        <h3>记忆表格已注入</h3>
+      </div>
+      <div class="modal-body">
+        <p>已在第 <b>${round}</b> 轮注入完整记忆表格（第 1~${round} 轮剧情摘要）。</p>
+        <p style="margin-top:8px">是否<b>忽略之前的对话，只保留记忆表格</b>？</p>
+        <ul style="margin:10px 0 0 18px;line-height:1.7;color:var(--text-dim)">
+          <li>保留：第 ${keepFrom} 轮完整对话（供 AI 参考对话风格）</li>
+          <li>保留：第 1~${round} 轮记忆表格</li>
+          <li>丢弃：第 1~${keepFrom - 1} 轮的对话原文</li>
+        </ul>
+        <p style="margin-top:10px;color:var(--text-dim)">不会删除任何消息，之后可随时在「数据中心 → 记忆表格」撤销。</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="memDropNo">暂不忽略</button>
+        <button class="btn btn-primary" id="memDropYes">忽略并只保留表格</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelector('.modal-overlay').addEventListener('click', close);
+  overlay.querySelector('#memDropNo').addEventListener('click', close);
+  overlay.querySelector('#memDropYes').addEventListener('click', async () => {
+    try {
+      await ConversationAPI.memoryTrim(conv.id, keepFrom);
+      showToast(`已忽略第 ${keepFrom} 轮之前的对话，仅保留记忆表格`, 'success');
+      close();
+      loadMemoryPage();
+    } catch (err) {
+      showToast('操作失败: ' + err.message, 'error');
+    }
+  });
+};
+
 async function loadMemoryPage() {
   const list = DOM.memoryList();
   const saveId = getCurrentSaveId();
@@ -6318,11 +6391,56 @@ async function loadMemoryPage() {
     const entries = Array.isArray(memory)
       ? memory
       : Object.entries(memory).map(([key, value]) => ({ key, value }));
+
+    // 三色灯状态（黄=已登记 / 绿=已注入 / 红=内容缺失）
+    const convId = AppState.currentConversation?.id;
+    let statusByRound = {};
+    let memState = { round: 0, injectedAt: 0 };
+    if (convId) {
+      try {
+        const st = await MemoryAgentAPI.getMemoryStatus(convId);
+        memState = st || memState;
+        (st.entries || []).forEach(e => { statusByRound[e.round] = e.status; });
+        // 供移动端渲染器（vn-pages.js）复用同一份三色灯状态
+        window._memoryStatus = {
+          byRound: statusByRound,
+          injectedAt: memState.injectedAt || 0,
+          round: memState.round || 0,
+        };
+      } catch (e) { /* 状态非关键，失败则不着色 */ }
+    }
+
+    // 忽略状态横幅
+    let banner = '';
+    if (convId) {
+      try {
+        const ts = await ConversationAPI.memoryTrimState(convId);
+        if (ts && ts.before > 0) {
+          banner = `<div class="memory-trim-banner" style="margin-bottom:10px;padding:8px 10px;border-radius:6px;
+            background:rgba(255,193,7,.12);border:1px solid rgba(255,193,7,.4);font-size:12px;line-height:1.6">
+            已忽略第 ${ts.before} 轮之前的对话，仅保留记忆表格。
+            <a href="#" id="memTrimUndo" style="margin-left:6px">撤销</a>
+          </div>`;
+        }
+      } catch (e) { /* ignore */ }
+    }
+
     if (entries.length === 0) {
-      list.innerHTML = '<div class="phone-empty">暂无记忆数据</div>';
+      list.innerHTML = banner + '<div class="phone-empty">暂无记忆数据</div>';
+      bindMemoryTrimUndo();
       return;
     }
-    let html = '';
+
+    // 图例
+    const legend = `<div class="memory-legend" style="display:flex;gap:14px;flex-wrap:wrap;
+      align-items:center;margin-bottom:10px;font-size:12px;color:var(--text-dim)">
+      <span><span class="mem-dot mem-dot-yellow"></span>已登记</span>
+      <span><span class="mem-dot mem-dot-green"></span>已注入</span>
+      <span><span class="mem-dot mem-dot-red"></span>内容缺失</span>
+      ${memState.injectedAt ? `<span style="margin-left:auto">最近注入：第 ${memState.injectedAt} 轮</span>` : ''}
+    </div>`;
+
+    let html = banner + legend;
     let idx = 0;
     for (const entry of entries) {
       const key = entry.key || entry.topic || entry.name || '';
@@ -6331,9 +6449,19 @@ async function loadMemoryPage() {
       // Strip HTML/Markdown formatting for clean display
       value = String(value).replace(/<[^>]*>/g, '').replace(/[*_]{1,2}/g, '');
       if (value.length > 200) value = value.substring(0, 200) + '...';
+
+      // 「第N轮」→ 对应轮次的灯
+      const rm = String(key).match(/第(\d+)轮/);
+      const roundNo = rm ? Number(rm[1]) : 0;
+      const status = roundNo && statusByRound[roundNo] ? statusByRound[roundNo] : '';
+      const dot = status
+        ? `<span class="mem-dot mem-dot-${status === 'injected' ? 'green' : status === 'missing' ? 'red' : 'yellow'}"
+             title="${status === 'injected' ? '已注入' : status === 'missing' ? '内容缺失' : '已登记'}"></span>`
+        : '<span class="mem-dot mem-dot-none"></span>';
+
       html += `<div class="roster-card memory-card" onclick="openMemoryEdit(${idx},'${escapeJs(key)}')" style="cursor:pointer">
           <div class="roster-card-info">
-            <div class="roster-card-name">${escapeHtml(key)}</div>
+            <div class="roster-card-name">${dot}<span style="margin-left:6px">${escapeHtml(key)}</span></div>
             <div class="roster-card-intro" style="white-space:pre-wrap;line-height:1.3">${escapeHtml(value)}</div>
           </div>
         </div>`;
@@ -6342,9 +6470,27 @@ async function loadMemoryPage() {
     list.innerHTML = html;
     // Store entries for editing
     window._memoryEntries = entries;
+    bindMemoryTrimUndo();
   } catch (err) {
     list.innerHTML = '<div class="phone-empty">加载失败: ' + escapeHtml(err.message) + '</div>';
   }
+}
+
+function bindMemoryTrimUndo() {
+  const a = document.getElementById('memTrimUndo');
+  if (!a) return;
+  a.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    const convId = AppState.currentConversation?.id;
+    if (!convId) return;
+    try {
+      await ConversationAPI.memoryTrimUndo(convId);
+      showToast('已恢复完整对话历史', 'success');
+      loadMemoryPage();
+    } catch (err) {
+      showToast('撤销失败: ' + err.message, 'error');
+    }
+  });
 }
 
 function openMemoryEdit(idx, key) {
@@ -6408,7 +6554,7 @@ async function loadGalleryPage() {
     const gallery = resp.gallery || [];
     _galleryItems = gallery.map(cg => ({
       url: `/api/saves/${saveId}/images/${encodeURIComponent(cg.filename)}`,
-      label: cg.character || ''
+      label: cg.sceneEnd ? (cg.description || '场景 · NSFW 流程结束') : (cg.character || '')
     }));
     if (_galleryItems.length === 0) {
       grid.innerHTML = '<div class="phone-empty">暂无CG图片</div>';
@@ -6785,10 +6931,17 @@ let _galleryPollTimer = null;
 let _galleryPollSaveId = '';
 let _galleryPollLastSig = '';
 
-/** 画廊指纹：数量 + 首张时间戳（覆盖"新增"与"重新生成同数量"两种情况） */
+/**
+ * 画廊指纹：用于判断"画廊有没有变化"。
+ * ⚠️ 必须覆盖【整张列表】，不能只看数量 + 第一张：
+ * 「重新生成某一张」是**原地替换**——数量不变、如果替换的不是最新那张，
+ * 第一张的文件名/时间戳也不变。只比这两项的话，重画中间那张时
+ * watcher 会认为"没变化"，前端列表就一直是旧的（用户报过这个现象）。
+ * 列表上限 20 条，整串拼接开销可忽略。
+ */
 function cgGallerySignature(gallery) {
   const g = gallery || [];
-  return g.length + '|' + (g[0]?.timestamp || '') + '|' + (g[0]?.filename || g[0]?.file || '');
+  return g.length + '|' + g.map(x => String(x?.filename || x?.file || '') + '@' + String(x?.timestamp || '')).join(',');
 }
 
 /**
@@ -8815,41 +8968,54 @@ const ANIMA_DEFAULTS = {
   api_model: 'sd-cpp-local',
   image_size: '1024x1024',
 };
+// NovelAI：端点/模型/尺寸有官方固定默认值；API Key 是账号的 Persistent API Token（pst- 开头），
+// 必须用户自己填，绝不能预填假值。权威默认值在服务端 server/constants.js 的 NOVELAI_PRESET。
+const NOVELAI_DEFAULTS = {
+  api_url: 'https://image.novelai.net/ai/generate-image',
+  api_model: 'nai-diffusion-4-5-full',
+  image_size: '1024x1024',
+};
 // 需要「API 地址 / Key / 模型」这一组字段的引擎
-const API_IMAGE_MODES = ['anima', 'openai', 'stability'];
+const API_IMAGE_MODES = ['anima', 'openai', 'stability', 'novelai'];
 const hasApiEndpoint = (m) => API_IMAGE_MODES.includes(m);
 const hasComfyGroup = (m) => m === 'comfyui' || m === 'none';
 
 /**
- * 计算要展示/保存的 API 字段。anima 引擎自带默认端点，即使数据库里是空的也能开箱即用。
+ * 计算要展示/保存的 API 字段。anima 引擎自带默认端点，即使数据库里是空的也能开箱即用；
+ * novelai 的端点/模型同理（Key 除外——它是用户令牌，留空就留空）。
  */
 function effectiveApiSettings(s) {
   const src = s || {};
-  const isAnima = (src.mode || 'anima') === 'anima';
-  const pick = (v, fb) => ((typeof v === 'string' && v.trim()) ? v.trim() : (isAnima ? fb : ''));
+  const mode = src.mode || 'anima';
+  const isAnima = mode === 'anima';
+  const isNovelai = mode === 'novelai';
+  const pick = (v, fb) => ((typeof v === 'string' && v.trim()) ? v.trim() : ((isAnima || isNovelai) ? fb : ''));
   return {
-    api_url: pick(src.api_url, ANIMA_DEFAULTS.api_url),
-    api_key: pick(src.api_key, ANIMA_DEFAULTS.api_key),
-    api_model: pick(src.api_model, ANIMA_DEFAULTS.api_model),
-    image_size: (src.image_size || (isAnima ? ANIMA_DEFAULTS.image_size : '')),
+    api_url: pick(src.api_url, isNovelai ? NOVELAI_DEFAULTS.api_url : ANIMA_DEFAULTS.api_url),
+    api_key: pick(src.api_key, isAnima ? ANIMA_DEFAULTS.api_key : ''),
+    api_model: pick(src.api_model, isNovelai ? NOVELAI_DEFAULTS.api_model : ANIMA_DEFAULTS.api_model),
+    image_size: (src.image_size || ((isAnima || isNovelai) ? (isNovelai ? NOVELAI_DEFAULTS.image_size : ANIMA_DEFAULTS.image_size) : '')),
   };
 }
 
 function imageOpenAISettingsHtml(rawSettings) {
   // 生成「生图模型 + 提示词质量前缀 + 图片尺寸」三块控件 HTML
-  // （OpenAI / Stability / anima-turbo-cg 三种模式共用，都是 API 端点式引擎）
-  // anima-turbo-cg 的模型/尺寸有内置默认值，字段为空时也要显示出来（否则用户面对空白下拉框）
+  // （OpenAI / Stability / anima-turbo-cg / NovelAI 共用，都是 API 端点式引擎）
+  // anima-turbo-cg / NovelAI 的模型/尺寸有内置默认值，字段为空时也要显示出来（否则用户面对空白下拉框）
   const eff = effectiveApiSettings(rawSettings);
   const s = Object.assign({}, rawSettings, { api_model: eff.api_model, image_size: eff.image_size });
+  const isNovelai = ((s.mode || '') === 'novelai');
   const m = (s.api_model || '').trim();
   const q = s.quality_prefix || '';
   const sz = s.image_size || '';
-  // 尺寸选项：空=不指定（由服务商用各自默认值）；下列覆盖 DALL-E 与 SenseNova u1 的合法尺寸
-  const sizeOpts = [
-    '', '1024x1024', '1792x1024', '1024x1792',
-    '2048x2048', '1536x2752', '2752x1536', '1664x2496', '2496x1664',
-    '1760x2368', '2368x1760', '1824x2272', '2272x1824', '1344x3136', '3072x1376'
-  ];
+  // 尺寸选项：空=不指定（由服务商用各自默认值）。
+  // OpenAI 系覆盖 DALL-E 与 SenseNova u1 的合法尺寸；NovelAI 覆盖常用档位（须为 64 的倍数，
+  // 超过 1024² 的档位在 Opus 订阅下会消耗 Anlas）。
+  const sizeOpts = isNovelai
+    ? ['', '1024x1024', '832x1216', '1216x832', '1024x1536', '1536x1024', '1216x1632', '1632x1216']
+    : ['', '1024x1024', '1792x1024', '1024x1792',
+      '2048x2048', '1536x2752', '2752x1536', '1664x2496', '2496x1664',
+      '1760x2368', '2368x1760', '1824x2272', '2272x1824', '1344x3136', '3072x1376'];
   const sizeLabels = { '': '服务商默认（不指定尺寸）' };
   const qOpts = [
     ['', '无（不添加）'],
@@ -8858,27 +9024,49 @@ function imageOpenAISettingsHtml(rawSettings) {
     ['anime style, masterpiece, highly detailed, vibrant colors', '动漫插画'],
     ['oil painting, artistic, detailed brushwork', '油画艺术'],
   ];
+  if (isNovelai) {
+    // NovelAI 官方画质词（V3/V4.5 通用），拼在最前方便直接选用
+    qOpts.splice(1, 0, ['masterpiece, best quality, amazing quality, very aesthetic, absurdres', 'NovelAI 画质词（推荐）']);
+  }
   const esc = (v) => escapeHtml(v);
   const selFixed = (val, opts) => opts.map(o => `<option value="${esc(o)}" ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('');
   const selMap = (val, opts) => opts.map(([v, t]) => `<option value="${esc(v)}" ${v === val ? 'selected' : ''}>${esc(t)}</option>`).join('');
-  // 生图模型：默认不写死任何模型（避免过时默认值），由用户点击「拉取」从服务端获取；
-  // 仅保留当前已保存的模型值与「自定义...」入口
+  // 生图模型：OpenAI 系默认不写死任何模型（避免过时默认值），由用户点击「拉取」从服务端获取；
+  // 仅保留当前已保存的模型值与「自定义...」入口。
+  // NovelAI 没有 OpenAI 风格的 /models 接口，直接给出固定官方模型清单（也允许自定义）。
   const modelOptions = [];
-  if (m) modelOptions.push(`<option value="${esc(m)}" selected>${esc(m)}</option>`);
-  modelOptions.push(`<option value="__custom__" ${m ? '' : 'selected'}>自定义...</option>`);
-  const showModelCustom = !m;
+  if (isNovelai) {
+    const naiModels = ['nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-3', 'nai-diffusion-furry-3'];
+    for (const id of naiModels) {
+      const selected = (id === m) || (!m && id === 'nai-diffusion-4-5-full');
+      modelOptions.push(`<option value="${esc(id)}" ${selected ? 'selected' : ''}>${esc(id)}</option>`);
+    }
+    if (m && !naiModels.includes(m)) {
+      modelOptions.unshift(`<option value="${esc(m)}" selected>${esc(m)}（当前）</option>`);
+    }
+    modelOptions.push(`<option value="__custom__" ${(m && !naiModels.includes(m)) ? 'selected' : ''}>自定义...</option>`);
+  } else {
+    if (m) modelOptions.push(`<option value="${esc(m)}" selected>${esc(m)}</option>`);
+    modelOptions.push(`<option value="__custom__" ${m ? '' : 'selected'}>自定义...</option>`);
+  }
+  const showModelCustom = !m || (isNovelai && m && !['nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-3', 'nai-diffusion-furry-3'].includes(m));
   const sizeCustom = !sizeOpts.includes(sz);
   const qCustom = !qOpts.some(([v]) => v === q);
   const sizeOptions = sizeOpts.map(o => `<option value="${esc(o)}" ${o === sz ? 'selected' : ''}>${esc(sizeLabels[o] || o)}</option>`).join('');
+  const modelCustomPlaceholder = isNovelai ? '自定义模型名，如 nai-diffusion-4-full' : '自定义模型名，如 gpt-image-1';
+  const sizeCustomPlaceholder = isNovelai
+    ? '自定义尺寸，宽x高（须为 64 的倍数，如 832x1216；超过 1024² 或 28 步会消耗 Anlas）'
+    : '自定义尺寸，如 1536x1024（须为服务商支持的尺寸）';
   return `
     <label style="margin-top:8px;display:block">生图模型</label>
     <div style="display:flex;gap:6px;align-items:center">
       <select id="apiModel" class="setting-select" style="flex:1;min-width:0">
         ${modelOptions.join('')}
       </select>
-      <button type="button" id="fetchImageModels" class="btn btn-sm" title="从服务器拉取模型列表">拉取</button>
+      ${isNovelai ? '' : '<button type="button" id="fetchImageModels" class="btn btn-sm" title="从服务器拉取模型列表">拉取</button>'}
     </div>
-    <input type="text" id="apiModelCustom" class="setting-input" style="display:${showModelCustom ? 'block' : 'none'};margin-top:4px" placeholder="自定义模型名，如 gpt-image-1" value="${esc(showModelCustom ? m : '')}">
+    ${isNovelai ? '<small style="color:var(--text-muted);display:block;margin-top:4px">NovelAI 模型清单固定：V4.5 full 为最新全量模型（付费档），curated 为策展版；V3 对 Danbooru tag 反应最经典</small>' : ''}
+    <input type="text" id="apiModelCustom" class="setting-input" style="display:${showModelCustom ? 'block' : 'none'};margin-top:4px" placeholder="${esc(modelCustomPlaceholder)}" value="${esc(showModelCustom ? m : '')}">
     <div id="apiModelHint" class="setting-hint" style="display:none;color:#d98b00;font-size:12px;margin-top:4px"></div>
 
     <label style="margin-top:8px;display:block">提示词质量前缀</label>
@@ -8893,7 +9081,7 @@ function imageOpenAISettingsHtml(rawSettings) {
       ${sizeOptions}
       <option value="__custom__" ${sizeCustom ? 'selected' : ''}>自定义...</option>
     </select>
-    <input type="text" id="imageSizeCustom" class="setting-input" style="display:${sizeCustom ? 'block' : 'none'};margin-top:4px" placeholder="自定义尺寸，如 1536x1024（须为服务商支持的尺寸）" value="${esc(sizeCustom ? sz : '')}">
+    <input type="text" id="imageSizeCustom" class="setting-input" style="display:${sizeCustom ? 'block' : 'none'};margin-top:4px" placeholder="${esc(sizeCustomPlaceholder)}" value="${esc(sizeCustom ? sz : '')}">
   `;
 }
 
@@ -8996,6 +9184,38 @@ function resolveOpenAIValues(root) {
   };
 }
 
+/**
+ * 收集 NovelAI 高级参数（步数/CFG/seed/采样器）并合并进 custom_params。
+ * 输入框不存在（root 里没有这组控件，如弹窗/面板）时返回 null，调用方跳过，
+ * 避免误清 ComfyUI 已存参数；空值 = 删除对应键，恢复引擎默认。
+ * 基础 JSON 从渲染时挂在组节点上的 data-base-params 读。
+ */
+function collectNovelAIParams(root) {
+  const scope = root || document;
+  const group = scope.querySelector ? scope.querySelector('#imageNovelaiGroup') : null;
+  if (!group) return null;
+  let base = {};
+  try { base = JSON.parse(group.dataset.baseParams || '{}') || {}; } catch { base = {}; }
+  const num = (sel) => {
+    const el = scope.querySelector(sel);
+    if (!el) return undefined;
+    const v = (el.value || '').trim();
+    if (v === '') return undefined;
+    const n = parseFloat(v);
+    return isFinite(n) ? n : undefined;
+  };
+  const steps = num('#naiSteps');
+  if (steps !== undefined) base.steps = Math.floor(steps); else delete base.steps;
+  const cfg = num('#naiScale');
+  if (cfg !== undefined) base.cfg = cfg; else delete base.cfg;
+  const seed = num('#naiSeed');
+  if (seed !== undefined) base.seed = Math.floor(seed); else delete base.seed;
+  const samplerEl = scope.querySelector('#naiSampler');
+  const sampler = samplerEl ? (samplerEl.value || '').trim() : '';
+  if (sampler) base.sampler = sampler; else delete base.sampler;
+  return JSON.stringify(base);
+}
+
 // Generation params editor removed (built-in Anima engine uninstalled).
 
 function renderImageGenSettings() {
@@ -9010,9 +9230,10 @@ function renderImageGenSettings() {
           <option value="comfyui" ${mode === 'comfyui' ? 'selected' : ''}>ComfyUI（画质最佳·需工作流）</option>
           <option value="openai" ${mode === 'openai' ? 'selected' : ''}>OpenAI DALL-E / 兼容 API</option>
           <option value="stability" ${mode === 'stability' ? 'selected' : ''}>Stability AI</option>
+          <option value="novelai" ${mode === 'novelai' ? 'selected' : ''}>NovelAI（云端生图·官方 API）</option>
           <option value="none" ${mode === 'none' ? 'selected' : ''}>关闭生图</option>
         </select>
-        <small style="color:var(--text-muted)">默认走 anima-turbo-cg（极简模式，需另启该服务，见 README）。追求更好画质请选 ComfyUI 并配置工作流。</small>
+        <small style="color:var(--text-muted)">默认走 anima-turbo-cg（极简模式，需另启该服务，见 README）。追求更好画质请选 ComfyUI 并配置工作流；NovelAI 需官网 Persistent API Token（pst- 开头）。</small>
       </div>
       <div class="form-group">
         <label>提示词模式</label>
@@ -9030,7 +9251,7 @@ function renderImageGenSettings() {
         <input type="text" id="apiUrl" class="setting-input" value="${escapeHtml(eff.api_url)}" placeholder="https://api.openai.com/v1/images/generations">
         <label style="margin-top:6px">API Key</label>
         <input type="password" id="apiKey" class="setting-input" value="${escapeHtml(eff.api_key)}">
-        ${imageOpenAISettingsHtml(Object.assign({}, s, { mode }))}
+        <div id="apiEngineFields">${imageOpenAISettingsHtml(Object.assign({}, s, { mode }))}</div>
       </div>
       <button class="btn btn-sm" id="btnSaveImageGenSettings" style="margin-top:8px">保存图像设置</button>
     `;
@@ -9039,9 +9260,16 @@ function renderImageGenSettings() {
       const v = e.target.value;
       DOM.imageGenSettings().querySelector('#comfyuiGroup').style.display = hasComfyGroup(v) ? 'block' : 'none';
       DOM.imageGenSettings().querySelector('#apiGroup').style.display = hasApiEndpoint(v) ? 'block' : 'none';
-      prefillApiFieldsForMode(DOM.imageGenSettings(), v);
+      // 模型/尺寸/画质词选项因引擎而异：切引擎时重建这组控件，再做字段归位
+      const fields = DOM.imageGenSettings().querySelector('#apiEngineFields');
+      if (fields) {
+        fields.innerHTML = imageOpenAISettingsHtml(Object.assign({}, s, { mode: v }));
+        wireOpenAICustom(fields);
+      }
+      prefillApiFieldsForMode(DOM.imageGenSettings(), v, true); // 主动切引擎：地址按目标供应商强制归位
     });
     wireOpenAICustom(DOM.imageGenSettings());
+    prefillApiFieldsForMode(DOM.imageGenSettings(), mode);
 
     DOM.imageGenSettings().querySelector('#btnSaveImageGenSettings').addEventListener('click', async () => {
       const mode = DOM.imageGenSettings().querySelector('#genMode').value;
@@ -9065,22 +9293,70 @@ function renderImageGenSettings() {
 }
 
 /**
- * 切到 anima-turbo-cg 时，把内置默认端点写进空字段，避免用户看到空白的 URL/模型/尺寸。
- * 已有内容（用户自己填过的）一律不覆盖。
+ * 「API 地址 / Key / 模型 / 尺寸」是所有 API 引擎**共用**的一行设置，引擎即供应商：
+ * 选了 NovelAI 就该是 NovelAI 的官方端点，选了 anima 就该是本机 anima 端点。
+ *
+ * - force = true（用户**主动在下拉里切引擎**）：地址一律改成目标引擎的固定端点，
+ *   不管字段里原来是哪个供应商的地址——anima 的 8100、api.openai.com、任意第三方
+ *   "OpenAI 兼容"中转地址（/v1/images/generations 之类）全部覆盖。
+ * - force = false（**打开设置界面**时的对齐）：空值、或明显属于**别的供应商**的地址
+ *   才替换；用户自填的地址（自建 OpenAI 兼容服务、NovelAI 反代镜像）保留。
+ * - Key：novelai 只保留 pst- 开头的持久令牌，其余清空；anima 归位为 'local'。
+ * - 模型：novelai 只保留 nai-diffusion-*；anima 归位为 sd-cpp-local。
+ * - 尺寸：novelai 保留任意 WxH（64 倍数由后端对齐），空值才补默认。
+ * - openai / stability 无固定端点，字段始终由用户自管。
  */
-function prefillApiFieldsForMode(root, mode) {
-  if (!root || mode !== 'anima') return;
+function shouldSnapUrl(v, targetMode) {
+  const s = String(v || '').trim();
+  if (!s) return true; // 空值 -> 补默认
+  if (targetMode === 'novelai') {
+    // NovelAI 只可能跑在 novelai 官方域或其反代（路径 /ai/generate-image）上；
+    // 其余地址（含任意第三方「OpenAI 兼容」中转）都属别的供应商 -> 归位
+    return !/novelai/i.test(s) && !/\/ai\/generate-image/i.test(s);
+  }
+  if (targetMode === 'anima') {
+    if (/:8100\b/.test(s)) return false; // anima 本机服务（任意主机，端口 8100）
+    // 只替换已知的别家预设；用户自填的其它地址（自建 OpenAI 兼容服务等）保留
+    return /novelai|ai\/generate-image|api\.openai\.com|api\.stability\.ai/i.test(s);
+  }
+  return false;
+}
+
+function prefillApiFieldsForMode(root, mode, force) {
   const url = root.querySelector('#apiUrl') || root.querySelector('#imageApiUrl');
   const key = root.querySelector('#apiKey') || root.querySelector('#imageApiKey');
   const modelSel = root.querySelector('#apiModel');
   const modelCustom = root.querySelector('#apiModelCustom');
   const sizeSel = root.querySelector('#imageSize');
   const sizeCustom = root.querySelector('#imageSizeCustom');
-  if (url && !url.value.trim()) url.value = ANIMA_DEFAULTS.api_url;
-  if (key && !key.value.trim()) key.value = ANIMA_DEFAULTS.api_key;
+  if (mode === 'novelai') {
+    if (url && (force || shouldSnapUrl(url.value, mode))) url.value = NOVELAI_DEFAULTS.api_url;
+    if (key && !/^pst-/i.test((key.value || '').trim())) key.value = '';
+    if (modelSel && modelCustom) {
+      const current = modelSel.value === '__custom__' ? modelCustom.value.trim() : modelSel.value;
+      if (!/^nai-diffusion-/.test(current || '')) {
+        modelSel.value = NOVELAI_DEFAULTS.api_model;
+        modelCustom.style.display = 'none';
+      }
+    }
+    if (sizeSel && sizeCustom) {
+      const current = sizeSel.value === '__custom__' ? sizeCustom.value.trim() : sizeSel.value;
+      if (!/^\d+\s*[xX×]\s*\d+$/.test(current || '')) {
+        sizeSel.value = NOVELAI_DEFAULTS.image_size;
+        sizeCustom.style.display = 'none';
+      }
+    }
+    return;
+  }
+  if (mode !== 'anima') return; // openai / stability：无官方默认，字段保持用户自管
+  if (url && (force || shouldSnapUrl(url.value, mode))) url.value = ANIMA_DEFAULTS.api_url;
+  // anima 服务忽略 Key 但不能为空：主动切引擎时归位为 'local'，只是打开界面时空值才补
+  if (key && (force ? (key.value || '').trim() !== ANIMA_DEFAULTS.api_key : !key.value.trim())) key.value = ANIMA_DEFAULTS.api_key;
   if (modelSel && modelCustom) {
     const current = modelSel.value === '__custom__' ? modelCustom.value.trim() : modelSel.value;
-    if (!current) { modelSel.value = '__custom__'; modelCustom.value = ANIMA_DEFAULTS.api_model; modelCustom.style.display = 'block'; }
+    if (force ? current !== ANIMA_DEFAULTS.api_model : !current) {
+      modelSel.value = '__custom__'; modelCustom.value = ANIMA_DEFAULTS.api_model; modelCustom.style.display = 'block';
+    }
   }
   if (sizeSel && sizeCustom) {
     const current = sizeSel.value === '__custom__' ? sizeCustom.value.trim() : sizeSel.value;
@@ -9250,6 +9526,7 @@ function openImageGenSettingsInPanel() {
           <option value="comfyui" ${mode === 'comfyui' ? 'selected' : ''}>ComfyUI（画质最佳）</option>
           <option value="openai" ${mode === 'openai' ? 'selected' : ''}>OpenAI</option>
           <option value="stability" ${mode === 'stability' ? 'selected' : ''}>Stability</option>
+          <option value="novelai" ${mode === 'novelai' ? 'selected' : ''}>NovelAI</option>
           <option value="none" ${mode === 'none' ? 'selected' : ''}>关闭</option>
         </select></div>
       <div class="form-group"><label>提示词模式</label>
@@ -9264,15 +9541,21 @@ function openImageGenSettingsInPanel() {
         <label>API 地址/Key</label>
         <input type="text" id="apiUrl" class="setting-input" value="${escapeHtml(eff.api_url)}" placeholder="API URL">
         <input type="password" id="apiKey" class="setting-input" value="${escapeHtml(eff.api_key)}" placeholder="API Key" style="margin-top:4px">
-        ${imageOpenAISettingsHtml(Object.assign({}, s, { mode }))}</div>
+        <div id="apiEngineFieldsPopup">${imageOpenAISettingsHtml(Object.assign({}, s, { mode }))}</div></div>
       <button class="btn btn-sm" id="btnSaveImgPopup" style="margin-top:8px">保存</button>`;
 
     div.querySelector('#genMode').addEventListener('change', e => {
       div.querySelector('#comfyuiGroup').style.display = hasComfyGroup(e.target.value) ? 'block' : 'none';
       div.querySelector('#apiGroup').style.display = hasApiEndpoint(e.target.value) ? 'block' : 'none';
-      prefillApiFieldsForMode(div, e.target.value);
+      const fields = div.querySelector('#apiEngineFieldsPopup');
+      if (fields) {
+        fields.innerHTML = imageOpenAISettingsHtml(Object.assign({}, s, { mode: e.target.value }));
+        wireOpenAICustom(fields);
+      }
+      prefillApiFieldsForMode(div, e.target.value, true); // 主动切引擎：地址按目标供应商强制归位
     });
     wireOpenAICustom(div);
+    prefillApiFieldsForMode(div, mode);
     div.querySelector('#btnSaveImgPopup').addEventListener('click', async () => {
       const m = div.querySelector('#genMode').value;
       const gm = div.querySelector('#genPromptMode').value;
@@ -9287,6 +9570,44 @@ function openImageGenSettingsInPanel() {
 
 // ============ 记忆表格查看 ============
 
+/** 根据注入间隔 N 重建「提示轮次 M」下拉项（M 只能是 N 的整数倍） */
+function rebuildDropThresholdOptions(N, selected) {
+  const sel = document.getElementById('memDropThreshold');
+  if (!sel) return;
+  const n = Math.max(1, parseInt(N) || 20);
+  const opts = [2, 3, 4, 5, 6, 8, 10].map(k => n * k).filter(v => v <= 2000);
+  sel.innerHTML = opts.map(v =>
+    `<option value="${v}"${v === Number(selected) ? ' selected' : ''}>第 ${v} 轮（= ${v / n} × ${n}）</option>`
+  ).join('');
+}
+
+/** 读取并渲染记忆设置面板 */
+async function loadMemorySettings() {
+  try {
+    const s = await MemoryAgentAPI.get();
+    const N = parseInt(s?.inject_interval) || 20;
+    const M = parseInt(s?.drop_threshold) || 60;
+    const en = s?.drop_prompt_enabled === undefined ? true : !!s.drop_prompt_enabled;
+
+    const nEl = document.getElementById('memInjectInterval');
+    if (nEl) nEl.value = N;
+    const cEl = document.getElementById('memDropPromptEnabled');
+    if (cEl) cEl.checked = en;
+    rebuildDropThresholdOptions(N, M);
+
+    const st = document.getElementById('memSettingsStatus');
+    if (st) {
+      const conv = AppState.currentConversation;
+      const round = conv ? undefined : 0;
+      st.innerHTML =
+        `当前设置：每 <b>${N}</b> 轮注入一次完整记忆表格；` +
+        (en ? `每 <b>${M}</b> 轮询问是否忽略之前的对话。` : '忽略提示已关闭。');
+    }
+  } catch (err) {
+    console.error('[MemoryAgent] 读取设置失败:', err);
+  }
+}
+
 function renderMemoryAgentSettings() {
   // Just bind the event log viewer button
   const btn = document.getElementById('btnViewEventLog');
@@ -9298,6 +9619,53 @@ function renderMemoryAgentSettings() {
         loadEventLog();
       } else {
         preview.style.display = 'none';
+      }
+    });
+  }
+
+  // === 记忆注入设置 ===
+  loadMemorySettings();
+
+  const nEl = document.getElementById('memInjectInterval');
+  if (nEl) {
+    nEl.addEventListener('change', async () => {
+      let N = Math.max(1, Math.min(200, parseInt(nEl.value) || 20));
+      nEl.value = N;
+      const sel = document.getElementById('memDropThreshold');
+      const curM = parseInt(sel?.value) || N * 3;
+      // M 必须是 N 的整数倍 → 就近上取整
+      const M = Math.max(N, Math.round(curM / N) * N);
+      try {
+        await MemoryAgentAPI.update({ inject_interval: N, drop_threshold: M });
+        rebuildDropThresholdOptions(N, M);
+        showToast(`注入间隔已设为每 ${N} 轮`, 'success');
+      } catch (err) {
+        showToast('保存失败: ' + err.message, 'error');
+      }
+    });
+  }
+
+  const sel = document.getElementById('memDropThreshold');
+  if (sel) {
+    sel.addEventListener('change', async () => {
+      const M = parseInt(sel.value) || 60;
+      try {
+        await MemoryAgentAPI.update({ drop_threshold: M });
+        showToast(`忽略提示已设为第 ${M} 轮`, 'success');
+      } catch (err) {
+        showToast('保存失败: ' + err.message, 'error');
+      }
+    });
+  }
+
+  const cEl = document.getElementById('memDropPromptEnabled');
+  if (cEl) {
+    cEl.addEventListener('change', async () => {
+      try {
+        await MemoryAgentAPI.update({ drop_prompt_enabled: cEl.checked ? 1 : 0 });
+        showToast(cEl.checked ? '已启用忽略提示' : '已关闭忽略提示', 'success');
+      } catch (err) {
+        showToast('保存失败: ' + err.message, 'error');
       }
     });
   }
@@ -9397,6 +9765,8 @@ function renderImageSettings() {
     const mode = s.mode || 'anima';
     const genMode = s.gen_mode || 'tag';
     const eff = effectiveApiSettings(Object.assign({}, s, { mode }));
+    // NovelAI 高级参数（存 custom_params：steps/cfg/seed/sampler，与 ComfyUI 的 getGenerationParams 共用键名）
+    const cp = (() => { try { return JSON.parse(s.custom_params || '{}') || {}; } catch { return {}; } })();
     container.innerHTML = `
       <div class="setting-row" style="flex-direction:column;align-items:flex-start">
         <label>生成引擎</label>
@@ -9405,9 +9775,10 @@ function renderImageSettings() {
           <option value="comfyui" ${mode === 'comfyui' ? 'selected' : ''}>ComfyUI（画质最佳·需工作流）</option>
           <option value="openai" ${mode === 'openai' ? 'selected' : ''}>OpenAI DALL-E / 兼容 API</option>
           <option value="stability" ${mode === 'stability' ? 'selected' : ''}>Stability AI</option>
+          <option value="novelai" ${mode === 'novelai' ? 'selected' : ''}>NovelAI（云端生图·官方 API）</option>
           <option value="none" ${mode === 'none' ? 'selected' : ''}>关闭生图</option>
         </select>
-        <small style="color:var(--text-muted)">默认 anima-turbo-cg：极简模式，解压即用、无 Python/ComfyUI（需先启动该服务，见 README）。想要更好的图像质量，请改装 ComfyUI 并配置工作流。</small>
+        <small style="color:var(--text-muted)">默认 anima-turbo-cg：极简模式，解压即用、无 Python/ComfyUI（需先启动该服务，见 README）。想要更好的图像质量，请改装 ComfyUI 并配置工作流，或使用 NovelAI 云端 API（需官网 Persistent API Token，pst- 开头；Opus 订阅 1024²/28 步内免费）。</small>
       </div>
       <div class="setting-row" style="flex-direction:column;align-items:flex-start">
         <label>提示词模式</label>
@@ -9431,9 +9802,9 @@ function renderImageSettings() {
         </div>
         <div class="setting-row" style="flex-direction:column;align-items:flex-start">
           <label>API Key</label>
-          <input type="password" id="imageApiKey" value="${escapeHtml(eff.api_key)}" class="setting-input" style="width:100%" placeholder="anima-turbo-cg 填 local 即可">
+          <input type="password" id="imageApiKey" value="${escapeHtml(eff.api_key)}" class="setting-input" style="width:100%" placeholder="anima-turbo-cg 填 local；NovelAI 填官网 Persistent API Token（pst- 开头）">
         </div>
-        ${imageOpenAISettingsHtml(Object.assign({}, s, { mode }))}
+        <div id="imageApiEngineFields">${imageOpenAISettingsHtml(Object.assign({}, s, { mode }))}</div>
       </div>
 
       <hr style="border-color:var(--glass-border);margin:16px 0">
@@ -9487,7 +9858,7 @@ function renderImageSettings() {
 
       <hr style="border-color:var(--glass-border);margin:16px 0">
       <h5 style="margin:0 0 8px 0;color:var(--text-accent)">🚫 负向提示词设置</h5>
-      <small style="color:var(--text-muted);display:block;margin-bottom:8px">自定义负向提示词。留空则使用原工作流中的默认负向提示词</small>
+      <small style="color:var(--text-muted);display:block;margin-bottom:8px">自定义负向提示词。ComfyUI：留空则使用原工作流中的默认负向提示词；NovelAI：留空则使用内置默认负面预设（NSFW 场景词不会被误加进负面）</small>
       <div class="setting-row" style="flex-direction:column;align-items:flex-start">
         <label>头像负向提示词</label>
         <textarea id="imagePortraitNegativePrompt" class="setting-textarea" style="width:100%;min-height:80px" placeholder="留空使用工作流默认负向提示词">${escapeHtml(s.portrait_negative_prompt || '')}</textarea>
@@ -9495,6 +9866,39 @@ function renderImageSettings() {
       <div class="setting-row" style="flex-direction:column;align-items:flex-start">
         <label>CG负向提示词</label>
         <textarea id="imageCGNegativePrompt" class="setting-textarea" style="width:100%;min-height:80px" placeholder="留空使用工作流默认负向提示词">${escapeHtml(s.cg_negative_prompt || '')}</textarea>
+      </div>
+
+      <div id="imageNovelaiGroup" data-base-params="${escapeHtml(s.custom_params || '{}')}" style="display:${mode === 'novelai' ? 'block' : 'none'}">
+        <hr style="border-color:var(--glass-border);margin:16px 0">
+        <h5 style="margin:0 0 8px 0;color:var(--text-accent)">🧪 NovelAI 生成参数（可选）</h5>
+        <small style="color:var(--text-muted);display:block;margin-bottom:8px">留空使用默认：28 步、CFG 6（V4.5 模型默认 5）、随机 seed、采样器 k_euler_ancestral。默认值在 Opus 订阅下不消耗 Anlas；调高分辨率或步数会计费</small>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+            <label>步数（steps）</label>
+            <input type="text" id="naiSteps" value="${escapeHtml(cp.steps > 0 ? String(cp.steps) : '')}" class="setting-input" style="width:100%" placeholder="28（Opus 免费上限）">
+          </div>
+          <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+            <label>引导系数（CFG / scale）</label>
+            <input type="text" id="naiScale" value="${escapeHtml(cp.cfg > 0 ? String(cp.cfg) : '')}" class="setting-input" style="width:100%" placeholder="6（V4.5 模型默认 5）">
+          </div>
+          <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+            <label>Seed（留空随机）</label>
+            <input type="text" id="naiSeed" value="${escapeHtml((cp.seed !== undefined && cp.seed >= 0) ? String(cp.seed) : '')}" class="setting-input" style="width:100%" placeholder="留空 = 每次随机">
+          </div>
+          <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+            <label>采样器</label>
+            <input type="text" id="naiSampler" list="naiSamplerList" value="${escapeHtml(cp.sampler || '')}" class="setting-input" style="width:100%" placeholder="k_euler_ancestral">
+            <datalist id="naiSamplerList">
+              <option value="k_euler_ancestral"></option>
+              <option value="k_euler"></option>
+              <option value="k_dpmpp_2s_ancestral"></option>
+              <option value="k_dpmpp_2m"></option>
+              <option value="k_dpmpp_sde"></option>
+              <option value="k_dpmpp_2m_sde"></option>
+              <option value="ddim_v3"></option>
+            </datalist>
+          </div>
+        </div>
       </div>
 
       <div style="margin-top:8px">
@@ -9509,12 +9913,21 @@ function renderImageSettings() {
         const v = modeSelect.value;
         const comfyuiGroup = document.getElementById('imageComfyuiGroup');
         const apiGroup = document.getElementById('imageApiGroup');
+        const novelaiGroup = document.getElementById('imageNovelaiGroup');
         if (comfyuiGroup) comfyuiGroup.style.display = hasComfyGroup(v) ? 'block' : 'none';
         if (apiGroup) apiGroup.style.display = hasApiEndpoint(v) ? 'block' : 'none';
-        prefillApiFieldsForMode(container, v);
+        if (novelaiGroup) novelaiGroup.style.display = (v === 'novelai') ? 'block' : 'none';
+        // 模型/尺寸/画质词选项因引擎而异：切引擎时重建这组控件，再做字段归位
+        const fields = document.getElementById('imageApiEngineFields');
+        if (fields) {
+          fields.innerHTML = imageOpenAISettingsHtml(Object.assign({}, s, { mode: v }));
+          wireOpenAICustom(fields);
+        }
+        prefillApiFieldsForMode(container, v, true); // 主动切引擎：地址按目标供应商强制归位
       });
     }
     wireOpenAICustom(container);
+    prefillApiFieldsForMode(container, mode);
 
     // 保存按钮
     const saveBtn = document.getElementById('btnSaveImageSettings');
@@ -9544,6 +9957,8 @@ function renderImageSettings() {
             data.api_key = document.getElementById('imageApiKey')?.value || '';
             Object.assign(data, resolveOpenAIValues(container));
           }
+          const naiParams = collectNovelAIParams(container);
+          if (naiParams) data.custom_params = naiParams;
           await ImageAPI.update(data);
           showToast('图像设置已保存', 'success');
         } catch (err) {
@@ -9581,6 +9996,8 @@ async function saveImageSettings() {
       data.api_key = document.getElementById('imageApiKey')?.value || '';
       Object.assign(data, resolveOpenAIValues(document));
     }
+    const naiParams = collectNovelAIParams(document);
+    if (naiParams) data.custom_params = naiParams;
     await ImageAPI.update(data);
   } catch { /* ignore */ }
 }

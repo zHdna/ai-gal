@@ -1158,6 +1158,58 @@ html[data-theme="light"] .vn-aff b {
   color: var(--rose);
 }
 
+/* ── 记忆表格三色灯：黄=已登记 · 绿=已注入 · 红=内容缺失 ── */
+.mem-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+  flex: 0 0 auto;
+}
+
+.mem-dot-yellow {
+  background: #f5c518;
+  box-shadow: 0 0 5px rgba(245, 197, 24, .8);
+}
+
+.mem-dot-green {
+  background: #35c759;
+  box-shadow: 0 0 5px rgba(53, 199, 89, .8);
+}
+
+.mem-dot-red {
+  background: #ff3b30;
+  box-shadow: 0 0 5px rgba(255, 59, 48, .85);
+}
+
+.mem-dot-none {
+  background: transparent;
+  border: 1px solid rgba(128, 128, 128, .45);
+}
+
+.vn-mem-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 4px 0 10px;
+  font-size: calc(11px * var(--fs));
+  color: var(--text-3, var(--text-2));
+}
+
+.vn-mem-legend > span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.vn-mem-legend em {
+  font-style: normal;
+  margin-left: auto;
+  opacity: .8;
+}
+
 .vn-meter {
   height: 5px;
   border-radius: 99px;

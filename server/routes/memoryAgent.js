@@ -27,18 +27,98 @@ module.exports = (db) => {
 
   // Update memory agent settings
   router.put('/', (req, res) => {
-    const { enabled, provider_id, prompt_template, trigger_interval } = req.body;
+    const { enabled, provider_id, prompt_template, trigger_interval,
+      inject_interval, drop_threshold, drop_prompt_enabled } = req.body;
+
+    // N (inject_interval) and M (drop_threshold): M must be a multiple of N.
+    let N = parseInt(inject_interval);
+    if (Number.isFinite(N) && N >= 1) N = Math.max(1, Math.min(200, N)); else N = null;
+    let M = parseInt(drop_threshold);
+    if (Number.isFinite(M) && M >= 1 && N) {
+      M = Math.max(N, Math.ceil(M / N) * N);   // snap up to the nearest multiple of N
+    } else {
+      M = null;
+    }
 
     db.prepare(`
       UPDATE memory_agent_settings SET
         enabled = COALESCE(?, enabled),
         provider_id = COALESCE(?, provider_id),
         prompt_template = COALESCE(?, prompt_template),
-        trigger_interval = COALESCE(?, trigger_interval)
+        trigger_interval = COALESCE(?, trigger_interval),
+        inject_interval = COALESCE(?, inject_interval),
+        drop_threshold = COALESCE(?, drop_threshold),
+        drop_prompt_enabled = COALESCE(?, drop_prompt_enabled),
+        last_updated_at = datetime('now')
       WHERE id = ?
-    `).run(enabled, provider_id, prompt_template, trigger_interval, SETTINGS_ID);
+    `).run(enabled, provider_id, prompt_template, trigger_interval,
+      N, M, drop_prompt_enabled === undefined ? null : (drop_prompt_enabled ? 1 : 0), SETTINGS_ID);
 
-    res.json({ message: 'Memory agent settings updated' });
+    res.json({ message: 'Memory agent settings updated', inject_interval: N, drop_threshold: M });
+  });
+
+  /**
+   * Per-round memory status, for the 记忆表格 data-centre pane.
+   *
+   *   yellow (registered) : the round has a summary line in event_log.md but has not
+   *                         been carried into any injection yet
+   *   green  (injected)   : the round was included in an injected table
+   *   red    (missing)    : the round has no summary — or its summary line is empty /
+   *                         malformed. Detects the historical "round 1 was never
+   *                         recorded" defect.
+   */
+  router.get('/memory-status', (req, res) => {
+    const { conversation_id } = req.query;
+    if (!conversation_id) return res.status(400).json({ error: 'conversation_id required' });
+
+    const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
+    if (!save) return res.json({ round: 0, entries: [], injectedAt: 0 });
+
+    // Current round == number of user turns (matches chat.js countRounds)
+    const userTurns = db.prepare(
+      "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND role = 'user' AND hidden = 0"
+    ).get(conversation_id).n;
+
+    const eventLogPath = path.join(save.save_path, EVENT_LOG_FILE);
+    let lines = [];
+    try {
+      lines = fs.readFileSync(eventLogPath, 'utf-8').split('\n').filter(l => l.trim());
+    } catch { }
+
+    // Which rounds actually made it into the injected table?
+    let injectedAt = 0;
+    const injectedRounds = new Set();
+    try {
+      const conv = db.prepare('SELECT memory_context FROM conversations WHERE id = ?').get(conversation_id);
+      const ctx = conv && conv.memory_context ? JSON.parse(conv.memory_context) : {};
+      injectedAt = Number(ctx[MEMORY_KEYS.INJECTED_AT]) || 0;
+      if (ctx[MEMORY_KEYS.EVENT_LOG]) {
+        for (const m of String(ctx[MEMORY_KEYS.EVENT_LOG]).matchAll(/\|\s*(\d+)\s*\|/g)) {
+          injectedRounds.add(Number(m[1]));
+        }
+      }
+    } catch { }
+
+    const byRound = new Map();
+    for (const line of lines) {
+      const mr = line.match(/^第(\d+)轮\s*\|?\s*(.*)$/);
+      if (!mr) continue;
+      const r = Number(mr[1]);
+      const body = (mr[2] || '').trim();
+      byRound.set(r, { round: r, text: body, empty: body.length === 0 });
+    }
+
+    const entries = [];
+    for (let r = 1; r <= userTurns; r++) {
+      const rec = byRound.get(r);
+      let status;
+      if (!rec || rec.empty) status = 'missing';        // red
+      else if (injectedRounds.has(r)) status = 'injected'; // green
+      else status = 'registered';                        // yellow
+      entries.push({ round: r, status, text: rec ? rec.text : '' });
+    }
+
+    res.json({ round: userTurns, injectedAt, entries });
   });
 
   // Get event log + countdown info

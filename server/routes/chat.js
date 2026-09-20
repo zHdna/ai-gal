@@ -23,7 +23,7 @@ const { StringDecoder } = require('string_decoder');
 const fs = require('fs');
 const path = require('path');
 const { decrypt: decryptApiKey } = require('../crypto');
-const { SETTINGS_ID, APP_KEYS, EVENT_LOG_FILE, ROSTER_FILE, MEMORY_KEYS } = require('../constants');
+const { SETTINGS_ID, APP_KEYS, EVENT_LOG_FILE, ROSTER_FILE, MEMORY_KEYS, DEFAULT_INJECT_INTERVAL, DEFAULT_DROP_THRESHOLD } = require('../constants');
 const { applyWorldStateFromText, extractCheckpoint } = require('../utils/jsonpatch');
 const { isPathWithin } = require('../utils/pathGuard');
 const { buildMvuPromptModule } = require('../mvu');
@@ -2164,6 +2164,10 @@ module.exports = (db) => {
                   }
                 } catch (e) { console.warn('[Image] CG fallback recovery error:', e.message); }
               }
+              // 本轮是否真的下发了 NSFW CG —— 决定「NSFW 流程结束空镜」能否在本轮触发。
+              // 同一回合既在 NSFW 场景内配图、又宣布该流程结束是自相矛盾的，代码层面直接判为
+              // 「仍在场景内」（宁可下一轮再出空镜，也不要同轮多出一张图）。
+              let cgFiredThisTurn = false;
               if (imageEnabled && cgTrigger && cgPrompt && cgPrompt.length > 20) {
                 console.log('[Image] CG check - triggerImage:', cgTrigger, 'imagePrompt len:', cgPrompt.length,
                   'source:', painterResult?.imagePrompt ? 'painter (enriched)' : 'butler');
@@ -2391,6 +2395,10 @@ module.exports = (db) => {
                     if (!genderInCG) console.error('[Butler] CRITICAL: No gender tag in CG prompt!');
                   }
                   console.log('[Butler] CG prompt length:', cgTags.length, 'chars — triggering fetch to /api/images/generate...');
+                  cgFiredThisTurn = true;
+                  // 记下「当前正处于 NSFW 流程中」：后续回合管家据此判断剧情有没有走出该流程
+                  // （离开时要在 CG 流程之后补一张不含人物的纯场景空镜，见 triggerNsfwEndScene）。
+                  try { db.prepare('UPDATE conversations SET nsfw_active = 1 WHERE id = ?').run(conversation_id); } catch { }
                   fetch(`${BASE_URL}/api/images/generate`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ type: 'cg', prompt: cgTags, character_name: character?.name, conversation_id })
@@ -2402,6 +2410,33 @@ module.exports = (db) => {
                 } else {
                   console.log('[Butler] CG gen skipped - image generation disabled (mode=', imgSettings?.mode, ')');
                 }
+              }
+
+              // 5. NSFW 流程结束空镜 —— 排在 CG 生图流程【之后】。
+              // 条件：管家判定本轮已离开 NSFW 流程（nsfwEnd + sceneImagePrompt），
+              //       本轮没有下发 NSFW CG（cgFiredThisTurn === false），
+              //       且服务端状态确认【确实还在该流程里】（conversations.nsfw_active = 1）。
+              // 最后一条是代码级护栏：模型偶尔会无故输出 nsfwEnd —— 没有它就会凭空多出
+              // 一堆"空房间"，把画廊刷满与剧情无关的空镜。
+              // 效果：补一张【画面里没有人】的纯场景 SFW 图，给整段 NSFW 剧情收尾。
+              let nsfwFlowFlag = 0;
+              try {
+                const nf = db.prepare('SELECT nsfw_active FROM conversations WHERE id = ?').get(conversation_id);
+                nsfwFlowFlag = (nf && nf.nsfw_active) ? 1 : 0;
+              } catch { /* 旧库尚未迁移该列 */ }
+              if (imageEnabled && butlerResult?.nsfwEnd && !cgFiredThisTurn && nsfwFlowFlag) {
+                try {
+                  const nsfwEndMode = (getImageSettings(db) || {}).gen_mode || 'tag';
+                  triggerNsfwEndScene({
+                    conversation_id,
+                    genMode: nsfwEndMode,
+                    sceneImagePrompt: butlerResult.sceneImagePrompt,
+                  });
+                } catch (e) { console.warn('[Image] NSFW 结束空镜 trigger error:', e.message); }
+              } else if (butlerResult?.nsfwEnd && cgFiredThisTurn) {
+                console.log('[Image] NSFW 结束空镜 skipped — 本轮已下发 NSFW CG（流程仍在场景内）');
+              } else if (butlerResult?.nsfwEnd && !nsfwFlowFlag) {
+                console.log('[Image] NSFW 结束空镜 skipped — 服务端状态并非「NSFW 流程中」(nsfw_active=0)，忽略管家的 nsfwEnd');
               }
 
               // ── MVU 世界状态已在“交给管家AI之前”拦截处理（见 butler 调用前）：
@@ -2440,6 +2475,9 @@ module.exports = (db) => {
           }
 
           // Auto-save ### summarize to event_log.md (extracted from merged text)
+          let streamSave = null;
+          let streamEventLogPath = null;
+          let streamRound = 0;
           try {
             // Priority: 1) ButlerAI summarize > 2) parsed from template > 3) regex fallback > 4) empty (no more raw first-sentence fallback)
             let summary = butlerResult?.summarize || '';
@@ -2452,23 +2490,26 @@ module.exports = (db) => {
             }
             // ⚠️ No longer fallback to raw story first sentence — that produces wrong memory entries
             // If summarize is still empty, log a warning so user knows the AI skipped it
-            if (summary) {
-              const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
-              console.log('[Summarize] Stream save - save exists:', !!save, 'summary:', summary.slice(0, 60));
-              if (save) {
-                const eventLogPath = safeSavePath(save.save_path, EVENT_LOG_FILE);
-                if (!fs.existsSync(path.dirname(eventLogPath))) fs.mkdirSync(path.dirname(eventLogPath), { recursive: true });
-                const totalMsgs = db.prepare('SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?').get(conversation_id);
-                const roundNum = Math.ceil(totalMsgs.cnt / 2);
-                const memLine = `第${roundNum}轮 | ${summary.replace(/^第\d+轮\s*[|\s]*/, '')}`;
-                fs.appendFileSync(eventLogPath, memLine + '\n', 'utf-8');
-                console.log('[Summarize] Written round', roundNum);
-                if (roundNum % 20 === 0 && roundNum > 0) {
-                  injectMemoryTable(db, conversation_id, eventLogPath, roundNum);
-                }
-              }
+            streamSave = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
+            streamRound = countRounds(conversation_id);
+            if (streamSave) streamEventLogPath = safeSavePath(streamSave.save_path, EVENT_LOG_FILE);
+            if (summary && streamEventLogPath) {
+              if (!fs.existsSync(path.dirname(streamEventLogPath))) fs.mkdirSync(path.dirname(streamEventLogPath), { recursive: true });
+              const memLine = `第${streamRound}轮 | ${summary.replace(/^第\d+轮\s*[|\s]*/, '')}`;
+              fs.appendFileSync(streamEventLogPath, memLine + '\n', 'utf-8');
+              console.log('[Summarize] Written round', streamRound);
+            } else if (!summary) {
+              // The round gets no row => the data centre shows a RED light for it. The
+              // scheduled injection below still runs, so one bad round can never silently
+              // skip an injection (it would otherwise have to wait a whole extra N rounds).
+              console.warn('[Summarize] Round', streamRound, 'produced no summary — will show as missing (red)');
             }
           } catch (memErr) { console.error('[Summarize] Stream memory save failed:', memErr.message); }
+
+          // Milestone handling runs REGARDLESS of whether this round produced a summary.
+          if (streamEventLogPath && streamRound > 0) {
+            maybeHandleMemoryMilestones(conversation_id, streamEventLogPath, streamRound, res);
+          }
 
           // Add reasoning text to formatted
           if (reasoningText) {
@@ -2640,21 +2681,20 @@ module.exports = (db) => {
         if (sumMatch) summary = sumMatch[1].trim();
       }
       // ⚠️ No longer fallback to raw story first sentence — that produces wrong memory entries
-      if (summary) {
-        const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
-        if (save) {
-          const eventLogPath = safeSavePath(save.save_path, EVENT_LOG_FILE);
+      const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
+      if (save) {
+        const eventLogPath = safeSavePath(save.save_path, EVENT_LOG_FILE);
+        const roundNum = countRounds(conversation_id);
+        if (summary) {
           if (!fs.existsSync(path.dirname(eventLogPath))) fs.mkdirSync(path.dirname(eventLogPath), { recursive: true });
-          const totalMsgs = db.prepare('SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?').get(conversation_id);
-          const roundNum = Math.ceil(totalMsgs.cnt / 2);
           const memLine = `第${roundNum}轮 | ${summary.replace(/^第\d+轮\s*[|\s]*/, '')}`;
           fs.appendFileSync(eventLogPath, memLine + '\n', 'utf-8');
           console.log('[Summarize] Written round', roundNum, ':', summary.slice(0, 60));
-          // Every 20 rounds: inject full table
-          if (roundNum % 20 === 0 && roundNum > 0) {
-            injectMemoryTable(db, conversation_id, eventLogPath, roundNum);
-          }
+        } else {
+          console.warn('[Summarize] Round', roundNum, 'produced no summary — will show as missing (red)');
         }
+        // Runs regardless of summary success so a bad round cannot skip an injection.
+        maybeHandleMemoryMilestones(conversation_id, eventLogPath, roundNum, null);
       }
     } catch (sumErr) { console.error('[Summarize] Write error:', sumErr.message); }
     } // end if (!skipUserMsg)
@@ -2755,7 +2795,7 @@ module.exports = (db) => {
       if (!lastAssistant || !lastAssistant.content) return;
 
       const totalMsgs = db.prepare('SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?').get(conversation_id);
-      const roundNum = Math.ceil(totalMsgs.cnt / 2);
+      const roundNum = countRounds(conversation_id);
 
       // Check if memory already exists for this round
       if (fs.existsSync(eventLogPath)) {
@@ -2784,9 +2824,14 @@ module.exports = (db) => {
       const butlerPrompt = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(APP_KEYS.MEMORY_AGENT_PROMPT);
       const summaryPrompt = (butlerPrompt && butlerPrompt.value) ? butlerPrompt.value : BUTLER_SYSTEM;
 
+      const isFirstRound = roundNum === 1;
       const memPrompt = `【记忆规则】将当前的剧情内容总结为一句话，输出一行纯文本，按以下格式记录：
 | 时间 | 地点 | 人物 | 当前事件摘要 |
-
+${isFirstRound ? `
+⚠️ 这是本局第 1 轮。本轮的总结必须把开场白（开场场景设定、初始时间地点、登场人物及其初始状态/关系、
+主角登场方式）一并纳入，与用户第一次行动的结果合并成一条完整摘要。
+开场白是后续所有剧情的起点，遗漏它会导致记忆表格永久缺失开局信息。
+` : ''}
 剧情内容：\n${lastAssistant.content.substring(0, 3000)}`;
 
       const apiMessages = [
@@ -2803,10 +2848,7 @@ module.exports = (db) => {
       fs.appendFileSync(eventLogPath, memLine + '\n', 'utf-8');
       console.log('[MemoryAgent] Saved round', roundNum);
 
-      // Every 20 rounds: inject full table
-      if (roundNum % 20 === 0 && roundNum > 0) {
-        injectMemoryTable(db, conversation_id, eventLogPath, roundNum);
-      }
+      maybeHandleMemoryMilestones(conversation_id, eventLogPath, roundNum, null);
     } catch (err) {
       console.error('[MemoryAgent] Error:', err.message);
     }
@@ -3186,34 +3228,45 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
     return out;
   }
 
-  // Trim the event_log memory to the last N data rows (keeping the markdown table header)
-  // so the per-turn "miss" portion stays bounded instead of growing unboundedly every turn.
-  function trimEventLog(log, maxRows) {
-    if (!log || typeof log !== 'string') return log || '';
-    const lines = log.split('\n');
-    // Locate the table separator row (|---|---|) to preserve header structure
-    let headerEnd = -1;
-    for (let i = 0; i < lines.length; i++) {
-      if (/^\s*\|[\s:|-]+\|/.test(lines[i])) { headerEnd = i; break; }
-    }
-    if (headerEnd === -1) {
-      // Not a markdown table — keep the last (maxRows * 2) lines as a best effort
-      return lines.slice(-(maxRows * 2)).join('\n');
-    }
-    const header = lines.slice(0, headerEnd + 1);
-    const dataRows = lines.slice(headerEnd + 1).filter(l => l.trim() && l.includes('|'));
-    const kept = dataRows.slice(-maxRows);
-    return [...header, ...kept].join('\n');
-  }
+  // NOTE: trimEventLog(log, maxRows) used to live here. It trimmed the memory table to
+  // its last 12 rows on EVERY turn, which defeated the point of the table: the whole
+  // reason round 1..N summaries exist is to survive history trims, and the oldest rows
+  // are exactly the ones that matter most. It was also called every turn because the
+  // block was read from conversations.memory_context unconditionally. Both are gone:
+  // the table is now injected in full, once every N rounds, and dormant in between.
 
   function buildApiMessages(systemPrompt, history, newContent, conv, character) {
     const messages = [];
 
     messages.push({ role: 'system', content: systemPrompt });
 
-    // Sliding window: keep last 40 messages to avoid context overflow
-    const MAX_HISTORY = 40;
-    const recent = history.length > MAX_HISTORY ? history.slice(-MAX_HISTORY) : history;
+    // === History: FULL, never windowed ===
+    // There used to be a `MAX_HISTORY = 40` slice here.  That was a design error: the
+    // 40-message cap was meant to bound what the FRONTEND renders (that is actually done
+    // independently by the paged GET /api/messages/conversation/:id endpoint), but it had
+    // been applied to the model context instead, silently dropping earlier plot.
+    // Dialogue is now only ever removed on explicit user request (see memory_trim_before
+    // below, or the per-message `hidden` flag).
+    const trimBefore = (conv && Number(conv.memory_trim_before)) || 0;
+    let recent = history;
+    if (trimBefore > 0) {
+      // Keep only dialogue from round `trimBefore` onward.  Rounds are counted by USER
+      // messages; we walk the history and drop every user turn whose 1-based user-index
+      // is below the threshold, together with the assistant reply that follows it.
+      const kept = [];
+      let userIdx = 0;
+      let dropping = false;
+      for (const m of history) {
+        if (m.role === 'user') {
+          userIdx += 1;
+          dropping = userIdx < trimBefore;
+        }
+        if (!dropping) kept.push(m);
+      }
+      recent = kept;
+      console.log('[MainAI] History trimmed: keeping rounds >= ' + trimBefore +
+        ' (' + recent.length + '/' + history.length + ' messages)');
+    }
 
     for (const msg of recent) {
       // User messages: use api_content snapshot. api_content is now PURE INPUT only
@@ -3248,13 +3301,49 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
     const isChatRequest = newContent && newContent.trim().length > 0;
     const dynParts = [];
 
-    // Memory: event_log, trimmed to the last N entries to bound the per-turn miss size
+    // === Context composition note (only once the player chose to ignore earlier dialogue) ===
+    // After a memory trim the model can no longer see rounds 1..trimBefore-1, so it must be
+    // told what this context actually contains and how to read the memory table. Without
+    // this the model tends to assume the visible dialogue is the whole story.
+    if (trimBefore > 0) {
+      dynParts.push(
+        '[上下文说明] 本局采取「长期记忆 + 近期对话」模式：\n' +
+        '· 第 1~' + trimBefore + ' 轮的对话原文已按玩家要求移出上下文，其剧情保存在下方的记忆表格中；\n' +
+        '· 你仍能看到第 ' + trimBefore + ' 轮及之后的完整对话原文；\n' +
+        '· 记忆表格每行是一轮的摘要，格式为：轮次 | 时间 | 地点 | 人物 | 事件；\n' +
+        '· 表格中的一切（人物关系、约定、伏笔、时间地点）都已发生过，视为既定事实，\n' +
+        '  不得当作未发生、不得让角色重新认识已在表格中登场的人。\n' +
+        '· 若玩家提及表格中的旧事，请直接接续，不要表示"不知道"或"没有印象"。'
+      );
+    }
+
+    // === Memory table: injected once every N rounds, then retained from then on ===
+    // The table lives in event_log.md and is NOT in the context before the first
+    // injection. Once injected at round N (2N, 3N…), it PERSISTS in the context on every
+    // following round — that is what lets the player drop earlier dialogue and still keep
+    // the plot. It is replaced (not duplicated) by the next injection.
+    //
+    // Note the table cannot appear in the request for the injection round itself: the
+    // round's summary is only written after that round's reply, so the table first shows
+    // up on the following request. That matches "attach it to the end of round 20".
     if (conv && conv.memory_context) {
       try {
         const ctx = JSON.parse(conv.memory_context);
         if (ctx && ctx[MEMORY_KEYS.EVENT_LOG]) {
-          const trimmed = trimEventLog(ctx[MEMORY_KEYS.EVENT_LOG], 12);
-          if (trimmed) dynParts.push('[记忆] 以下是截至上轮的剧情摘要（最近12轮）：\n' + trimmed);
+          const injectedAt = Number(ctx[MEMORY_KEYS.INJECTED_AT]) || 0;
+          const currentRound = countRounds(conv.id);
+          if (injectedAt > 0 && currentRound >= injectedAt) {
+            const { N } = getMemorySettings();
+            const nextAt = (Math.floor(currentRound / N) + 1) * N;
+            dynParts.push(
+              '[记忆] 以下是由系统注入的长期记忆表格（第1~' + injectedAt + '轮剧情摘要，非对话原文）。\n' +
+              '这是本局唯一的长期记忆：即使更早的对话历史被裁剪，你也必须始终遵守并引用\n' +
+              '其中的人物、关系、时间、地点与事件。系统每 ' + N + ' 轮会重新注入一次完整表格' +
+              (nextAt ? '（下次：第 ' + nextAt + ' 轮）' : '') + '。\n\n' +
+              ctx[MEMORY_KEYS.EVENT_LOG]
+            );
+            console.log('[MainAI] Memory table in context (rounds 1-' + injectedAt + ', at round ' + currentRound + ')');
+          }
         }
       } catch (e) { /* ignore */ }
     }
@@ -3769,46 +3858,12 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
         res.on('error', reject);
       }
 
-      // Create request based on proxy config
-      if (proxy && isHttps) {
-        // HTTPS through CONNECT proxy
-        const connectOpts = {
-          hostname: proxy.host, port: proxy.port, method: 'CONNECT',
-          path: `${reqOptions.hostname}:${reqOptions.port}`,
-          headers: { 'Host': `${reqOptions.hostname}:${reqOptions.port}` }
-        };
-        if (proxy.auth) connectOpts.headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(proxy.auth).toString('base64');
-        const pReq = http.request(connectOpts);
-        pReq.on('connect', (cres, socket) => {
-          if (cres.statusCode !== 200) { reject(new Error(`Proxy CONNECT: ${cres.statusCode}`)); return; }
-          const hReq = https.request({ ...reqOptions, socket, agent: false }, handleResponse);
-          hReq.on('error', reject);
-          hReq.setTimeout(120000, () => { hReq.abort(); reject(new Error('Request timeout')); });
-          hReq.write(JSON.stringify(body));
-          hReq.end();
-        });
-        pReq.on('error', reject);
-        pReq.setTimeout(15000, () => { pReq.abort(); reject(new Error('Proxy connect timeout')); });
-        pReq.end();
-      } else if (proxy) {
-        // HTTP through proxy
-        req = http.request({
-          hostname: proxy.host, port: proxy.port, method: 'POST',
-          path: `${reqOptions.protocol}//${reqOptions.hostname}${reqOptions.path}`,
-          headers: { ...reqOptions.headers, 'Host': reqOptions.hostname }
-        }, handleResponse);
-        req.on('error', reject);
-        req.setTimeout(120000, () => { req.abort(); reject(new Error('Request timeout')); });
-        req.write(JSON.stringify(body));
-        req.end();
-      } else {
-        // Direct request (no proxy)
-        req = client.request(reqOptions, handleResponse);
-        req.on('error', reject);
-        req.setTimeout(120000, () => { req.abort(); reject(new Error('Request timeout')); });
-        req.write(JSON.stringify(body));
-        req.end();
-      }
+      // ⚠️ 这里原本还有【第二段】一模一样的请求派发（历史遗留的重复代码）：
+      // 上面那段（"Create request (with or without proxy)"）已覆盖
+      // 代理 CONNECT / 代理 HTTP / 本地直连（Connection: close）/ 直连四种情况并自己发出请求，
+      // 而它的两个非代理分支【没有 return】，执行完会继续落到下面那段 → 每次调用实际发两个
+      // 完全相同的请求（第一个响应被采用、第二个白跑）：管家与画家每轮都白烧一倍 token/显存。
+      // 已删除重复段，保留上面那段（它多了 llama.cpp 需要的 agent:false + Connection: close）。
     });
   }
 
@@ -4208,6 +4263,9 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
 — ### summarize 必须存在，格式为：时间 | 地点 | 人物 | 当前事件摘要
 — 缺失时，根据 ### story 的内容补全，输出一句话总结（不是照搬原文首句，而是提炼关键事件）
 — ⚠️ summarize 是记忆系统的核心数据源，缺失会导致记忆表格记录错误
+— ⚠️ 第 1 轮特殊要求：必须把开场白内容（开场场景、初始时间地点、登场人物及初始关系、
+  主角登场方式）与用户第一次行动的结果合并成一条完整摘要。开场白是整局剧情的起点，
+  它不在任何一轮的正文里，若第 1 轮不收进去就永久丢失。
 
 === status 规范化规则 ===
 你的核心职责之一是把主AI输出的 ### status 统一规范化为前端悬浮窗可解析的格式。⚠️ 注意：输出【完整状态集】（非增量），前端会完全替换上一轮的状态。每轮都应包含主AI输出的全部状态属性。
@@ -4317,15 +4375,30 @@ portrait处理逻辑：
 
 【非NSFW场景】若情节未进入 NSFW 场景，triggerImage 一律为 false，imagePrompt 为 ""（无论主AI是否误写 ### cg 或写了无关内容）。
 
+【NSFW 流程结束 → 纯场景空镜（nsfwEnd / sceneImagePrompt）】
+- ⚠️ 先看下方系统给你的【NSFW 流程状态】：只有状态为「正处于 NSFW 流程中」时才可能触发本条。
+- 当状态为「正处于 NSFW 流程中」，且【本轮剧情已经离开 NSFW 场景】（事后温存、收拾离开、
+  回到日常、场景转换、时间跳跃、一觉醒来等），即视为【NSFW 流程结束】，你必须：
+  · triggerImage: false、imagePrompt: ""（本轮不出现 NSFW 画面）
+  · nsfwEnd: true
+  · sceneImagePrompt: 一张【纯场景】空镜的提示词
+- ⚠️ sceneImagePrompt 的画面里【绝对不能有任何人】：禁止出现任何角色名、禁止 1girl/1boy/1futa、
+  禁止人物外观/服装/表情/动作，只写【当前场景本身】——地点、空间与陈设、时间、光线与光源方向、
+  天气、遗留物（揉皱的床单、半开的窗、桌上的杯子）、气氛。这张空镜的作用就是给整段 NSFW 剧情收尾。
+- 分级固定为 SFW：标签模式下必须包含 safe 与 no_humans。
+- 若本轮【仍在 NSFW 场景内】，或本来就不在 NSFW 流程中 → nsfwEnd 一律为 false、sceneImagePrompt 为 ""。
+- ⚠️ nsfwEnd 与 triggerImage 不得同时为 true（同一个回合要么还在场景里配 CG，要么已经收尾出空镜）。
+
 （⚠️ CG 的 imagePrompt 具体输出格式由【当前生图模式】决定：系统会根据主设置里的生图模式开关，在下方注入「关键词Tag模式格式」或「自然语言模式格式」中的【且仅其中一段】。你只需遵循被注入的那一段，不要混用两种格式。）
 
 === 输出一行JSON（绝对不允许输出其他内容） ===
 ⚠️ 你只输出这一行JSON。不要在JSON前后添加任何文字、解释、剧情、对话或代码块标记。
-{"mood":"nomal","actions":["选项1"],"portrait":null,"status":{},"fixedText":"","triggerImage":false,"imagePrompt":"","summarize":""}
+{"mood":"nomal","actions":["选项1"],"portrait":null,"status":{},"fixedText":"","triggerImage":false,"imagePrompt":"","nsfwEnd":false,"sceneImagePrompt":"","summarize":""}
 - portrait格式（单角色对象/多角色数组）
 - 不要输出prompt字段
 - portrait生图通过portrait字段自动触发，不需要设置triggerImage
 - triggerImage和imagePrompt仅用于CG生图
+- nsfwEnd和sceneImagePrompt仅用于【NSFW 流程结束】的纯场景空镜（画面中不得有任何人），平时恒为 false / ""
 - summarize: 当主AI缺失 ### summarize 时，根据剧情内容生成一句话总结（格式：时间 | 地点 | 人物 | 当前事件摘要）。主AI已有 ### summarize 时填 ""
 - fixedText: ⚠️ 当检查清单中【任何一项】需要修复时（缺###标题、缺『』、缺portrait段、姓名不符、冒号前语气词、弯引号等），你必须在 fixedText 输出【完整修复后的全文】（用 \\n 转义换行）。fixedText 不是片段，是替换主AI输出的【完整文本】。仅当文本【完全正确无需任何修改】时 fixedText 才填 ""
 - fixedText 范围限定：⚠️ fixedText 只能包含【主AI输出开始】到【主AI输出结束】之间修复后的正文。【当前角色名册】、【本轮需强制登记的新角色】、【场景卡名/剧本标题】、【用户发言】等后台参考信息块是系统发给你的指令，【绝对禁止】抄入 fixedText——它们会直接显示给玩家，抄入属于严重错误
@@ -4452,6 +4525,12 @@ portrait处理逻辑：
 imagePrompt示例：character: 凯瑟琳; participant: human_boy; pov; cowgirl_position; completely_nude; bouncing_breasts; ahegao, blush; japanese+room, candlelit;
 - 多个tag用英文逗号分隔，字段间用分号分隔
 - ⚠️ 不需要在imagePrompt中输出质量前缀
+
+【NSFW 流程结束空镜 sceneImagePrompt 的格式（仅 nsfwEnd: true 时填写）】
+同样是 CSV 标签，但【只有场景类标签】：
+sceneImagePrompt示例：safe, no_humans, bedroom, window, morning_light, curtains, messy_bed, wooden_floor, quiet
+- ⚠️ 必须包含 safe 与 no_humans；绝不允许出现 character: / participant: 字段，也不允许
+  1girl / 1boy / 服装 / 表情 / 动作 / 亲密互动 等任何人物内容（这张图里没有人）
 `;
 
   const BUTLER_CG_NATURAL_INSTR = `
@@ -4473,6 +4552,16 @@ A close-up intimate scene in a candlelit bedroom, a girl with long black hair lo
 - ⚠️ 绝对不要输出 character: / participant: / camera: 等字段前缀！
 - ⚠️ 不要使用逗号分隔的标签格式！输出完整的英文句子！
 - ⚠️ 最终 imagePrompt 中【不得包含任何中文字符】——如有中文，必须先翻译成英文。
+
+【NSFW 流程结束空镜 sceneImagePrompt 的格式（仅 nsfwEnd: true 时填写）】
+同样是【两层结构】，但 Hard Tags 行以 safe, no_humans 开头，且【人物层全部去掉】：
+sceneImagePrompt示例：
+safe, no_humans, bedroom, window, morning_light, curtains, messy_bed
+
+An empty bedroom in the soft morning light, the rumpled bed and the half-open window filling the frame. Warm sunlight falls across the wooden floor while the far corner of the room fades gently out of focus.
+
+- ⚠️ 画面里不得出现任何人：禁止角色名、1girl / 1boy、服装 / 表情 / 动作 / 亲密互动描写
+- ⚠️ 两层之间的空行在 JSON 里必须写成 \\n\\n（与 imagePrompt 相同）
 `;
 
   // 画师在自然语言模式下替换 base 里 Tag CG 段的内容（保留 portrait 段不变）
@@ -4918,9 +5007,26 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
         }
       } catch (e) { console.warn('[Butler] Preset system prompt injection error:', e.message); }
 
+      // ── NSFW 流程状态（纯场景结束空镜的判定依据，落库列 conversations.nsfw_active）──
+      // 管家只看得到「正文」，判断不出"上一轮已经出过 NSFW 插画、现在到底算不算离开该流程"
+      // ——所以由服务端把状态显式告诉它，它只负责判断本轮剧情有没有走出该场景。
+      let nsfwFlowActive = false;
+      try {
+        const nsfwRow = db.prepare('SELECT nsfw_active FROM conversations WHERE id = ?').get(conversation_id);
+        nsfwFlowActive = !!(nsfwRow && nsfwRow.nsfw_active);
+      } catch { /* 旧库尚未迁移该列 → 视为不在流程中 */ }
+      const nsfwStateBlock = nsfwFlowActive
+        ? `\n\n【NSFW 流程状态】⚠️ 当前正处于 NSFW 流程中（之前回合已经生成了 NSFW 插画）。\n`
+          + `- 若本轮剧情【仍在 NSFW 场景内】→ 按原规则：triggerImage: true + imagePrompt，nsfwEnd: false、sceneImagePrompt: ""。\n`
+          + `- 若本轮剧情【已经离开 NSFW 场景】（收尾温存/收拾离开/回到日常/场景转换/时间跳跃/一觉醒来）→ 判定为流程结束：`
+          + `triggerImage: false、imagePrompt: ""、nsfwEnd: true，并在 sceneImagePrompt 输出一张【不含任何人物】的纯场景空镜提示词。`
+        : `\n\n【NSFW 流程状态】当前不在 NSFW 流程中 → nsfwEnd 一律为 false、sceneImagePrompt 为 ""`
+          + `（triggerImage 是否触发仍按上面「NSFW 场景」规则独立判断，与本状态无关）。`;
+      console.log('[Butler] NSFW 流程状态注入:', nsfwFlowActive ? '处于流程中' : '不在流程中');
+
       const butlerMessages = [
         { role: 'system', content: butlerSystemContent },
-        { role: 'user', content: `⚠️ 以下文字需要格式检查，不是让你续写剧情。请分析主AI的格式问题并输出JSON。\n\n【用户发言】\n${userMsg}\n\n【主AI输出开始】\n${mainText}\n【主AI输出结束】\n\n═══ 以下是系统后台参考信息（仅供你比对名册与登记角色，【绝对禁止】将这些内容抄入 fixedText——fixedText 只能包含【主AI输出开始】到【主AI输出结束】之间修复后的正文）═══${charInfo}${rosterNames}` }
+        { role: 'user', content: `⚠️ 以下文字需要格式检查，不是让你续写剧情。请分析主AI的格式问题并输出JSON。\n\n【用户发言】\n${userMsg}\n\n【主AI输出开始】\n${mainText}\n【主AI输出结束】${nsfwStateBlock}\n\n═══ 以下是系统后台参考信息（仅供你比对名册与登记角色，【绝对禁止】将这些内容抄入 fixedText——fixedText 只能包含【主AI输出开始】到【主AI输出结束】之间修复后的正文）═══${charInfo}${rosterNames}` }
       ];
 
       let fmtContent = null;
@@ -5042,7 +5148,8 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
         // Validate butler JSON has at least expected structure (not empty or garbled)
         if (formatResult && typeof formatResult === 'object' && !Array.isArray(formatResult)) {
           const hasValid = formatResult.mood || formatResult.actions || formatResult.status
-            || formatResult.fixedText || formatResult.portrait !== undefined || formatResult.triggerImage !== undefined;
+            || formatResult.fixedText || formatResult.portrait !== undefined || formatResult.triggerImage !== undefined
+            || formatResult.nsfwEnd !== undefined;
           if (!hasValid) {
             console.warn('[Butler] JSON parsed but contains no recognized fields. Ignoring.');
             formatResult = null;
@@ -5072,6 +5179,7 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
           if (formatResult.fixedText) formatResult.fixedText = unescapeStringField(formatResult.fixedText);
           if (formatResult.summarize) formatResult.summarize = unescapeStringField(formatResult.summarize);
           if (formatResult.imagePrompt) formatResult.imagePrompt = unescapeStringField(formatResult.imagePrompt);
+          if (formatResult.sceneImagePrompt) formatResult.sceneImagePrompt = unescapeStringField(formatResult.sceneImagePrompt);
           // ── Hard filter: strip leaked backstage instruction blocks from fixedText ──
           // Weak models echo the roster / forced-registration checklist back into
           // fixedText, which would otherwise be rendered in the main story window.
@@ -5083,6 +5191,7 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
       }
       console.log('[Butler] Parsed portrait:', formatResult.portrait ? JSON.stringify(formatResult.portrait).slice(0, 120) : 'null');
       console.log('[Butler] Parsed triggerImage:', formatResult.triggerImage);
+      console.log('[Butler] Parsed nsfwEnd:', formatResult.nsfwEnd, '| sceneImagePrompt len:', (formatResult.sceneImagePrompt || '').length);
 
       // === Code-level filter: remove protagonist from butler's portrait output ===
       // Butler AI may still output protagonist portrait despite prompt instructions.
@@ -5296,6 +5405,97 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
     }).catch(e => {
       console.error('[Image] Debut CG failed:', e.message, '— 清除标记，下一轮可重试:', name);
       markRoster(null);
+    });
+    return true;
+  }
+
+  /**
+   * NSFW 流程结束空镜（scene_only）。
+   *
+   * 管家判定「本轮剧情已经离开 NSFW 场景」时，在 CG 生图流程【之后】补一张
+   * 【纯场景、不含人物】的 SFW 图，用画面里没有人这件事本身给整段 NSFW 剧情收尾。
+   *
+   * 与登场 CG 同一套骨架（闸门 → 提示词规范化 → 下发 → 失败可重试），差别有三处：
+   *   1) 走 type:'cg' + scene_only:true（images.js 会强制 safe/no_humans、不补人物标签、
+   *      不套用人物兜底图；画廊条目带 sceneEnd 标记）；
+   *   2) 下发成功要把 conversations.nsfw_active 复位（流程已收尾）；
+   *   3) 任何情况下都不做人物兜底（空镜失败就失败，绝不能塞一张角色图进去）。
+   */
+  function triggerNsfwEndScene(opts) {
+    const o = opts || {};
+    const conversation_id = o.conversation_id;
+    if (!conversation_id) return false;
+
+    // 图片生成总开关 + 模式开关（与 CG / 头像同一套闸门）
+    try {
+      const enabledRow = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(APP_KEYS.IMAGE_ENABLED);
+      if (enabledRow && enabledRow.value === 'false') {
+        console.log('[Image] NSFW 结束空镜 skipped - image generation disabled');
+        return false;
+      }
+      const s = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
+      if (!s || s.mode === 'none') {
+        console.log('[Image] NSFW 结束空镜 skipped - image mode is none');
+        return false;
+      }
+    } catch (e) { console.warn('[Image] NSFW 结束空镜 gate check error:', e.message); }
+
+    const genMode = o.genMode || 'tag';
+    const raw = String(o.sceneImagePrompt || '').trim();
+    if (raw.length <= 20) {
+      console.log('[Image] NSFW 结束空镜 skipped - sceneImagePrompt too short:', raw.length);
+      return false;
+    }
+
+    // ── 提示词规范化：人物内容一律剔除，SFW 分级锚点补在最前面 ──
+    // images.js 的 enforceSceneOnlyPrompt() 还会再兜一遍（防其它调用方绕过），这里是第一道。
+    const stripPersonTags = (line) => String(line || '')
+      .split(',')
+      .map(t => t.trim().replace(/^[\w\u4e00-\u9fff]+\s*[:：]\s*/, '').trim())
+      .filter(Boolean)
+      .filter(t => !/\b\d+\+?\s*[ -_]?(girl|girls|boy|boys|futa|other)s?\b/i.test(t))
+      .filter(t => !/^(solo|male|female|man|woman|boy|girl)$/i.test(t))
+      .filter(t => !/^(safe|sensitive|nsfw|explicit|questionable|no_humans|scenery)$/i.test(t))
+      .join(', ');
+    const qualityPrefix = (() => {
+      try { return getCGQualityPrefix(db) || 'masterpiece, best+quality'; } catch { return 'masterpiece, best+quality'; }
+    })();
+    let prompt;
+    if (genMode === 'natural') {
+      // 自然语言模式：Anima 两层结构（Hard Tags + 空行 + 英文散文）。管家给的是散文时补出头层，
+      // 保证第 1 段一定存在 —— 只有散文层的提示词会丢掉 no_humans 这个"无人物"约束。
+      const hasBlankLine = /\r?\n[ \t]*\r?\n/.test(raw);
+      if (hasBlankLine) {
+        const idx = raw.search(/\r?\n[ \t]*\r?\n/);
+        const head = stripPersonTags(raw.slice(0, idx));
+        const caption = raw.slice(idx).replace(/^\s+/, '');
+        prompt = `safe, no_humans, ${qualityPrefix}${head ? ', ' + head : ''}\n\n${caption}`;
+      } else {
+        prompt = `safe, no_humans, ${qualityPrefix}\n\n${raw}`;
+      }
+    } else {
+      const tags = stripPersonTags(raw);
+      prompt = `safe, no_humans, ${qualityPrefix}${tags ? ', ' + tags : ''}`;
+    }
+
+    console.log('[Image] NSFW 结束空镜 → /api/images/generate (scene_only)',
+      '| gen_mode:', genMode,
+      '| prompt len:', prompt.length,
+      '| 人物标签:', (prompt.match(/\b\d+\+?\s*[ -_]?(girl|boy|futa)/gi) || 'NONE'),
+      '| HEAD:', prompt.slice(0, 120).replace(/\n/g, '\\n'));
+
+    fetch(`${BASE_URL}/api/images/generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'cg', prompt, character_name: 'scene', conversation_id, scene_only: true })
+    }).then(r => {
+      if (!r.ok) {
+        console.error('[Image] NSFW 结束空镜 HTTP', r.status, '— 保持 nsfw_active=1，下一轮可重试');
+        return;
+      }
+      console.log('[Image] NSFW 结束空镜已下发 — 复位 nsfw_active');
+      try { db.prepare('UPDATE conversations SET nsfw_active = 0 WHERE id = ?').run(conversation_id); } catch { }
+    }).catch(e => {
+      console.error('[Image] NSFW 结束空镜 failed:', e.message, '— 保持 nsfw_active=1，下一轮可重试');
     });
     return true;
   }
@@ -5916,32 +6116,111 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
   });
 
   /**
-   * Inject full memory table into conversation context every 20 rounds.
-   * Reads all accumulated memory lines from event_log.md and builds a table.
+   * Count completed dialogue rounds for a conversation.
+   *
+   * A "round" = one user turn + the assistant reply to it.  We count USER messages
+   * (not total messages) on purpose: a save usually opens with a pre-seeded assistant
+   * greeting, which used to make `ceil(total/2)` skip round 1 entirely (the greeting
+   * occupied a slot, so the first real reply was labelled 第2轮 and round 1 was never
+   * recorded).  Counting user messages makes round 1 == the first user turn, and the
+   * opening greeting is folded into round 1's summary instead of being lost.
+   */
+  function countRounds(conversation_id) {
+    const row = db.prepare(
+      "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND role = 'user' AND hidden = 0"
+    ).get(conversation_id);
+    return row ? row.n : 0;
+  }
+
+  /** Read memory-injection settings with safe defaults. */
+  function getMemorySettings() {
+    let s = null;
+    try { s = db.prepare('SELECT * FROM memory_agent_settings WHERE id = ?').get(SETTINGS_ID); } catch { }
+    const N = Math.max(1, parseInt(s?.inject_interval) || DEFAULT_INJECT_INTERVAL);
+    let M = parseInt(s?.drop_threshold) || DEFAULT_DROP_THRESHOLD;
+    // M must be a multiple of N (enforced here so a bad value can never wedge the feature).
+    // Snap UP so the prompt never fires earlier than the user asked for.
+    M = Math.max(N, Math.ceil(M / N) * N);
+    return { N, M, dropPromptEnabled: s?.drop_prompt_enabled === undefined ? true : !!s.drop_prompt_enabled };
+  }
+
+  /**
+   * Build the memory table (markdown) from every line accumulated in event_log.md.
+   * The table is COMPLETE — no row trimming: it is only injected once every N rounds,
+   * so paying the full size once is the whole point (early plot survives history trims).
+   */
+  function buildMemoryTable(eventLogPath) {
+    if (!fs.existsSync(eventLogPath)) return { table: '', rows: 0 };
+    const allLines = fs.readFileSync(eventLogPath, 'utf-8').split('\n').filter(l => l.trim());
+    if (allLines.length === 0) return { table: '', rows: 0 };
+    const tableHeader = '| 轮次 | 时间 | 地点 | 人物 | 事件 |\n|------|------|------|------|------|\n';
+    const rows = allLines.map(line => {
+      const parts = line.replace(/^第\d+轮\s*\|\s*/, '').split('|').map(p => p.trim());
+      const roundMatch = line.match(/^第(\d+)轮/);
+      const round = roundMatch ? roundMatch[1] : '?';
+      return `| ${round} | ${parts[0] || ''} | ${parts[1] || ''} | ${parts[2] || ''} | ${parts[3] || ''} |`;
+    });
+    return { table: tableHeader + rows.join('\n'), rows: rows.length };
+  }
+
+  /**
+   * Inject the full memory table into conversation context.
+   *
+   * Called ONLY when `round % N === 0`.  Between injections the table is dormant in
+   * event_log.md and is NOT part of the context at all — buildApiMessages() looks at
+   * `memory_context` only on the rounds where this function has just refreshed it.
    */
   function injectMemoryTable(db, conversation_id, eventLogPath, currentRound) {
     try {
-      if (!fs.existsSync(eventLogPath)) return;
-      const allLines = fs.readFileSync(eventLogPath, 'utf-8').split('\n').filter(l => l.trim());
+      const { table, rows } = buildMemoryTable(eventLogPath);
+      if (!table) return;
 
-      // Build markdown table from `第N轮 | 时间 | 地点 | 人物 | 事件` lines
-      const tableHeader = '| 轮次 | 时间 | 地点 | 人物 | 事件 |\n|------|------|------|------|------|\n';
-      const rows = allLines.map(line => {
-        const parts = line.replace(/^第\d+轮\s*\|\s*/, '').split('|').map(p => p.trim());
-        const roundMatch = line.match(/^第(\d+)轮/);
-        const round = roundMatch ? roundMatch[1] : '?';
-        return `| ${round} | ${parts[0] || ''} | ${parts[1] || ''} | ${parts[2] || ''} | ${parts[3] || ''} |`;
-      });
-      const tableContent = tableHeader + rows.join('\n');
-
-      // Update conversation memory_context
-      const wrapped = `<p class="nowork">\n${tableContent}\n</p>`;
+      // Update conversation memory_context. `injected_at_round` is what buildApiMessages()
+      // checks: the block is only sent while the conversation is still ON that round.
       db.prepare('UPDATE conversations SET memory_context = ? WHERE id = ?')
-        .run(JSON.stringify({ [MEMORY_KEYS.EVENT_LOG]: wrapped, [MEMORY_KEYS.LAST_ROUND]: currentRound }), conversation_id);
+        .run(JSON.stringify({
+          [MEMORY_KEYS.EVENT_LOG]: table,
+          [MEMORY_KEYS.LAST_ROUND]: currentRound,
+          [MEMORY_KEYS.INJECTED_AT]: currentRound,
+        }), conversation_id);
 
-      console.log('[Memory] Injected table for rounds 1-' + currentRound + ' (' + allLines.length + ' entries)');
+      console.log('[Memory] Injected full table at round ' + currentRound + ' (' + rows + ' entries)');
     } catch (err) {
       console.error('[Memory] Injection failed:', err.message);
+    }
+  }
+
+  /**
+   * Decide what happens on a round milestone.
+   *
+   *  · round % N === 0            → inject the full table (once, for that round only)
+   *  · round % M === 0 (M = k*N)  → additionally ask the user whether to ignore the
+   *                                 earlier dialogue and keep only the table.
+   *
+   * `res` is the SSE response when called from the streaming path (so we can push a
+   * prompt event to the client); it is null on the non-streaming / memory-agent paths.
+   */
+  function maybeHandleMemoryMilestones(conversation_id, eventLogPath, roundNum, res) {
+    if (!roundNum || roundNum <= 0) return;
+    const { N, M, dropPromptEnabled } = getMemorySettings();
+
+    if (roundNum % N === 0) {
+      injectMemoryTable(db, conversation_id, eventLogPath, roundNum);
+    }
+
+    if (dropPromptEnabled && roundNum % M === 0) {
+      console.log('[Memory] Prompting user to drop earlier dialogue at round ' + roundNum);
+      if (res && typeof res.write === 'function') {
+        try {
+          res.write(`event: memory-drop-prompt\ndata: ${JSON.stringify({
+            round: roundNum,
+            keep_from: roundNum,
+            drop_before: roundNum,
+            table_range: `1-${roundNum}`,
+            message: `已注入第 ${roundNum} 轮记忆表格。是否忽略之前的对话，只保留记忆表格？`
+          })}\n\n`);
+        } catch (e) { /* client gone — the user can still trigger it from the data centre */ }
+      }
     }
   }
 

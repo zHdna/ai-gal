@@ -80,7 +80,61 @@
       color: var(--text);
       font-family: var(--font-ui);
       -webkit-font-smoothing: antialiased;
+      /* 界面外壳默认不可选中：避免点击按钮/拖拽时把 UI 文字一起刷蓝。
+         但正文必须可选 —— 见下面的「可选中文字」白名单：
+         用户在行动选项出错、或想复制人名/地名时得手动复制。 */
       user-select: none;
+    }
+
+    /* ── 可选中文字（覆盖上面那条 user-select: none）──
+       正文、旁白/对白、各数据面板、历史记录、调试条目、剧本卡等，
+       凡是"读的内容"一律允许选中复制。 */
+    .app .dlg-text,
+    .app .dlg-narr,
+    .app .nar-hint,
+    .app .plate,
+    .app .body,
+    .app .hist,
+    .app .hist .full,
+    .app .pane,
+    .app .dock,
+    .app .sheet,
+    .app .cm-body,
+    .app .cm-body pre,
+    .app .debug-pre,
+    .app .debug-section,
+    .app .tip,
+    .app .msg-time,
+    .app .ai-time {
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
+    /* ⚠️ 交互控件必须仍不可选中：上面几条会连带命中按钮内的文字
+       （工具按钮就是 class="tool tip"，正好撞上 .tip），
+       否则连点两下按钮就会把标签刷蓝。放在白名单之后覆盖回去。 */
+    .app button,
+    .app .tool,
+    .app .hbtn,
+    .app .btn,
+    .app .hb,
+    .app .mi,
+    .app .hop,
+    .app .jump,
+    .app .dtab,
+    .app .choice-option,
+    .app .ch,
+    .app .sys-menu-btn,
+    .app .icon-btn-sm,
+    .app .close-x,
+    .app .fab,
+    .app label,
+    .app nav,
+    .app .tabs,
+    .app .dlg-actions,
+    .app .tools {
+      user-select: none;
+      -webkit-user-select: none;
     }
 
     .app button, .app input, .app textarea {
@@ -2162,6 +2216,59 @@
       font-size: 10.5px;
       line-height: 1.72;
       color: var(--text-2);
+    }
+
+    /* ── 记忆表格三色灯：黄=已登记 · 绿=已注入 · 红=内容缺失 ── */
+    .app .mem-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+      align-self: center;
+    }
+
+    .app .mem-dot-yellow {
+      background: #f5c518;
+      box-shadow: 0 0 5px rgba(245, 197, 24, .8);
+    }
+
+    .app .mem-dot-green {
+      background: #35c759;
+      box-shadow: 0 0 5px rgba(53, 199, 89, .8);
+    }
+
+    .app .mem-dot-red {
+      background: #ff3b30;
+      box-shadow: 0 0 5px rgba(255, 59, 48, .85);
+    }
+
+    .app .mem-dot-none {
+      background: transparent;
+      border: 1px solid var(--line);
+    }
+
+    .app .mem-legend {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin: 2px 0 10px;
+      font-size: 10.5px;
+      color: var(--text-mut);
+    }
+
+    .app .mem-legend > span {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .app .mem-legend em {
+      font-style: normal;
+      margin-left: auto;
+      font-family: var(--font-mono);
+      font-size: 10px;
     }
 
     .app .mvu-row {

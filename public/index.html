@@ -404,6 +404,7 @@
                数据中心（#fabData）挪到这里，夹在「语音」和「隐藏UI」之间；
                ⚠ 它只负责开关，弹窗本体 .dock 仍是右下角绝对定位，位置不随按钮走。 -->
           <span class="dlg-actions">
+            <button class="tool tip" id="btnRegenCg" data-tip="重新生成当前 CG（对画面不满意时用）">↻ 重画CG</button>
             <button class="tool tip" id="btnTtsToggle" data-tip="语音朗读">▷ 语音</button>
             <button class="tool tip" id="fabData" data-tip="数据中心（D）· 打开后可继续游戏">▤ 数据中心</button>
             <button class="tool tip" id="btnHideUI" data-tip="隐藏界面，只看画面（H）">⛶ 隐藏UI</button>
@@ -1455,6 +1456,7 @@ confidence = 0.88</pre>
             <button class="settings-nav-btn on" data-pane="ai"><span class="sn-ic">🔌</span><span class="sn-tx"><b>AI 与供应商</b><small>主 / 管家 / 画家 · 接口</small></span></button>
             <button class="settings-nav-btn" data-pane="image"><span class="sn-ic">🎨</span><span class="sn-tx"><b>图像生成</b><small>画风 · 供应商 · 参数</small></span></button>
             <button class="settings-nav-btn" data-pane="look"><span class="sn-ic">🎛</span><span class="sn-tx"><b>外观与界面</b><small>主题 · 移动端</small></span></button>
+            <button class="settings-nav-btn" data-pane="memory"><span class="sn-ic">🧠</span><span class="sn-tx"><b>记忆表格</b><small>注入间隔 · 忽略提示</small></span></button>
           </nav>
           <div class="settings-panes">
         <section class="settings-pane on" data-pane="ai">
@@ -1589,6 +1591,49 @@ confidence = 0.88</pre>
               <button class="btn btn-sm" onclick="switchToMobile()">切到移动端界面</button>
               <button class="btn btn-sm" onclick="restoreMobileFrontend()">恢复移动端自动跳转</button>
             </div>
+          </section>
+        </section>
+
+        <!-- 记忆表格：注入与忽略设置 -->
+        <section class="settings-pane" data-pane="memory">
+          <section class="settings-section">
+            <h4>记忆表格注入</h4>
+            <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;line-height:1.6">
+              每轮对话的摘要都会写入存档的 <code>event_log.md</code>，但<b>不会</b>进入上下文。
+              只有每到设定轮次时，系统才把<b>完整</b>记忆表格注入一次上下文（注入后永久保留在该轮）。
+            </p>
+            <div class="form-group">
+              <label>注入间隔（每 N 轮注入一次）</label>
+              <input type="number" id="memInjectInterval" class="setting-input" min="1" max="200" step="1" placeholder="20">
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
+                默认 20，即第 20、40、60… 轮各注入一次。
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h4>忽略对话提示</h4>
+            <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;line-height:1.6">
+              每到第 M 轮（M 必须是注入间隔 N 的整数倍），询问是否忽略更早的对话、只保留记忆表格。
+              选择忽略后<b>不会删除任何消息</b>，仅不再把旧对话送进上下文，可随时撤销。
+            </p>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="memDropPromptEnabled"> 启用「忽略之前的对话」提示
+              </label>
+            </div>
+            <div class="form-group">
+              <label>提示轮次（M）</label>
+              <select id="memDropThreshold" class="setting-select"></select>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
+                选项随注入间隔联动，只能是 N 的整数倍。
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h4>当前状态</h4>
+            <div id="memSettingsStatus" style="font-size:12px;color:var(--text-muted);line-height:1.7"></div>
           </section>
         </section>
           </div>
@@ -2029,7 +2074,7 @@ confidence = 0.88</pre>
 
   <script src="js/api.js?v=20260709a"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20260917j"></script>
+  <script src="js/app.js?v=20260921a"></script>
   <script>
     // === Theater Enhancement: UI Logic ===
     (function () {
@@ -2098,7 +2143,7 @@ confidence = 0.88</pre>
     </div>
     <div id="ttsListPopupBody" class="tts-list-popup-body"></div>
   </div>
-  <script src="js/desktop/vn-shell.js?v=20260917j"></script>
+  <script src="js/desktop/vn-shell.js?v=20260921a"></script>
 </body>
 
 </html>

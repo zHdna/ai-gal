@@ -169,6 +169,21 @@ function initDatabase() {
   // Migrate: MVU world-state model (Tier 3 closed loop)
   try { db.exec(`ALTER TABLE conversations ADD COLUMN world_state TEXT DEFAULT '{}'`); } catch {}
 
+  // NSFW 流程状态（0/1）。用途：管家判定「本轮已离开 NSFW 场景」时，要在 CG 生图流程之后
+  // 补一张【纯场景、不含人物】的 SFW 场景图，为整段 NSFW 剧情收尾。
+  //   置 1 的时机：本轮真的发出了 NSFW CG（管家 triggerImage 命中且生图已下发）
+  //   复位为 0：收尾场景图已下发（或从未进入过该流程）
+  // 没有这个列就无法区分「剧情仍在 NSFW 流程中（只是本回合没配图）」与「流程已结束」。
+  try { db.exec(`ALTER TABLE conversations ADD COLUMN nsfw_active INTEGER DEFAULT 0`); } catch {}
+
+  // Memory-drop state (user confirmed "ignore earlier dialogue, keep the table").
+  // Context-layer only: rows are NEVER deleted, this just tells buildApiMessages()
+  // which dialogue rounds to leave out.  Cleared on request => fully reversible.
+  //   memory_trim_before : rounds < this value are excluded from context (0 = keep all)
+  //   memory_trim_round  : the round at which the user confirmed the drop (for the banner)
+  try { db.exec(`ALTER TABLE conversations ADD COLUMN memory_trim_before INTEGER DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE conversations ADD COLUMN memory_trim_round INTEGER DEFAULT 0`); } catch {}
+
   // --- Messages ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
@@ -320,11 +335,22 @@ function initDatabase() {
       provider_id     TEXT DEFAULT '',
       prompt_template TEXT DEFAULT '',
       trigger_interval INTEGER DEFAULT 10,           -- messages between memory updates
+      -- === Memory table injection (see chat.js injectMemoryTable / buildApiMessages) ===
+      -- The table lives ONLY in event_log.md between injections; it is NOT part of the
+      -- context on ordinary turns.  Every N rounds the full table is injected once.
+      inject_interval   INTEGER DEFAULT 20,          -- N: inject the full memory table every N rounds
+      drop_threshold    INTEGER DEFAULT 60,          -- M: at round M, offer to drop earlier dialogue (M = k*N)
+      drop_prompt_enabled INTEGER DEFAULT 1,         -- 1 = show the "drop earlier dialogue?" prompt
       last_updated_at TEXT DEFAULT (datetime('now'))
     )
   `);
 
   db.prepare(`INSERT OR IGNORE INTO memory_agent_settings (id) VALUES ('default')`).run();
+
+  // Migrate: add memory-injection columns to existing DBs
+  try { db.exec('ALTER TABLE memory_agent_settings ADD COLUMN inject_interval INTEGER DEFAULT 20'); } catch (e) { }
+  try { db.exec('ALTER TABLE memory_agent_settings ADD COLUMN drop_threshold INTEGER DEFAULT 60'); } catch (e) { }
+  try { db.exec('ALTER TABLE memory_agent_settings ADD COLUMN drop_prompt_enabled INTEGER DEFAULT 1'); } catch (e) { }
 
   // --- TTS Providers (independent from LLM api_providers) ---
   db.exec(`

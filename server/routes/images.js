@@ -3,9 +3,10 @@
  */
 const { Router } = require('express');
 const http = require('http');
+const zlib = require('zlib');
 const path = require('path');
 const fs = require('fs');
-const { SETTINGS_ID, ANIMA_PRESET, OPENAI_COMPATIBLE_MODES, EXTERNAL_IMAGE_MODES, EXTERNAL_API_TIMEOUT_MS, DEFAULT_COMFYUI_URL } = require('../constants');
+const { SETTINGS_ID, ANIMA_PRESET, NOVELAI_PRESET, OPENAI_COMPATIBLE_MODES, EXTERNAL_IMAGE_MODES, EXTERNAL_API_TIMEOUT_MS, DEFAULT_COMFYUI_URL } = require('../constants');
 const { isPathWithin } = require('../utils/pathGuard');
 const savePaths = require('../savePaths');
 const { isUrlSafe } = require('../utils/urlGuard');
@@ -23,6 +24,8 @@ const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const PROFILE_DIR = require('../paths').PROFILE_DIR;
 const DEFAULT_WORKFLOW_CG = 'GALCG.json';
 const DEFAULT_WORKFLOW_PORTRAIT = 'portrait_x.json';
+// NSFW 流程结束图（纯场景空镜）在 CG 画廊里的中文说明，前端直接显示在缩略图下方
+const SCENE_END_LABEL = '场景 · NSFW 流程结束';
 // ComfyUI is a distinct engine from anima-turbo-cg (which owns 8100), so it keeps 8188.
 // DEFAULT_COMFYUI_URL is imported from ../constants (single source of truth).
 
@@ -31,20 +34,25 @@ const DEFAULT_WORKFLOW_PORTRAIT = 'portrait_x.json';
  *
  * anima-turbo-cg is the built-in default engine, so its endpoint/model must survive a
  * blank settings row (fresh install, cleared field, or an API-Key field a browser
- * refused to prefill).  `openai` / `stability` keep their "user must configure it"
- * behaviour and are returned blank when unset.
+ * refused to prefill).  novelai's endpoint/model have fixed official defaults for the
+ * same reason — but its API key (the account's Persistent API Token) can NEVER be
+ * defaulted and stays blank until the user fills it in.  `openai` / `stability` keep
+ * their "user must configure it" behaviour and are returned blank when unset.
  */
 function resolveExternalEndpoint(genMode, settings) {
   const isAnima = genMode === ANIMA_PRESET.MODE;
+  const isNovelai = genMode === NOVELAI_PRESET.MODE;
+  const preset = isNovelai ? NOVELAI_PRESET : ANIMA_PRESET;
   const pick = (value, fallback) => {
     const v = typeof value === 'string' ? value.trim() : '';
-    return v || (isAnima ? fallback : '');
+    return v || ((isAnima || isNovelai) ? fallback : '');
   };
   return {
-    apiUrl: pick(settings && settings.api_url, ANIMA_PRESET.API_URL),
-    apiKey: pick(settings && settings.api_key, ANIMA_PRESET.API_KEY),
-    apiModel: pick(settings && settings.api_model, ANIMA_PRESET.API_MODEL),
-    timeoutMs: isAnima ? ANIMA_PRESET.TIMEOUT_MS : EXTERNAL_API_TIMEOUT_MS,
+    apiUrl: pick(settings && settings.api_url, preset.API_URL),
+    apiKey: pick(settings && settings.api_key, isNovelai ? '' : ANIMA_PRESET.API_KEY),
+    apiModel: pick(settings && settings.api_model, preset.API_MODEL),
+    timeoutMs: isAnima ? ANIMA_PRESET.TIMEOUT_MS
+      : (isNovelai ? NOVELAI_PRESET.TIMEOUT_MS : EXTERNAL_API_TIMEOUT_MS),
   };
 }
 
@@ -244,6 +252,69 @@ function ensureSubjectTag(prompt, type, portrait) {
     return { prompt: `${head.replace(/,\s*$/, '')}, ${tag}${tail}`, injected: tag };
   }
   return { prompt: `${tag}, ${prompt}`, injected: tag };
+}
+
+/**
+ * 纯场景图（NSFW 流程结束图）提示词规范化。
+ *
+ * 这类图**画面里不能有任何人**：它是 NSFW 剧情收尾时的一张空镜，靠"没有人物"本身
+ * 表示流程结束。所以必须做到三件事，缺一件就会被下游模型画出人来：
+ *   1) 清掉一切人物/人数标签（1girl / 1boy / 2girls / solo / male …）与
+ *      `character:` / `participant:` 之类的人物字段；
+ *   2) 清掉 nsfw / explicit / sensitive 分级，强制成 `safe`（SFW）；
+ *   3) 强制补 `no_humans`（Danbooru 系模型唯一可靠的"无人物"约束）。
+ *
+ * 兼容 Anima 两层结构：只清洗 Hard-Tags 行，自然语言层原样保留。
+ */
+function enforceSceneOnlyPrompt(prompt) {
+  const personTagRe = /\b\d+\+?\s*[ -_]?(girl|girls|boy|boys|futa|other)s?\b/i;
+  const personWordRe = /^(solo|male|female|man|woman|boy|girl|1other|multiple_others)$/i;
+  // 标签里"夹着"人物词的（girl_on_top / two_people / male_focus …）也要清：
+  // 只按"人数标签"（1girl 这种）清是不够的，模型经常漏写数字。
+  const personInlineRe = /(^|[_ -])(girl|girls|boy|boys|futa|person|people|human|woman|man|male|female|loli|shota)($|[_ -])/i;
+  const ratingRe = /^(safe|sensitive|nsfw|explicit|questionable)$/i;
+  const fieldRe = /^[\w\u4e00-\u9fff]+\s*[:：]\s*/;
+  // 人物 / 身体 / 性行为相关标签：**画面里其实还有个人**的强暗示。
+  // 实测见过管家把上一张 NSFW CG 的 `completely_nude` 一起带进空镜 —— 这类标签
+  // 不剔掉，空镜里就会站个人，"没有人"这个语义就废了（该图靠"无人物"表示流程结束）。
+  const bodyTagRe = new RegExp('^(?:' + [
+    'completely_nude', 'nude', 'naked', 'topless', 'bottomless', 'undressed', 'clothed', 'partially_clothed', 'exposed',
+    'nipples?', 'areolae?', 'breasts?', 'cleavage', 'pussy', 'penis', 'anus', 'anal', 'ass', 'buttocks',
+    'thighs?', 'legs?', 'feet', 'hands?', 'fingers?', 'arms?', 'shoulders?', 'collarbone',
+    'mouth', 'tongue', 'teeth', 'lips', 'face', 'faces', 'eyes?', 'eyelashes', 'hair', 'skin', 'body', 'torso', 'pov',
+    'blush', 'flushed_face', 'sweat', 'saliva', 'ahegao', 'orgasm', 'climax', 'cum', 'semen',
+    'sex', 'vaginal', 'fellatio', 'cunnilingus', 'masturbation', 'penetration', 'spread_legs', 'presenting',
+    'lingerie', 'underwear', 'panties', 'bra', 'bikini', 'swimsuit', 'dress', 'skirt', 'shirt', 'uniform',
+    'bondage', 'bdsm', 'restrained', 'leash', 'collared',
+  ].join('|') + ')$', 'i');
+  // 去掉权重装饰（{{tag}} / (tag:1.2)）后再判定
+  const bareTag = (t) => String(t).trim()
+    .replace(/^[({[]+/, '').replace(/[)}\]]+$/, '')
+    .replace(/:\s*[\d.]+$/, '').trim();
+  const isPersonish = (t) => {
+    const b = bareTag(t);
+    return personTagRe.test(b) || personWordRe.test(b) || personInlineRe.test(b) || bodyTagRe.test(b.replace(/[ -]/g, '_'));
+  };
+  const cleanSceneLine = (line) => {
+    const tags = String(line || '')
+      .split(',')
+      .map(t => t.trim().replace(fieldRe, '').trim())
+      .filter(Boolean)
+      .filter(t => !isPersonish(t) && !ratingRe.test(bareTag(t)))
+      .filter(t => !/^(no_humans|scenery|background)$/i.test(bareTag(t))); // 由系统统一补，避免重复
+    const out = ['safe', 'no_humans'];
+    for (const t of tags) {
+      if (!out.some(o => o.toLowerCase() === t.toLowerCase())) out.push(t);
+    }
+    return out.join(', ');
+  };
+  if (isAnimaHybridPrompt(prompt)) {
+    const lines = String(prompt).replace(/\r\n/g, '\n').split('\n');
+    const hardLine = lines.shift();
+    const caption = lines.join('\n').replace(/\n+/g, ' ').replace(/[ \t]+/g, ' ').trim();
+    return caption ? `${cleanSceneLine(hardLine)}\n\n${caption}` : cleanSceneLine(hardLine);
+  }
+  return cleanSceneLine(prompt);
 }
 
 function cleanPortraitPrompt(prompt, culture) {
@@ -641,6 +712,12 @@ function applyGenerationParams(workflow, params) {
 module.exports = (db) => {
   const router = Router();
 
+  // 把「读代理配置」的能力交给顶层生成辅助函数（它们在本闭包之外，见 resolveImageProxy）
+  setAppProxyProvider(() => {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'proxy_config'").get();
+    return row && row.value ? JSON.parse(row.value) : null;
+  });
+
   router.use('/files', (req, res) => {
     const requestedPath = req.path.replace(/^\/+/, '');
     const filePath = path.resolve(IMAGES_DIR, requestedPath);
@@ -668,6 +745,14 @@ module.exports = (db) => {
       row.api_model = ep.apiModel;
       if (!row.image_size) row.image_size = ANIMA_PRESET.IMAGE_SIZE;
       if (!row.comfyui_url) row.comfyui_url = DEFAULT_COMFYUI_URL;
+    } else if (row.mode === NOVELAI_PRESET.MODE) {
+      // Surface NovelAI's fixed endpoint/model so the Settings UI renders a working
+      // config even on a bare row.  api_key is deliberately NOT defaulted — it is the
+      // user's Persistent API Token.
+      const ep = resolveExternalEndpoint(NOVELAI_PRESET.MODE, row);
+      row.api_url = ep.apiUrl;
+      row.api_model = ep.apiModel;
+      if (!row.image_size) row.image_size = NOVELAI_PRESET.IMAGE_SIZE;
     }
     res.json(row);
   });
@@ -677,6 +762,10 @@ module.exports = (db) => {
     let { api_url, api_key } = req.body || {};
     if (typeof api_url === 'string') api_url = api_url.trim();
     if (typeof api_key === 'string') api_key = api_key.trim();
+    // NovelAI 没有 OpenAI 风格的 /models 端点，其模型清单是固定的，直接返回
+    if (api_url && /novelai\.net/i.test(api_url)) {
+      return res.json({ models: NOVELAI_PRESET.MODELS.slice() });
+    }
     // 未传则用已保存的设置
     if (!api_url) {
       const row = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
@@ -756,7 +845,7 @@ module.exports = (db) => {
 
   // Regenerate with same prompt (no AI involved)
   router.post('/regenerate', async (req, res) => {
-    const { prompt, type, character_name, conversation_id, culture } = req.body;
+    const { prompt, type, character_name, conversation_id, culture, old_filename } = req.body;
     if (!prompt) return res.status(400).json({ error: 'prompt required' });
 
     const settings = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
@@ -768,7 +857,11 @@ module.exports = (db) => {
     let comfyWaitSec = 60;
 
     // Find save and old gallery entry
+    // `old_filename` (optional) lets the caller say exactly which CG to replace.
+    // Without it we fall back to gallery[0] — which is only correct when the user is
+    // regenerating the newest CG (the common case: just-generated image, unhappy with it).
     let oldFilename = null;
+    let replaceIndex = 0;
     if (conversation_id) {
       try {
         const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
@@ -776,7 +869,18 @@ module.exports = (db) => {
           const gp = path.join(save.save_path, 'cg_gallery.json');
           try {
             const gallery = JSON.parse(fs.readFileSync(gp, 'utf-8'));
-            if (gallery.length > 0) oldFilename = gallery[0].filename;
+            if (Array.isArray(gallery) && gallery.length > 0) {
+              let idx = 0;
+              if (old_filename) {
+                const want = String(old_filename);
+                const found = gallery.findIndex(g => g && String(g.filename || g.file || '') === want);
+                if (found >= 0) idx = found;
+                else console.warn('[ImageGen-Regen] old_filename not found in gallery, falling back to newest:', want);
+              }
+              replaceIndex = idx;
+              oldFilename = gallery[idx].filename;
+              console.log('[ImageGen-Regen] replacing gallery entry #' + idx + ':', oldFilename);
+            }
           } catch { }
         }
       } catch { }
@@ -805,7 +909,7 @@ module.exports = (db) => {
         return;
       }
       try {
-        const result = await generateViaExternalAPI(boostedPrompt, genMode, apiUrl, apiKey, settings);
+        const result = await generateViaExternalAPI(boostedPrompt, genMode, apiUrl, apiKey, settings, type);
         if (!result || (!result.url && !result.b64)) return;
         const charName = (character_name || 'character').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
         // b64_json 多为 png；url 由服务端决定扩展名
@@ -871,13 +975,15 @@ module.exports = (db) => {
                 try { fs.unlinkSync(oldPath); } catch { }
               }
             }
-            // Replace gallery entry
+            // Replace gallery entry（用 replaceIndex，而不是写死 gallery[0]：
+            // 用户可能正在重画一张较旧的 CG）
             const gp = path.join(save.save_path, 'cg_gallery.json');
             try {
               const gallery = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+              const k = (typeof replaceIndex === 'number' && replaceIndex >= 0 && replaceIndex < gallery.length) ? replaceIndex : 0;
               if (gallery.length > 0) {
-                gallery[0].filename = filename;
-                gallery[0].timestamp = new Date().toISOString();
+                gallery[k].filename = filename;
+                gallery[k].timestamp = new Date().toISOString();
                 fs.writeFileSync(gp, JSON.stringify(gallery, null, 2), 'utf-8');
               }
             } catch { }
@@ -937,11 +1043,19 @@ module.exports = (db) => {
     // 登场 CG（debut_cg）走同一套 CG 清洗，唯一区别：它是「角色登场」画面而不是 NSFW 场景图，
     // 因此【不强行插 nsfw】——安全分级由 chat.js 按当前场景给出（safe / nsfw）。
     const isDebutCg = type === 'cg' && req.body && req.body.debut_cg === true;
+    // 纯场景图（NSFW 流程结束图）：type 仍是 cg（照常进 CG 画廊），但它【不含人物】。
+    // 与登场 CG 一样关闭 nsfw 自动注入，并额外：强制 SFW 分级 + no_humans、不补人物/性别标签、
+    // 不套用人物兜底图（见下方 fallbackTag 与 ensureSubjectTag 的分支）。
+    const isSceneOnly = type === 'cg' && req.body && req.body.scene_only === true;
     if (type === 'portrait') {
       prompt = cleanPortraitPrompt(prompt, culture);
     } else if (type === 'cg') {
-      prompt = cleanCGPrompt(prompt, { forceNsfw: !isDebutCg });
+      prompt = cleanCGPrompt(prompt, { forceNsfw: !isDebutCg && !isSceneOnly });
       if (isDebutCg) console.log('[ImageGen] Debut CG — nsfw auto-injection disabled (safety rating comes from the scene)');
+      if (isSceneOnly) {
+        prompt = enforceSceneOnlyPrompt(prompt);
+        console.log('[ImageGen] Scene-only CG (NSFW 流程结束图) — 强制 safe + no_humans 后的提示词:', prompt.slice(0, 140));
+      }
     }
     if (portrait && typeof portrait === 'object') {
       prompt = injectAgeTag(prompt, portrait, conversation_id, db);
@@ -951,11 +1065,14 @@ module.exports = (db) => {
     // This is a safety net for prompts built outside the normal pipeline (or by a weak model);
     // in the normal flow the tag is already present, so nothing is injected.
     {
-      const guard = ensureSubjectTag(prompt, type, portrait);
+      const guard = isSceneOnly ? { prompt, injected: null } : ensureSubjectTag(prompt, type, portrait);
       if (guard.injected) {
         console.warn(`[ImageGen] GUARD: prompt had no subject tag — injected "${guard.injected}" (type=${type})`);
       }
       prompt = guard.prompt;
+    }
+    if (isSceneOnly) {
+      console.log('[ImageGen] Scene-only CG — subject-tag guard skipped (no humans in frame)');
     }
 
     console.log('[ImageGen] Final prompt HEAD (first 150):', prompt.substring(0, 150));
@@ -972,6 +1089,8 @@ module.exports = (db) => {
     if (!genderTag) {
       if (genderWords) {
         console.warn('[ImageGen] WARNING: no 1girl/1boy/1futa TAG (prose gender present — weaker identity control)');
+      } else if (isSceneOnly) {
+        console.log('[ImageGen] Scene-only CG — no gender signal by design (pure scenery, no humans)');
       } else {
         console.error('[ImageGen] ERROR: no gender signal at all (neither a tag nor a gender word) — prompt:', prompt.slice(0, 160));
       }
@@ -1012,13 +1131,17 @@ module.exports = (db) => {
       const isWuxia = detectWuxia(portrait, conversation_id);
       fallbackTag = isWuxia ? 'xianzi' : (AGE_TAGS[age] || 'teen');
     }
-    // For CG without portrait info, default fallback tag
-    if (!fallbackTag && type === 'cg') {
+    // For CG without portrait info, default fallback tag（纯场景图没有人物，绝不能套人物兜底图）
+    if (!fallbackTag && type === 'cg' && !isSceneOnly) {
       fallbackTag = 'teen'; // Default fallback for CG scenes
     }
 
     // If mode is 'none', skip generation, go straight to fallback
     if (genMode === 'none') {
+      if (isSceneOnly) {
+        console.log('[ImageGen] Scene-only CG skipped — image mode is off (无兜底图：纯场景不套用人物画像)');
+        return;
+      }
       console.log('[ImageGen] Mode=off, using profile fallback for tag:', fallbackTag);
       const result = fallbackFromProfileWithDB(db, conversation_id, character_name, fallbackTag || 'teen');
       if (result) console.log('[ImageGen] Fallback saved:', result.filename);
@@ -1033,7 +1156,7 @@ module.exports = (db) => {
         return;
       }
       try {
-        const result = await generateViaExternalAPI(prompt, genMode, apiUrl, apiKey, settings);
+        const result = await generateViaExternalAPI(prompt, genMode, apiUrl, apiKey, settings, type);
         if (result && (result.url || result.b64)) {
           const charName = (character_name || 'character').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
           // b64_json 多为 png；url 由服务端决定扩展名，统一按内容写盘
@@ -1045,7 +1168,7 @@ module.exports = (db) => {
           } else {
             fs.writeFileSync(savePath, Buffer.from(result.b64, 'base64'));
           }
-          saveToConversation(db, conversation_id, character_name, filename, savePath, type === 'cg', prompt);
+          saveToConversation(db, conversation_id, character_name, filename, savePath, type === 'cg', prompt, isSceneOnly ? { sceneEnd: true } : null);
           console.log('[ImageGen] External API saved:', filename);
           return;
         }
@@ -1096,7 +1219,7 @@ module.exports = (db) => {
             const filename = `${charName}_${Date.now()}.jpg`;
             const savePath = path.join(IMAGES_DIR, filename);
             await downloadImage(comfyuiUrl, outputImage, savePath);
-            saveToConversation(db, conversation_id, character_name, filename, savePath, type === 'cg', prompt);
+            saveToConversation(db, conversation_id, character_name, filename, savePath, type === 'cg', prompt, isSceneOnly ? { sceneEnd: true } : null);
             console.log('[ImageGen] Saved:', filename);
             success = true;
           }
@@ -1144,7 +1267,7 @@ module.exports = (db) => {
 
 // --- Save helpers ---
 
-function saveToConversation(db, conversation_id, character_name, filename, savePath, isCG, cgPrompt) {
+function saveToConversation(db, conversation_id, character_name, filename, savePath, isCG, cgPrompt, extra) {
   if (!conversation_id) return;
   try {
     const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
@@ -1155,7 +1278,7 @@ function saveToConversation(db, conversation_id, character_name, filename, saveP
 
     if (isCG) {
       // Add to CG gallery
-      addToCGGallery(save.save_path, filename, character_name, cgPrompt);
+      addToCGGallery(save.save_path, filename, character_name, cgPrompt, extra);
     } else {
       updateRoster(save.save_path, character_name, filename);
       // Cache the generated avatar into the master folder so future sub-saves reuse it.
@@ -1196,17 +1319,24 @@ function replaceGalleryEntry(db, conversation_id, oldFilename, filename, savePat
   } catch (e) { console.error('[ImageGen] Gallery replace failed:', e.message); }
 }
 
-function addToCGGallery(savePath, filename, character_name, prompt) {
+function addToCGGallery(savePath, filename, character_name, prompt, extra) {
   const galleryPath = path.join(savePath, 'cg_gallery.json');
   let gallery = [];
   try { gallery = JSON.parse(fs.readFileSync(galleryPath, 'utf-8')); } catch { }
   // New CG at top
-  gallery.unshift({
+  const entry = {
     filename,
     character: character_name || 'unknown',
     prompt: prompt || '',  // Store full prompt for regeneration
     timestamp: new Date().toISOString(),
-  });
+  };
+  // NSFW 流程结束的空镜：打 sceneEnd 标记 + 中文说明，前端据此把它标成「收尾场景图」
+  // （而不是当成一张普通 NSFW CG —— 它画面里没有人物）。
+  if (extra && extra.sceneEnd) {
+    entry.sceneEnd = true;
+    entry.description = SCENE_END_LABEL;
+  }
+  gallery.unshift(entry);
   // Keep max 20
   if (gallery.length > 20) gallery = gallery.slice(0, 20);
   fs.writeFileSync(galleryPath, JSON.stringify(gallery, null, 2), 'utf-8');
@@ -1382,7 +1512,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // --- External Image API ---
 
-async function generateViaExternalAPI(prompt, mode, apiUrl, apiKey, settings) {
+async function generateViaExternalAPI(prompt, mode, apiUrl, apiKey, settings, type) {
   const url = apiUrl.replace(/\/$/, '');
   // anima-turbo-cg speaks the OpenAI images API, so it shares this branch; the mode is
   // still passed through so the model/size/timeout defaults resolve correctly.
@@ -1390,6 +1520,8 @@ async function generateViaExternalAPI(prompt, mode, apiUrl, apiKey, settings) {
     return generateViaOpenAI(prompt, url, apiKey, settings, mode);
   } else if (mode === 'stability') {
     return generateViaStability(prompt, url, apiKey, settings);
+  } else if (mode === NOVELAI_PRESET.MODE) {
+    return generateViaNovelAI(prompt, url, apiKey, settings, type);
   }
   throw new Error('Unknown external API mode: ' + mode);
 }
@@ -1400,9 +1532,186 @@ async function generateViaExternalAPI(prompt, mode, apiUrl, apiKey, settings) {
  * anima-turbo-cg serves plain HTTP on 127.0.0.1:8100.  Hardcoding `https` made every
  * such request die with EPROTO (a TLS handshake against a plaintext server), which is
  * why the default engine could never actually be reached.
+ *
+ * ---- 代理（2026-09-20）----
+ * 外网生图（NovelAI / OpenAI / Stability）在受限网络里直连会被墙：报错长这样
+ *   AggregateError [ETIMEDOUT]  at internalConnectMultiple  /  ECONNRESET
+ * 而浏览器和 chat.js 的请求都走了代理 —— 只有生图这条路径**完全没看代理配置**，
+ * 于是出现"聊天能用、生图超时"。这里让生图复用同一个 app_settings.proxy_config，
+ * 并在应用内未启用代理时自动采用 **Windows 系统代理**（就是浏览器在用的那个）。
+ *
+ * 优先级：HTTPS_PROXY/HTTP_PROXY/ALL_PROXY 环境变量 > 应用内 proxy_config(enabled)
+ *        > Windows 注册表系统代理 > 直连。
+ * 一律直连的情况：本机/私网地址（anima 127.0.0.1:8100、ComfyUI、局域网）、
+ *        NO_PROXY 命中、或 AI_GAL_DISABLE_PROXY=1 / AI_GAL_NO_PROXY=1。
  */
+const netMod = require('net');
+const tlsMod = require('tls');
+const httpsMod = require('https');
+const httpMod = http; // 顶部已 require('http')
+
+let _osProxyResolved = false;
+let _osProxyFound = null;
+
+function isLocalOrPrivateHost(hostname) {
+  return /^(localhost|127\.|0\.0\.0\.0|\[?::1\]?|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(hostname || '');
+}
+
+/** 注册表里的写法很杂：`host:port`、`http://host:port`、`http=host:port;https=host:port`。 */
+function parseProxyServerValue(raw) {
+  let s = String(raw || '').trim();
+  if (!s) return null;
+  // "http=host:port;https=host:port" 形式（注意与带 scheme 的完整 URL 区分：后者含 "://"）
+  if (s.indexOf('=') !== -1 && !/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    const parts = {};
+    for (const seg of s.split(';')) {
+      const i = seg.indexOf('=');
+      if (i > 0) parts[seg.slice(0, i).trim().toLowerCase()] = seg.slice(i + 1).trim();
+    }
+    s = parts.https || parts.http || parts.socks || '';
+  }
+  // 去掉 scheme 与尾部斜杠：注册表实测会写 "http://127.0.0.1:9567"
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/\/+$/, '').trim();
+  return s || null;
+}
+
+function detectWindowsSystemProxy() {
+  if (_osProxyResolved) return _osProxyFound;
+  _osProxyResolved = true;
+  if (process.platform !== 'win32') return null;
+  let tmp = '';
+  try {
+    const cp = require('child_process');
+    const os = require('os');
+    tmp = path.join(os.tmpdir(), 'ai-gal-proxy-probe-' + process.pid + '-' + Date.now() + '.txt');
+    // 注意：stdout 必须落**文件**、不能用管道 —— 受限环境里管道的 stdio 会被 EPERM 拒绝
+    // （本项目既有经验：spawn/exec 的默认 pipe 在受限沙箱不可用）。
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      cp.execFileSync('reg', [
+        'query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+      ], { stdio: ['ignore', fd, 'ignore'], timeout: 3000, windowsHide: true });
+    } finally {
+      fs.closeSync(fd);
+    }
+    const out = fs.readFileSync(tmp, 'utf8');
+    if (!/ProxyEnable\s+REG_DWORD\s+0x1\b/i.test(out)) return null;
+    const m = out.match(/ProxyServer\s+REG_SZ\s+(\S+)/i);
+    const hp = m ? parseProxyServerValue(m[1]) : null;
+    if (!hp) return null;
+    const idx = hp.lastIndexOf(':');
+    const host = idx > 0 ? hp.slice(0, idx) : hp;
+    const port = idx > 0 ? parseInt(hp.slice(idx + 1), 10) : 8080;
+    if (host && port) _osProxyFound = { host, port, auth: '', source: '系统代理' };
+  } catch { /* 读不到注册表（或 reg 不可用）就直连 */ }
+  finally { if (tmp) { try { fs.unlinkSync(tmp); } catch { } } }
+  return _osProxyFound;
+}
+
+const _proxyLogged = new Set();
+/**
+ * 应用内代理配置的读取钩子：本文件顶层的生成辅助函数（transportFor / novelAIPost …）在
+ * 路由工厂**闭包之外**，拿不到工厂参数 `db`，所以由工厂在创建时把读取函数注入进来。
+ */
+let _appProxyProvider = null;
+function setAppProxyProvider(fn) { _appProxyProvider = typeof fn === 'function' ? fn : null; }
+
+function resolveImageProxy(hostname) {
+  if (isLocalOrPrivateHost(hostname)) return null;
+  if (/^(1|true|yes)$/i.test(process.env.AI_GAL_DISABLE_PROXY || '') || /^(1|true|yes)$/i.test(process.env.AI_GAL_NO_PROXY || '')) return null;
+  const noProxy = String(process.env.NO_PROXY || process.env.no_proxy || '');
+  if (noProxy && noProxy.split(',').some(h => h.trim() && hostname.endsWith(h.trim().replace(/^\./, '')))) return null;
+
+  let proxy = null;
+  const envUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || process.env.ALL_PROXY || process.env.all_proxy;
+  if (envUrl) {
+    try {
+      const u = new URL(envUrl);
+      if (u.hostname) proxy = { host: u.hostname, port: Number(u.port) || 8080, auth: u.username ? (decodeURIComponent(u.username) + ':' + decodeURIComponent(u.password || '')) : '', source: '环境变量' };
+    } catch { /* 环境变量写法不对则忽略 */ }
+  }
+  if (!proxy && _appProxyProvider) {
+    try {
+      const cfg = _appProxyProvider();
+      if (cfg && cfg.enabled && cfg.host) proxy = { host: cfg.host, port: Number(cfg.port) || 9567, auth: cfg.auth || '', source: '应用设置' };
+    } catch { /* 设置表尚未就绪 */ }
+  }
+  if (!proxy) proxy = detectWindowsSystemProxy();
+  const logKey = proxy ? (proxy.source + '|' + proxy.host + ':' + proxy.port) : '';
+  if (proxy && !_proxyLogged.has(logKey)) {
+    _proxyLogged.add(logKey);
+    console.log('[ImageGen] 外网生图经代理 ' + proxy.host + ':' + proxy.port + '（来源：' + proxy.source + '）');
+  }
+  return proxy;
+}
+
+/** HTTPS 目标经 HTTP 代理的 CONNECT 隧道 Agent（零依赖，纯 node:net + node:tls）。 */
+function makeTunnelAgent(proxy) {
+  const agent = new httpsMod.Agent({ keepAlive: false });
+  agent.createConnection = (options, cb) => {
+    const sock = netMod.connect(proxy.port, proxy.host);
+    sock.setTimeout(20000, () => sock.destroy(new Error('代理连接超时（' + proxy.host + ':' + proxy.port + '）')));
+    sock.once('connect', () => {
+      let head = 'CONNECT ' + options.host + ':' + options.port + ' HTTP/1.1\r\nHost: ' + options.host + ':' + options.port + '\r\n';
+      if (proxy.auth) head += 'Proxy-Authorization: Basic ' + Buffer.from(proxy.auth).toString('base64') + '\r\n';
+      sock.write(head + '\r\n');
+    });
+    let buf = Buffer.alloc(0);
+    const onData = (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      const idx = buf.indexOf('\r\n\r\n');
+      if (idx === -1) return;
+      sock.removeListener('data', onData);
+      const head = buf.slice(0, idx).toString('latin1');
+      const rest = buf.slice(idx + 4);
+      const status = parseInt(head.slice(9, 12), 10);
+      if (status !== 200) {
+        sock.destroy();
+        cb(new Error('代理拒绝 CONNECT（' + proxy.host + ':' + proxy.port + '）：' + head.split('\r\n')[0]));
+        return;
+      }
+      if (rest.length) sock.unshift(rest);
+      const t = tlsMod.connect({ socket: sock, servername: options.host });
+      t.once('secureConnect', () => cb(null, t));
+      t.once('error', (e) => cb(e));
+    };
+    sock.on('data', onData);
+    sock.once('error', (e) => cb(e));
+  };
+  return agent;
+}
+
+/** 经代理失败时把代理信息带进错误文本，避免又出现"看不出是网络还是令牌"的报错。 */
+function tagProxyError(req, proxy) {
+  req.on('error', (e) => {
+    if (e && !e._proxyTagged) {
+      e._proxyTagged = true;
+      e.message = (e.message || e.code || 'error') + '（经' + proxy.source + ' ' + proxy.host + ':' + proxy.port + '）';
+    }
+  });
+  return req;
+}
+
 function transportFor(urlString) {
-  return /^https:/i.test(urlString) ? require('https') : require('http');
+  const isHttps = /^https:/i.test(urlString);
+  const mod = isHttps ? httpsMod : httpMod;
+  let hostname = '';
+  try { hostname = new URL(urlString).hostname; } catch { return mod; }
+  const proxy = resolveImageProxy(hostname);
+  if (!proxy) return mod;
+  if (isHttps) {
+    const agent = makeTunnelAgent(proxy);
+    return { request: (opts, cb) => tagProxyError(mod.request(Object.assign({}, opts, { agent }), cb), proxy) };
+  }
+  // 明文 HTTP 目标：请求发给代理，path 用绝对 URL（与 chat.js 的做法一致）
+  return {
+    request: (opts, cb) => {
+      const headers = Object.assign({}, opts.headers);
+      if (proxy.auth) headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(proxy.auth).toString('base64');
+      const absUrl = 'http://' + opts.hostname + ':' + (opts.port || 80) + (opts.path || '/');
+      return tagProxyError(httpMod.request(Object.assign({}, opts, { hostname: proxy.host, port: proxy.port, path: absUrl, headers }), cb), proxy);
+    },
+  };
 }
 
 async function generateViaOpenAI(prompt, apiUrl, apiKey, settings, mode) {
@@ -1508,6 +1817,274 @@ async function generateViaStability(prompt, apiUrl, apiKey, settings) {
     req.on('timeout', () => { req.destroy(new Error('生图请求超时')); });
     req.write(body); req.end();
   });
+}
+
+// ---------------------------------------------------------------------------
+// NovelAI (image.novelai.net) — NOT OpenAI-compatible:
+//   POST { input, model, action, parameters }  →  binary ZIP archive holding PNG(s)
+// (V4 answers with msgpack event stream ONLY when `stream:"msgpack"` is requested;
+// omitting `stream` yields a plain ZIP for V3 and V4 alike — NekoAI-JS "force zip".)
+// Auth: `Authorization: Bearer <persistent api token>` ("pst-…", from the NovelAI
+// site → Settings → Account).  Official payload shapes mirrored from NekoAI-API's
+// examples/nai3.json & nai4.5.json.
+// ---------------------------------------------------------------------------
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+const PNG_IEND = Buffer.from([0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
+
+/** Snap a dimension to a multiple of 64 (NovelAI requirement), clamped to 64..3072. */
+function snap64(v) {
+  let n = Math.round((parseInt(v, 10) || 0) / 64) * 64;
+  if (n < 64) n = 64;
+  if (n > 3072) n = 3072;
+  return n;
+}
+
+/** Parse "WxH" (settings.image_size) into {width, height}; defaults to 1024x1024. */
+function parseNovelAISize(size) {
+  const m = String(size || '').match(/(\d+)\s*[xX×]\s*(\d+)/);
+  if (!m) return { width: 1024, height: 1024 };
+  return { width: snap64(m[1]), height: snap64(m[2]) };
+}
+
+/**
+ * SD numeric weighting `(1boy:1.3)` is NOT valid NovelAI syntax (NovelAI uses {} / []
+ * attention layers).  Convert the single boost this codebase emits into NovelAI
+ * weighting: ×1.3 ≈ {{1boy}} (two layers, ×1.1025) — a sane approximation, and the
+ * tag itself stays readable either way.
+ */
+function toNovelAIWeighting(prompt) {
+  return String(prompt || '').replace(
+    /\((1\s*(?:girl|boy|futa)\s*:\s*1\.3)\)/gi,
+    (m, inner) => `{{${inner.split(':')[0].replace(/\s+/g, '')}}}`
+  );
+}
+
+/**
+ * Build the /ai/generate-image request payload.  Mirrors the official example
+ * payloads field-for-field (V3: nai3.json, V4.5: nai4.5.json) so every parameter
+ * the server expects is present.  `stream` is deliberately omitted → ZIP response
+ * for both V3 and V4 models, keeping ONE response-parsing path.
+ */
+function buildNovelAIPayload(model, prompt, negative, dims, { steps, scale, sampler, seed }) {
+  const isV4 = /nai-diffusion-4/.test(model || '');
+  const parameters = isV4 ? {
+    params_version: 3,
+    width: dims.width, height: dims.height,
+    scale, sampler, steps,
+    n_samples: 1,
+    ucPreset: 3,
+    qualityToggle: false,
+    negative_prompt: negative,
+    // V4 models require the structured caption objects (multi-character capable);
+    // single-character generation puts everything into base_caption.
+    v4_prompt: {
+      caption: { base_caption: prompt, char_captions: [] },
+      use_coords: false,
+      use_order: true,
+    },
+    v4_negative_prompt: {
+      caption: { base_caption: negative, char_captions: [] },
+      legacy_uc: false,
+    },
+    characterPrompts: [],
+    use_coords: false,
+    legacy_uc: false,
+    legacy: false,
+    legacy_v3_extend: false,
+    add_original_image: true,
+    autoSmea: false,
+    dynamic_thresholding: false,
+    controlnet_strength: 1,
+    cfg_rescale: 0,
+    noise_schedule: 'karras',
+    skip_cfg_above_sigma: null,
+    deliberate_euler_ancestral_bug: false,
+    prefer_brownian: true,
+    normalize_reference_strength_multiple: true,
+    inpaintImg2ImgStrength: 1,
+    seed,
+  } : {
+    params_version: 3,
+    width: dims.width, height: dims.height,
+    scale, sampler, steps,
+    n_samples: 1,
+    ucPreset: 0,
+    qualityToggle: false,
+    sm: false, sm_dyn: false,
+    dynamic_thresholding: false,
+    controlnet_strength: 1,
+    legacy: false,
+    add_original_image: true,
+    cfg_rescale: 0,
+    noise_schedule: 'karras',
+    legacy_v3_extend: false,
+    skip_cfg_above_sigma: null,
+    seed,
+    characterPrompts: [],
+    negative_prompt: negative,
+  };
+  return { input: prompt, model, action: 'generate', parameters };
+}
+
+/** POST the payload and return the raw binary body (never JSON). */
+function novelAIPost(url, apiKey, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const urlObj = new URL(url);
+    const isHttps = urlObj.protocol === 'https:';
+    const opts = {
+      hostname: urlObj.hostname, port: urlObj.port || (isHttps ? 443 : 80),
+      path: urlObj.pathname + urlObj.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/x-zip-compressed, application/zip, binary/octet-stream, application/msgpack, */*',
+        'Content-Length': Buffer.byteLength(body),
+      },
+      timeout: timeoutMs || EXTERNAL_API_TIMEOUT_MS,
+    };
+    const req = transportFor(url).request(opts, (res) => {
+      const chunks = [];
+      res.on('data', d => chunks.push(d));
+      res.on('end', () => {
+        const buf = Buffer.concat(chunks);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          // NovelAI errors are JSON bodies ({statusCode, message}) — surface them verbatim
+          // so "401 bad token" / "402 out of Anlas" are immediately diagnosable.
+          let detail = buf.toString('utf8').substring(0, 200);
+          try {
+            const j = JSON.parse(buf.toString('utf8'));
+            detail = (j && (j.message || j.detail)) || JSON.stringify(j);
+          } catch { /* plain text error body */ }
+          const hint = res.statusCode === 401 ? '（Token 无效或过期，请重新到官网 Account 页生成 Persistent API Token）'
+            : (res.statusCode === 402 ? '（Anlas 不足，或订阅不包含该模型/尺寸/步数）' : '');
+          reject(new Error(`NovelAI HTTP ${res.statusCode}${hint}: ${detail}`));
+          return;
+        }
+        resolve(buf);
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(new Error(`NovelAI 请求超时（${Math.round((timeoutMs || EXTERNAL_API_TIMEOUT_MS) / 1000)}s）`)); });
+    req.write(body); req.end();
+  });
+}
+
+/**
+ * Pull the first PNG out of a ZIP buffer by walking the central directory (sizes are
+ * always present there, unlike stream-written local headers).  Handles stored (0) and
+ * deflate (8) entries; NovelAI's archive contains exactly the generated .png file(s).
+ */
+function extractFirstPngFromZip(buf) {
+  // Locate the End Of Central Directory record ("PK\x05\x06") scanning backwards.
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 66000); i--) {
+    if (buf[i] === 0x50 && buf[i + 1] === 0x4B && buf[i + 2] === 0x05 && buf[i + 3] === 0x06) { eocd = i; break; }
+  }
+  if (eocd < 0) return null;
+  const count = buf.readUInt16LE(eocd + 10);
+  let off = buf.readUInt32LE(eocd + 16);
+  for (let n = 0; n < count && off + 46 <= buf.length; n++) {
+    if (buf.readUInt32LE(off) !== 0x02014b50) return null; // "PK\x01\x02"
+    const method = buf.readUInt16LE(off + 10);
+    const csize = buf.readUInt32LE(off + 20);
+    const usize = buf.readUInt32LE(off + 24);
+    const fnLen = buf.readUInt16LE(off + 28);
+    const exLen = buf.readUInt16LE(off + 30);
+    const cmLen = buf.readUInt16LE(off + 32);
+    const lho = buf.readUInt32LE(off + 42);
+    const name = buf.slice(off + 46, off + 46 + fnLen).toString('utf8');
+    if (/\.png$/i.test(name) && usize > 0) {
+      const dataStart = lho + 30 + buf.readUInt16LE(lho + 26) + buf.readUInt16LE(lho + 28);
+      const raw = buf.slice(dataStart, dataStart + csize);
+      return (method === 0) ? raw : zlib.inflateRawSync(raw);
+    }
+    off += 46 + fnLen + exLen + cmLen;
+  }
+  return null;
+}
+
+/**
+ * Fallback: scan a binary blob (msgpack event stream, if the server ever switches to
+ * it) for the LAST complete PNG frame (signature … IEND).  Intermediate msgpack
+ * frames are JPEG and thus skipped.
+ */
+function extractLastCompletePng(buf) {
+  let best = null;
+  let pos = 0;
+  while (true) {
+    const i = buf.indexOf(PNG_SIGNATURE, pos);
+    if (i < 0) break;
+    const end = buf.indexOf(PNG_IEND, i + PNG_SIGNATURE.length);
+    if (end >= 0 && end + PNG_IEND.length <= buf.length) {
+      best = buf.slice(i, end + PNG_IEND.length);
+      pos = end + PNG_IEND.length;
+    } else {
+      pos = i + 1;
+    }
+  }
+  return best;
+}
+
+function extractNovelAIImage(buf) {
+  if (!buf || buf.length < 8) throw new Error('NovelAI 返回了空响应');
+  if (buf[0] === 0x50 && buf[1] === 0x4B) { // "PK" → ZIP archive
+    const png = extractFirstPngFromZip(buf);
+    if (png && png.length > 8) return png;
+  }
+  const png = extractLastCompletePng(buf);
+  if (png) return png;
+  throw new Error('无法从 NovelAI 响应中提取 PNG（既不是 ZIP 也没有 PNG 帧），响应头部: ' + buf.slice(0, 32).toString('hex'));
+}
+
+/**
+ * Generate via the NovelAI image API.  Returns { b64 } (base64 PNG) which the shared
+ * external-API persistence path already understands — it writes the file with a .png
+ * extension and updates the gallery/roster exactly like the other engines.
+ */
+async function generateViaNovelAI(prompt, apiUrl, apiKey, settings, type) {
+  if (!apiKey) {
+    throw new Error('未配置 NovelAI API Token：请到 NovelAI 官网 → 设置齿轮 → Account → Get Persistent API Token，把 pst- 开头的令牌填进设置的 API Key');
+  }
+  const ep = resolveExternalEndpoint(NOVELAI_PRESET.MODE, settings);
+  const model = ep.apiModel || NOVELAI_PRESET.API_MODEL;
+
+  // Prompt: convert the SD-style (1boy:1.3) boost into NovelAI weighting, then apply the
+  // optional quality prefix (same setting field the OpenAI-compatible path uses).
+  let naiPrompt = toNovelAIWeighting(prompt);
+  const qp = (settings && settings.quality_prefix) ? settings.quality_prefix.trim() : '';
+  if (qp) naiPrompt = qp + ', ' + naiPrompt;
+
+  // Negative prompt: the per-type custom field wins; otherwise NovelAI's built-in
+  // heavy preset (rating-safe: no `nsfw` word — see NOVELAI_PRESET.DEFAULT_NEGATIVE).
+  const customNeg = String((type === 'portrait'
+    ? (settings && settings.portrait_negative_prompt)
+    : (settings && settings.cg_negative_prompt)) || '').trim();
+  const negative = customNeg || NOVELAI_PRESET.DEFAULT_NEGATIVE;
+
+  // Dimensions: custom_params width/height win; otherwise parse settings.image_size.
+  const params = getGenerationParams(settings);
+  const dims = (params.width > 0 && params.height > 0)
+    ? { width: snap64(params.width), height: snap64(params.height) }
+    : parseNovelAISize(settings && settings.image_size);
+
+  // Defaults stay inside the Opus free tier: 28 steps, 1 sample, ≤1024² pixels.
+  const isV4 = /nai-diffusion-4/.test(model);
+  const steps = params.steps > 0 ? params.steps : 28;
+  const scale = params.cfg > 0 ? params.cfg : (isV4 ? 5 : 6);
+  const sampler = params.sampler || 'k_euler_ancestral';
+  const seed = params.seed >= 0 ? params.seed : Math.floor(Math.random() * 4294967296);
+  if (dims.width * dims.height > 1024 * 1024 || steps > 28) {
+    console.log(`[ImageGen-NovelAI] NOTE: ${dims.width}x${dims.height} @ ${steps} steps exceeds the Opus free tier — this generation will consume Anlas`);
+  }
+
+  const payload = buildNovelAIPayload(model, naiPrompt, negative, dims, { steps, scale, sampler, seed });
+  console.log(`[ImageGen-NovelAI] model=${model} ${dims.width}x${dims.height} steps=${steps} scale=${scale} sampler=${sampler} seed=${seed} neg=${negative.length} chars`);
+  const buf = await novelAIPost(apiUrl || NOVELAI_PRESET.API_URL, apiKey, JSON.stringify(payload), ep.timeoutMs);
+  const png = extractNovelAIImage(buf);
+  console.log(`[ImageGen-NovelAI] got PNG ${png.length} bytes (input ${buf.length} bytes)`);
+  return { b64: png.toString('base64') };
 }
 
 async function downloadExternalImage(imageUrl, savePath, _redirectCount = 0) {

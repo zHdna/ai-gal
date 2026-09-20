@@ -312,7 +312,9 @@
             var url = /^(\/|https?:)/.test(file)
               ? file
               : ('/api/saves/' + encodeURIComponent(sid) + '/images/' + encodeURIComponent(file));
-            var cap = cg.character ? (cg.character + ' · NSFW场景') : (/^\d+$/.test(String(cg.index)) ? ('CG ' + cg.index) : 'CG');
+            var cap = cg.sceneEnd
+              ? (cg.description || '场景 · NSFW 流程结束')
+              : (cg.character ? (cg.character + ' · NSFW场景') : (/^\d+$/.test(String(cg.index)) ? ('CG ' + cg.index) : 'CG'));
             html += '<div class="vn-cg" data-url="' + esc(url) + '" data-cap="' + esc(cap) + '">' +
               '<img src="' + esc(url) + '" alt="' + esc(cap) + '" loading="lazy" ' +
               'onerror="this.style.display=\'none\';this.parentNode.classList.add(\'missing\')">' +
@@ -340,27 +342,84 @@
     box.innerHTML = '<div class="vn-empty">正在读取记忆…</div>';
     var entries = window._memoryEntries;
 
-    // app.js 会把记忆表挂在 window._memoryEntries（对象或数组）
+    // app.js 会把记忆表挂在 window._memoryEntries（对象或数组），
+    // 三色灯状态挂在 window._memoryStatus（由 app.js 的 loadMemoryPage 写入）。
+    function memDot(key) {
+      var st = window._memoryStatus;
+      if (!st || !st.byRound) return '';
+      var m = String(key || '').match(/第(\d+)轮/);
+      if (!m) return '';
+      var s = st.byRound[Number(m[1])];
+      var cls = s === 'injected' ? 'green' : s === 'missing' ? 'red' : s === 'registered' ? 'yellow' : 'none';
+      var title = s === 'injected' ? '已注入' : s === 'missing' ? '内容缺失' : s === 'registered' ? '已登记' : '';
+      return '<span class="mem-dot mem-dot-' + cls + '"' + (title ? ' title="' + title + '"' : '') + '></span>';
+    }
+
+    function memLegend() {
+      var st = window._memoryStatus || {};
+      return '<div class="vn-mem-legend">' +
+        '<span><span class="mem-dot mem-dot-yellow"></span>已登记</span>' +
+        '<span><span class="mem-dot mem-dot-green"></span>已注入</span>' +
+        '<span><span class="mem-dot mem-dot-red"></span>内容缺失</span>' +
+        (st.injectedAt ? '<em>最近注入：第 ' + st.injectedAt + ' 轮</em>' : '') +
+        '</div>';
+    }
+
     function paint(obj) {
-      var keys = Array.isArray(obj) ? obj.map(function (_, i) { return String(i); }) : Object.keys(obj || {});
-      if (!keys.length) { box.innerHTML = '<div class="vn-empty">还没有记忆条目。<br>管家 AI 会在对话若干轮后自动整理。</div>'; return; }
-      var html = '<div class="vn-card"><h5>记忆表格 <span>' + keys.length + ' 条</span></h5>';
-      keys.forEach(function (k) {
-        var v = Array.isArray(obj) ? obj[Number(k)] : obj[k];
-        var val = (v && typeof v === 'object') ? JSON.stringify(v) : v;
-        html += '<div class="vn-kv"><span class="k">' + esc(k) + '</span><span class="v">' + esc(val) + '</span></div>';
+      // app.js 提供的是 [{key,value}] 数组 —— 用 key 作标签，而不是下标
+      var pairs;
+      if (Array.isArray(obj)) {
+        pairs = obj.map(function (it, i) {
+          if (it && typeof it === 'object' && (it.key !== undefined || it.value !== undefined)) {
+            return { k: String(it.key !== undefined ? it.key : i), v: it.value };
+          }
+          return { k: String(i), v: it };
+        });
+      } else {
+        pairs = Object.keys(obj || {}).map(function (k) { return { k: k, v: obj[k] }; });
+      }
+      if (!pairs.length) { box.innerHTML = '<div class="vn-empty">还没有记忆条目。<br>管家 AI 会在对话若干轮后自动整理。</div>'; return; }
+      var html = '<div class="vn-card"><h5>记忆表格 <span>' + pairs.length + ' 条</span></h5>' + memLegend();
+      pairs.forEach(function (p) {
+        var val = (p.v && typeof p.v === 'object') ? JSON.stringify(p.v) : p.v;
+        html += '<div class="vn-kv"><span class="k">' + memDot(p.k) + esc(p.k) + '</span><span class="v">' + esc(val) + '</span></div>';
       });
       html += '</div>';
       box.innerHTML = html;
     }
 
     if (entries && (Array.isArray(entries) ? entries.length : Object.keys(entries).length)) {
+      // 若无状态（app.js 的 loadMemoryPage 还没跑过），先补拉一次再着色
+      var cv0 = currentConv();
+      if (!window._memoryStatus && cv0) {
+        api('/memory-agent/memory-status?conversation_id=' + encodeURIComponent(cv0.id)).then(function (st) {
+          if (st) {
+            var by = {};
+            (st.entries || []).forEach(function (e) { by[e.round] = e.status; });
+            window._memoryStatus = { byRound: by, injectedAt: st.injectedAt || 0, round: st.round || 0 };
+          }
+          paint(entries);
+        }).catch(function () { paint(entries); });
+        return;
+      }
       paint(entries);
       return;
     }
     var c = currentConv();
     if (!c) { box.innerHTML = '<div class="vn-empty">请先开始对话。</div>'; return; }
-    api('/conversations/' + encodeURIComponent(c.id)).then(function (conv) {
+    // 同时取存档记忆表与三色灯状态
+    Promise.all([
+      api('/conversations/' + encodeURIComponent(c.id)),
+      window._memoryStatus ? Promise.resolve(null)
+        : api('/memory-agent/memory-status?conversation_id=' + encodeURIComponent(c.id)).catch(function () { return null; }),
+    ]).then(function (rs) {
+      var conv = rs[0];
+      var st = rs[1];
+      if (st) {
+        var by = {};
+        (st.entries || []).forEach(function (e) { by[e.round] = e.status; });
+        window._memoryStatus = { byRound: by, injectedAt: st.injectedAt || 0, round: st.round || 0 };
+      }
       var mem = (conv && (conv.memory || conv.memory_table)) || null;
       if (!mem) { box.innerHTML = '<div class="vn-empty">还没有记忆条目。</div>'; return; }
       try { paint(typeof mem === 'string' ? JSON.parse(mem) : mem); }
