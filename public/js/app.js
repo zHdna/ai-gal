@@ -8981,6 +8981,119 @@ const hasApiEndpoint = (m) => API_IMAGE_MODES.includes(m);
 const hasComfyGroup = (m) => m === 'comfyui' || m === 'none';
 
 /**
+ * 每个引擎各自的「API 地址 / Key / 模型 / 尺寸」记忆。
+ *
+ * 这组控件是所有 API 引擎**共用**的一行字段，而 image_settings 只有一份值。
+ * 没有这份记忆时，切引擎会把上一个引擎的内容留在字段里 —— 典型故障：从 NovelAI 切到
+ * 「OpenAI 兼容」后地址还是 `image.novelai.net`，保存即把 OpenAI 格式的请求体发给 NovelAI，
+ * 必然报错。所以每个引擎单独记一份（localStorage，按引擎隔离），切引擎时「存旧取新」。
+ */
+const IMAGE_FIELD_STORE_KEY = 'rp-image-api-fields';
+const IMAGE_FIELD_MODES = ['anima', 'openai', 'stability', 'novelai'];
+
+function readImageFieldStore() {
+  try {
+    const j = JSON.parse(localStorage.getItem(IMAGE_FIELD_STORE_KEY) || '{}');
+    return (j && typeof j === 'object' && !Array.isArray(j)) ? j : {};
+  } catch { return {}; }
+}
+function writeImageFieldStore(store) {
+  try { localStorage.setItem(IMAGE_FIELD_STORE_KEY, JSON.stringify(store)); } catch { }
+}
+
+/**
+ * 判定一个地址属于哪个引擎（'' = 判定不出的用户自填地址，任何引擎都不该动它）。
+ * 只认各家的**官方端点特征**：太宽（如裸 /novelai/i）会把用户的第三方中转误判成 NovelAI。
+ */
+function urlOwnerEngine(url) {
+  const s = String(url || '').trim();
+  if (!s) return '';
+  if (/novelai\.net|\/ai\/generate-image/i.test(s)) return 'novelai';
+  if (/:8100\b/.test(s)) return 'anima';
+  if (/api\.stability\.ai/i.test(s)) return 'stability';
+  if (/api\.openai\.com/i.test(s)) return 'openai';
+  return '';
+}
+/** NovelAI 官方端点或它的反代镜像（含 "novelai" 字样，或走 /ai/generate-image 路径） */
+function isNovelaiLikeUrl(url) {
+  const s = String(url || '').trim();
+  return /novelai/i.test(s) || /\/ai\/generate-image/i.test(s);
+}
+/** 模型名归属：NovelAI 的 nai-diffusion-* 与 anima 的 sd-cpp-local 都不该出现在别的引擎里 */
+function modelOwnerEngine(model) {
+  const m = String(model || '').trim().toLowerCase();
+  if (!m) return '';
+  if (/^nai-diffusion-/.test(m)) return 'novelai';
+  if (m === 'sd-cpp-local') return 'anima';
+  return '';
+}
+/** 读出「下拉 + 自定义输入」组合控件的当前值 */
+function currentSelectValue(sel, customEl) {
+  if (!sel) return '';
+  if (sel.value === '__custom__') return customEl ? String(customEl.value || '').trim() : '';
+  return String(sel.value || '').trim();
+}
+/** 把值写回「下拉 + 自定义输入」：能匹配选项就选中，否则落回自定义输入框 */
+function applySelectOrCustom(sel, customEl, value) {
+  if (!sel || !customEl) return;
+  const v = String(value == null ? '' : value).trim();
+  if (v && Array.from(sel.options).some(o => o.value === v)) {
+    sel.value = v; customEl.value = ''; customEl.style.display = 'none';
+    return;
+  }
+  if (v) {
+    sel.value = '__custom__'; customEl.value = v; customEl.style.display = 'block';
+    return;
+  }
+  const first = sel.options.length ? sel.options[0].value : '';
+  sel.value = first;
+  customEl.value = '';
+  customEl.style.display = (first === '__custom__') ? 'block' : 'none';
+}
+/**
+ * 清空「下拉 + 自定义输入」= "没有模型" 状态。
+ * 不能退化成 applySelectOrCustom(sel, el, '')：模型下拉在重渲染后会把**旧值**当成第一个
+ * 选项（OpenAI 模式下重渲染时 `s.api_model` 还是上一个引擎的模型），回落第一个选项
+ * 就等于"没清掉"。
+ */
+function clearSelectToCustom(sel, customEl) {
+  if (!sel || !customEl) return;
+  sel.value = '__custom__'; customEl.value = ''; customEl.style.display = 'block';
+}
+/** 采集当前界面上的 API 字段（键名与 PUT /api/images 的载荷一致） */
+function snapshotApiFields(root) {
+  const urlEl = root.querySelector('#apiUrl') || root.querySelector('#imageApiUrl');
+  const keyEl = root.querySelector('#apiKey') || root.querySelector('#imageApiKey');
+  const vals = resolveOpenAIValues(root);
+  return {
+    api_url: urlEl ? String(urlEl.value || '').trim() : '',
+    api_key: keyEl ? String(keyEl.value || '').trim() : '',
+    api_model: vals.api_model,
+    quality_prefix: vals.quality_prefix,
+    image_size: vals.image_size,
+  };
+}
+/** 把界面上的字段存进该引擎自己的槽位（切走之前调用） */
+function rememberApiFields(root, mode) {
+  if (!root || IMAGE_FIELD_MODES.indexOf(mode) < 0) return;
+  const store = readImageFieldStore();
+  store[mode] = snapshotApiFields(root);
+  writeImageFieldStore(store);
+}
+/**
+ * 同上，但用调用方**提前采集**好的那份快照。
+ * 切引擎时界面会先重渲染「模型/尺寸/画质词」这组控件（选项随引擎变），旧值当场被抹掉；
+ * 此时再读 DOM 只能读到新引擎的值 → 会把新引擎的模型/尺寸写进旧引擎的槽位（实测踩过：
+ * openai 的自定义模型被 NovelAI 的模型覆盖）。所以调用方必须在重渲染之前采集。
+ */
+function rememberApiFieldsSnapshot(mode, snap) {
+  if (!snap || IMAGE_FIELD_MODES.indexOf(mode) < 0) return;
+  const store = readImageFieldStore();
+  store[mode] = snap;
+  writeImageFieldStore(store);
+}
+
+/**
  * 计算要展示/保存的 API 字段。anima 引擎自带默认端点，即使数据库里是空的也能开箱即用；
  * novelai 的端点/模型同理（Key 除外——它是用户令牌，留空就留空）。
  */
@@ -9261,12 +9374,14 @@ function renderImageGenSettings() {
       DOM.imageGenSettings().querySelector('#comfyuiGroup').style.display = hasComfyGroup(v) ? 'block' : 'none';
       DOM.imageGenSettings().querySelector('#apiGroup').style.display = hasApiEndpoint(v) ? 'block' : 'none';
       // 模型/尺寸/画质词选项因引擎而异：切引擎时重建这组控件，再做字段归位
+      // （重建会抹掉旧值 → 必须在重建**之前**采集，见 rememberApiFieldsSnapshot 注释）
+      const outgoing = snapshotApiFields(DOM.imageGenSettings());
       const fields = DOM.imageGenSettings().querySelector('#apiEngineFields');
       if (fields) {
         fields.innerHTML = imageOpenAISettingsHtml(Object.assign({}, s, { mode: v }));
         wireOpenAICustom(fields);
       }
-      prefillApiFieldsForMode(DOM.imageGenSettings(), v, true); // 主动切引擎：地址按目标供应商强制归位
+      prefillApiFieldsForMode(DOM.imageGenSettings(), v, true, mode, outgoing); // 主动切引擎：存旧取新，引擎之间互不污染
     });
     wireOpenAICustom(DOM.imageGenSettings());
     prefillApiFieldsForMode(DOM.imageGenSettings(), mode);
@@ -9296,72 +9411,123 @@ function renderImageGenSettings() {
  * 「API 地址 / Key / 模型 / 尺寸」是所有 API 引擎**共用**的一行设置，引擎即供应商：
  * 选了 NovelAI 就该是 NovelAI 的官方端点，选了 anima 就该是本机 anima 端点。
  *
- * - force = true（用户**主动在下拉里切引擎**）：地址一律改成目标引擎的固定端点，
- *   不管字段里原来是哪个供应商的地址——anima 的 8100、api.openai.com、任意第三方
- *   "OpenAI 兼容"中转地址（/v1/images/generations 之类）全部覆盖。
- * - force = false（**打开设置界面**时的对齐）：空值、或明显属于**别的供应商**的地址
- *   才替换；用户自填的地址（自建 OpenAI 兼容服务、NovelAI 反代镜像）保留。
- * - Key：novelai 只保留 pst- 开头的持久令牌，其余清空；anima 归位为 'local'。
- * - 模型：novelai 只保留 nai-diffusion-*；anima 归位为 sd-cpp-local。
- * - 尺寸：novelai 保留任意 WxH（64 倍数由后端对齐），空值才补默认。
- * - openai / stability 无固定端点，字段始终由用户自管。
+ * - **引擎之间互不污染**：每个引擎的这组字段各存一份（`readImageFieldStore`），
+ *   切引擎时先把**原引擎**的值存进它的槽位，再取**目标引擎**的槽位（force=true 时一律取回，
+ *   没有历史记录就用该引擎默认值/空值）。所以「OpenAI 兼容」永远不会显示 NovelAI 的地址。
+ * - force = true（用户**主动在下拉里切引擎**）：地址一定是目标引擎自己的地址/端点，
+ *   不会把上一个引擎的地址留在字段里（这正是"切到 OpenAI 兼容却还是 novelai.net"的根因）。
+ * - force = false（**打开设置界面**时的对齐）：空值、或明显属于**别的供应商固定端点**的地址
+ *   才替换（含修复被污染的旧数据）；用户自填的地址（自建 OpenAI 兼容服务、NovelAI 反代镜像）保留。
+ * - Key：各引擎各存各的（novelai 只认 pst- 令牌，anima 归位 'local'，openai/stability 用服务商 Key）。
+ * - 模型：novelai 只保留 nai-diffusion-*；anima 归位 sd-cpp-local；
+ *   openai/stability 里发现别家模型（如 nai-diffusion-*）会被清掉。
+ * - 尺寸：各引擎各存各的，空值/非法值才补该引擎默认（novelai 须 64 倍数，由后端对齐）。
  */
 function shouldSnapUrl(v, targetMode) {
   const s = String(v || '').trim();
-  if (!s) return true; // 空值 -> 补默认
+  if (!s) return true; // 空值 -> 补该引擎默认
   if (targetMode === 'novelai') {
-    // NovelAI 只可能跑在 novelai 官方域或其反代（路径 /ai/generate-image）上；
-    // 其余地址（含任意第三方「OpenAI 兼容」中转）都属别的供应商 -> 归位
-    return !/novelai/i.test(s) && !/\/ai\/generate-image/i.test(s);
+    // NovelAI 是固定供应商：不是它自己的端点（官方域或反代镜像）就一律归位
+    return !isNovelaiLikeUrl(s);
   }
-  if (targetMode === 'anima') {
-    if (/:8100\b/.test(s)) return false; // anima 本机服务（任意主机，端口 8100）
-    // 只替换已知的别家预设；用户自填的其它地址（自建 OpenAI 兼容服务等）保留
-    return /novelai|ai\/generate-image|api\.openai\.com|api\.stability\.ai/i.test(s);
-  }
-  return false;
+  // anima / openai / stability：只替换**别家引擎的固定端点**（NovelAI 官方、
+  // anima 的 8100、Stability 官方、OpenAI 官方）；判定不出归属的自填地址
+  // （第三方「OpenAI 兼容」中转、自建服务、NovelAI 反代）一律保留
+  const owner = urlOwnerEngine(s);
+  return !!owner && owner !== targetMode;
 }
 
-function prefillApiFieldsForMode(root, mode, force) {
+function prefillApiFieldsForMode(root, mode, force, prevMode, prevSnapshot) {
+  if (!root) return;
   const url = root.querySelector('#apiUrl') || root.querySelector('#imageApiUrl');
   const key = root.querySelector('#apiKey') || root.querySelector('#imageApiKey');
   const modelSel = root.querySelector('#apiModel');
   const modelCustom = root.querySelector('#apiModelCustom');
   const sizeSel = root.querySelector('#imageSize');
   const sizeCustom = root.querySelector('#imageSizeCustom');
-  if (mode === 'novelai') {
-    if (url && (force || shouldSnapUrl(url.value, mode))) url.value = NOVELAI_DEFAULTS.api_url;
-    if (key && !/^pst-/i.test((key.value || '').trim())) key.value = '';
+  const qSel = root.querySelector('#qualityPrefix');
+  const qCustom = root.querySelector('#qualityPrefixCustom');
+
+  const isNovelai = mode === 'novelai';
+  const isAnima = mode === 'anima';
+  const isOpenAIish = mode === 'openai' || mode === 'stability';
+
+  // 主动切引擎：先把**原引擎**的字段存进它自己的槽位，再把**目标引擎**的槽位取回来。
+  // 原引擎以挂在节点上的实时模式为准（用户可能连切两三次都还没保存，
+  // 渲染时捕获的 mode 已经过期，用它会把新值写进错的槽位）。
+  let saved = null;
+  if (force) {
+    const livePrev = (root.dataset && root.dataset.imageApiMode) || prevMode || '';
+    if (livePrev && livePrev !== mode) {
+      // 优先用调用方在重渲染前采集的快照（否则读到的模型/尺寸已经是新引擎的了）
+      if (prevSnapshot) rememberApiFieldsSnapshot(livePrev, prevSnapshot);
+      else rememberApiFields(root, livePrev);
+    }
+    saved = readImageFieldStore()[mode] || null;
+  }
+  const savedStr = (k) => (saved && typeof saved[k] === 'string') ? String(saved[k]).trim() : '';
+
+  if (isNovelai || isAnima || isOpenAIish) {
+    // ① 地址：目标引擎自己的地址（切引擎时一律取回本引擎槽位 / 默认端点）
+    //    anima / novelai 是**固定端点**引擎：槽位里若不是自己的地址（用户曾在这些模式下
+    //    填过第三方中转），不能用它，回落到官方默认 —— 这是「主动切引擎必归位」的原有保证。
+    const defaultUrl = isNovelai ? NOVELAI_DEFAULTS.api_url : (isAnima ? ANIMA_DEFAULTS.api_url : '');
+    let savedUrl = savedStr('api_url');
+    if (isNovelai && savedUrl && !isNovelaiLikeUrl(savedUrl)) savedUrl = '';
+    if (isAnima && savedUrl && urlOwnerEngine(savedUrl) !== 'anima') savedUrl = '';
+    if (url) {
+      if (force) url.value = savedUrl || defaultUrl;
+      else if (shouldSnapUrl(url.value, mode)) url.value = savedUrl || defaultUrl;
+    }
+
+    // ② API Key：每个引擎各自的 Key（NovelAI 是 pst- 令牌、anima 是 local、其余是服务商的 Key）
+    if (key) {
+      const cur = String(key.value || '').trim();
+      const savedKey = savedStr('api_key');
+      if (isNovelai) {
+        // NovelAI 只认 pst- 令牌，别的引擎的 Key 留着毫无意义（切走时不清，切回来才不会被覆盖）
+        if (force) key.value = /^pst-/i.test(savedKey) ? savedKey : '';
+        else if (cur && !/^pst-/i.test(cur)) key.value = '';
+      } else if (isAnima) {
+        // anima 服务忽略 Key，但不能为空
+        if (force || !cur) key.value = ANIMA_DEFAULTS.api_key;
+      } else if (force) {
+        key.value = savedKey; // openai / stability：恢复本引擎自己的 Key
+      }
+    }
+
+    // ③ 模型 / 尺寸 / 质量前缀：切引擎时按目标引擎的槽位恢复；打开界面时只补空值/修别家值
+    const modelFallback = isNovelai ? NOVELAI_DEFAULTS.api_model : (isAnima ? ANIMA_DEFAULTS.api_model : '');
+    const sizeFallback = isNovelai ? NOVELAI_DEFAULTS.image_size : (isAnima ? ANIMA_DEFAULTS.image_size : '');
+    let savedModel = savedStr('api_model');
+    if (isNovelai && savedModel && !/^nai-diffusion-/.test(savedModel)) savedModel = '';
+    if (isAnima && savedModel && savedModel !== ANIMA_DEFAULTS.api_model) savedModel = '';
     if (modelSel && modelCustom) {
-      const current = modelSel.value === '__custom__' ? modelCustom.value.trim() : modelSel.value;
-      if (!/^nai-diffusion-/.test(current || '')) {
-        modelSel.value = NOVELAI_DEFAULTS.api_model;
-        modelCustom.style.display = 'none';
+      const cur = currentSelectValue(modelSel, modelCustom);
+      // 模型字段的"空"要落到自定义空框（见 clearSelectToCustom），不能回落旧选项
+      const setModel = (v) => { if (v) applySelectOrCustom(modelSel, modelCustom, v); else clearSelectToCustom(modelSel, modelCustom); };
+      if (force) setModel(savedModel || modelFallback);
+      else if (isNovelai && !/^nai-diffusion-/.test(cur)) setModel(NOVELAI_DEFAULTS.api_model);
+      else if (isAnima && !cur) setModel(ANIMA_DEFAULTS.api_model);
+      else if (isOpenAIish && modelOwnerEngine(cur) && modelOwnerEngine(cur) !== mode) {
+        // 打开界面时发现模型是别家引擎的（如 openai 模式里存着 nai-diffusion-*）→ 清掉
+        setModel(savedStr('api_model'));
       }
     }
     if (sizeSel && sizeCustom) {
-      const current = sizeSel.value === '__custom__' ? sizeCustom.value.trim() : sizeSel.value;
-      if (!/^\d+\s*[xX×]\s*\d+$/.test(current || '')) {
-        sizeSel.value = NOVELAI_DEFAULTS.image_size;
-        sizeCustom.style.display = 'none';
-      }
+      const cur = currentSelectValue(sizeSel, sizeCustom);
+      if (force) applySelectOrCustom(sizeSel, sizeCustom, savedStr('image_size') || sizeFallback);
+      else if (!/^\d+\s*[xX×]\s*\d+$/.test(cur)) applySelectOrCustom(sizeSel, sizeCustom, sizeFallback);
     }
-    return;
-  }
-  if (mode !== 'anima') return; // openai / stability：无官方默认，字段保持用户自管
-  if (url && (force || shouldSnapUrl(url.value, mode))) url.value = ANIMA_DEFAULTS.api_url;
-  // anima 服务忽略 Key 但不能为空：主动切引擎时归位为 'local'，只是打开界面时空值才补
-  if (key && (force ? (key.value || '').trim() !== ANIMA_DEFAULTS.api_key : !key.value.trim())) key.value = ANIMA_DEFAULTS.api_key;
-  if (modelSel && modelCustom) {
-    const current = modelSel.value === '__custom__' ? modelCustom.value.trim() : modelSel.value;
-    if (force ? current !== ANIMA_DEFAULTS.api_model : !current) {
-      modelSel.value = '__custom__'; modelCustom.value = ANIMA_DEFAULTS.api_model; modelCustom.style.display = 'block';
+    if (qSel && qCustom && force && savedStr('quality_prefix')) {
+      applySelectOrCustom(qSel, qCustom, savedStr('quality_prefix'));
     }
   }
-  if (sizeSel && sizeCustom) {
-    const current = sizeSel.value === '__custom__' ? sizeCustom.value.trim() : sizeSel.value;
-    if (!current) { sizeSel.value = ANIMA_DEFAULTS.image_size; sizeCustom.style.display = 'none'; }
-  }
+
+  // 记下"当前界面属于哪个引擎"，并把这一版字段写回该引擎的槽位：
+  // 下一次切引擎时它就是"原引擎"，也是打开界面时的修复来源。
+  if (root.dataset) root.dataset.imageApiMode = mode;
+  if (IMAGE_FIELD_MODES.indexOf(mode) >= 0) rememberApiFields(root, mode);
 }
 
 // ============ BGM 播放器 ============
@@ -9547,12 +9713,13 @@ function openImageGenSettingsInPanel() {
     div.querySelector('#genMode').addEventListener('change', e => {
       div.querySelector('#comfyuiGroup').style.display = hasComfyGroup(e.target.value) ? 'block' : 'none';
       div.querySelector('#apiGroup').style.display = hasApiEndpoint(e.target.value) ? 'block' : 'none';
+      const outgoing = snapshotApiFields(div);   // 重建前采集旧值（见 rememberApiFieldsSnapshot 注释）
       const fields = div.querySelector('#apiEngineFieldsPopup');
       if (fields) {
         fields.innerHTML = imageOpenAISettingsHtml(Object.assign({}, s, { mode: e.target.value }));
         wireOpenAICustom(fields);
       }
-      prefillApiFieldsForMode(div, e.target.value, true); // 主动切引擎：地址按目标供应商强制归位
+      prefillApiFieldsForMode(div, e.target.value, true, mode, outgoing); // 主动切引擎：存旧取新，引擎之间互不污染
     });
     wireOpenAICustom(div);
     prefillApiFieldsForMode(div, mode);
@@ -9918,12 +10085,14 @@ function renderImageSettings() {
         if (apiGroup) apiGroup.style.display = hasApiEndpoint(v) ? 'block' : 'none';
         if (novelaiGroup) novelaiGroup.style.display = (v === 'novelai') ? 'block' : 'none';
         // 模型/尺寸/画质词选项因引擎而异：切引擎时重建这组控件，再做字段归位
+        // （重建会抹掉旧值 → 必须在重建**之前**采集，见 rememberApiFieldsSnapshot 注释）
+        const outgoing = snapshotApiFields(container);
         const fields = document.getElementById('imageApiEngineFields');
         if (fields) {
           fields.innerHTML = imageOpenAISettingsHtml(Object.assign({}, s, { mode: v }));
           wireOpenAICustom(fields);
         }
-        prefillApiFieldsForMode(container, v, true); // 主动切引擎：地址按目标供应商强制归位
+        prefillApiFieldsForMode(container, v, true, mode, outgoing); // 主动切引擎：存旧取新，引擎之间互不污染
       });
     }
     wireOpenAICustom(container);

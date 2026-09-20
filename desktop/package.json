@@ -1,7 +1,7 @@
 {
   "name": "ai-gal-desktop",
   "productName": "AI-GAL",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "AI-GAL 桌面版 — Electron 外壳（服务端仍为随包的 Express 应用，由内置便携版 Node 22 运行）",
   "main": "main.js",
   "author": "zHdna",

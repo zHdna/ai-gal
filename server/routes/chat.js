@@ -2962,6 +2962,27 @@ ${isFirstRound ? `
     const imgSettings = getImageSettings(db);
     const genMode = imgSettings.gen_mode || 'tag';
 
+    // 0. 主 AI 预设提示词 —— 插在最前，形成「预设提示词 → 现有系统提示词 → 角色卡」的加载顺序。
+    //    预设行来自 app_settings.main_ai_preset_id → api_presets.data.system_prompts（导入 ST 预设时
+    //    由前端 parseSTPresetData 提取）。只取 enabled !== false 的条目，按数组原顺序拼接。
+    //    ⚠️ 与管家不同：管家是格式修理工，其预设提示词要清洗掉角色扮演指令；主 AI 本身就是叙事者，
+    //       预设内容必须**原样注入**，不做任何清洗。
+    try {
+      const mainPresetSetting = db.prepare("SELECT value FROM app_settings WHERE key = ?").get('main_ai_preset_id');
+      if (mainPresetSetting && mainPresetSetting.value) {
+        const mainPreset = db.prepare("SELECT * FROM api_presets WHERE id = ? AND preset_type = 'chat'").get(mainPresetSetting.value);
+        if (mainPreset) {
+          const pData = JSON.parse(mainPreset.data || '{}');
+          const presetSysPrompts = (pData.system_prompts || [])
+            .filter(sp => sp && sp.enabled !== false && sp.content && String(sp.content).trim());
+          if (presetSysPrompts.length > 0) {
+            parts.push(presetSysPrompts.map(sp => `[${sp.name || ''}]\n${String(sp.content).trim()}`).join('\n\n'));
+            console.log('[MainAI] Preset system prompts injected:', presetSysPrompts.length);
+          }
+        }
+      }
+    } catch (e) { console.warn('[MainAI] Preset system prompt injection error:', e.message); }
+
     // 1. System Prompt jailbreak — highest priority, must be first
     parts.push(`
     <System Prompt>

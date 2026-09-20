@@ -1512,8 +1512,66 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // --- External Image API ---
 
+// 各引擎的中文名（报错信息里用，让"引擎与地址不匹配"一眼看懂）
+const IMAGE_MODE_LABELS = {
+  anima: 'anima-turbo-cg', comfyui: 'ComfyUI', openai: 'OpenAI 兼容',
+  stability: 'Stability AI', novelai: 'NovelAI', none: '关闭生图',
+};
+
+/**
+ * 判定一个 API 地址属于哪个引擎（'' = 判定不出的自填地址）。
+ * 只认各家的**官方端点特征**，避免把用户的第三方中转误判成某一家。
+ */
+function imageUrlOwnerEngine(url) {
+  const s = String(url || '').trim();
+  if (!s) return '';
+  if (/novelai\.net|\/ai\/generate-image/i.test(s)) return 'novelai';
+  if (/:8100\b/.test(s)) return 'anima';
+  if (/api\.stability\.ai/i.test(s)) return 'stability';
+  if (/api\.openai\.com/i.test(s)) return 'openai';
+  return '';
+}
+
+/**
+ * 把用户填的地址规范成 OpenAI 图像接口的**完整端点**。
+ * 各家文档给的地址形态不一：`https://api.siliconflow.cn/v1`（基址）、
+ * `https://api.openai.com`（裸域）、以及完整的 `.../v1/images/generations`。
+ * 只补标准后缀，**自定义路径一律不动**（自建网关可能是 /sd/txt2img 之类）。
+ */
+function normalizeOpenAIEndpoint(rawUrl) {
+  const s = String(rawUrl || '').trim();
+  if (!s) return s;
+  let u;
+  try { u = new URL(s); } catch { return s; } // 非法地址原样返回，交给调用方报错
+  const p = u.pathname.replace(/\/+$/, '');
+  if (/\/images\/generations$/i.test(p)) return s;                 // 已是完整端点
+  if (p === '') u.pathname = '/v1/images/generations';             // 裸域
+  else if (/\/v\d+$/i.test(p)) u.pathname = p + '/images/generations'; // 基址 .../v1
+  else return s;                                                   // 自定义路径：不动
+  return u.toString();
+}
+
 async function generateViaExternalAPI(prompt, mode, apiUrl, apiKey, settings, type) {
-  const url = apiUrl.replace(/\/$/, '');
+  let url = apiUrl.replace(/\/$/, '');
+  // 引擎与地址必须配套：把 OpenAI 格式的请求体发给 NovelAI 端点（或反之）只会得到
+  // 一个看不懂的报错。这里提前拦下并说清"当前引擎 / 地址属于谁 / 该改成什么"。
+  const owner = imageUrlOwnerEngine(url);
+  if (owner && owner !== mode) {
+    // 固定端点引擎（anima / novelai）自带官方默认端点：直接回落到自己的端点，
+    // 不要让用户因为一个历史坏地址就完全不能出图。
+    const fixed = (mode === ANIMA_PRESET.MODE) ? ANIMA_PRESET.API_URL
+      : (mode === NOVELAI_PRESET.MODE ? NOVELAI_PRESET.API_URL : '');
+    if (fixed) {
+      console.warn('[ImageGen] 生图地址与当前引擎不匹配（引擎「' + (IMAGE_MODE_LABELS[mode] || mode) +
+        '」的地址却是「' + (IMAGE_MODE_LABELS[owner] || owner) + '」的端点：' + url +
+        '），已回落到本引擎默认端点：' + fixed);
+      url = fixed;
+    } else {
+      throw new Error('生图地址与当前引擎不匹配：引擎「' + (IMAGE_MODE_LABELS[mode] || mode) +
+        '」不能用「' + (IMAGE_MODE_LABELS[owner] || owner) + '」的端点（' + url +
+        '）。请到「图像设置 → 生成引擎」里把 API 地址改成当前引擎自己的地址。');
+    }
+  }
   // anima-turbo-cg speaks the OpenAI images API, so it shares this branch; the mode is
   // still passed through so the model/size/timeout defaults resolve correctly.
   if (OPENAI_COMPATIBLE_MODES.includes(mode)) {
@@ -1715,9 +1773,11 @@ function transportFor(urlString) {
 }
 
 async function generateViaOpenAI(prompt, apiUrl, apiKey, settings, mode) {
-  // OpenAI DALL-E 3 / compatible API format (also used by anima-turbo-cg)
+  // OpenAI 图像接口格式（DALL·E 3 / GPT-Image-1 / 任意 OpenAI 兼容服务；anima-turbo-cg 也走这条）
   const ep = resolveExternalEndpoint(mode, settings);
   const model = ep.apiModel || 'dall-e-3';
+  // 地址规范化：用户常填基址（https://api.siliconflow.cn/v1）或裸域，补齐 /images/generations
+  const endpoint = normalizeOpenAIEndpoint(apiUrl);
   // 尺寸：空字符串表示不指定，由各服务商使用自己的默认值（避免把 DALL-E 的 1024x1024
   // 这种某些服务商不支持的尺寸硬塞过去导致 400 参数不合法）
   const size = (settings && settings.image_size) || '';
@@ -1725,17 +1785,18 @@ async function generateViaOpenAI(prompt, apiUrl, apiKey, settings, mode) {
   const qp = (settings && settings.quality_prefix) ? settings.quality_prefix.trim() : '';
   let fullPrompt = qp ? (qp + ', ' + prompt) : prompt;
   fullPrompt = fullPrompt.substring(0, 4000);  // DALL-E 提示词长度上限
-  const bodyObj = {
-    model,
-    prompt: fullPrompt,
-    n: 1,
-    response_format: 'url'
-  };
+  // 请求体严格按 OpenAI images API：model / prompt / n / size。
+  // response_format 只有 DALL·E 家族认（gpt-image-1 会因未知参数直接 400 拒绝），
+  // 其余兼容服务商默认就返回 url —— 少发一个参数，兼容性最好。
+  const bodyObj = { model, prompt: fullPrompt, n: 1 };
   if (size) bodyObj.size = size;
+  if (/^dall-e/i.test(model)) bodyObj.response_format = 'url';
   const body = JSON.stringify(bodyObj);
+  console.log('[ImageGen-OpenAI] POST', endpoint, '| model:', model, '| size:', size || '(服务商默认)');
 
   return new Promise((resolve, reject) => {
-    const urlObj = new URL(apiUrl);
+    let urlObj;
+    try { urlObj = new URL(endpoint); } catch (e) { return reject(new Error('API 地址不是合法 URL：' + endpoint)); }
     const isHttps = urlObj.protocol === 'https:';
     const opts = {
       hostname: urlObj.hostname, port: urlObj.port || (isHttps ? 443 : 80),
@@ -1744,24 +1805,39 @@ async function generateViaOpenAI(prompt, apiUrl, apiKey, settings, mode) {
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`, 'Content-Length': Buffer.byteLength(body) },
       timeout: ep.timeoutMs
     };
-    const req = transportFor(apiUrl).request(opts, (res) => {
+    const req = transportFor(endpoint).request(opts, (res) => {
       let buf = ''; res.on('data', d => buf += d);
       res.on('end', () => {
+        const status = res.statusCode || 0;
         try {
           const json = JSON.parse(buf);
-          const item = Array.isArray(json.data) ? json.data[0] : null;
-          const imageUrl = (item && item.url) || json.url || json.output?.url;
-          if (imageUrl) resolve({ url: imageUrl });
-          else if (item && item.b64_json) resolve({ b64: item.b64_json });
-          else {
-            // 服务端返回的是错误体（如 {"error":{"message":"model is not found"}}），直接透传，便于定位
-            let detail = '';
-            if (json && json.error) {
-              detail = typeof json.error === 'string' ? json.error : (json.error.message || JSON.stringify(json.error));
-            }
-            reject(new Error(detail ? ('服务端返回错误：' + detail) : ('响应中无图片 URL：' + buf.substring(0, 200))));
+          // 各家返回字段不一：OpenAI = data[0].url|b64_json；SiliconFlow = images[0].url；
+          // 自建网关常见 output.url / artifacts[0].base64 —— 一并认下，避免"有图却解析不出来"
+          const firstOf = (v) => Array.isArray(v) ? (v[0] || null) : ((v && typeof v === 'object') ? v : null);
+          const cands = [firstOf(json.data), firstOf(json.images), firstOf(json.artifacts), firstOf(json.output)]
+            .filter(Boolean);
+          let imageUrl = '';
+          let b64 = '';
+          for (const c of cands) {
+            if (!imageUrl && typeof c.url === 'string' && c.url) imageUrl = c.url;
+            if (!b64 && typeof c.b64_json === 'string' && c.b64_json) b64 = c.b64_json;
+            if (!b64 && typeof c.base64 === 'string' && c.base64) b64 = c.base64;
           }
-        } catch (e) { reject(e); }
+          if (!imageUrl && typeof json.url === 'string') imageUrl = json.url;
+          if (!b64 && typeof json.b64_json === 'string') b64 = json.b64_json;
+          b64 = b64.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '');  // 去掉 data URI 前缀
+          if (imageUrl) return resolve({ url: imageUrl });
+          if (b64) return resolve({ b64 });
+          // 服务端返回的是错误体（如 {"error":{"message":"model is not found"}}），直接透传，便于定位
+          let detail = '';
+          if (json && json.error) {
+            detail = typeof json.error === 'string' ? json.error : (json.error.message || JSON.stringify(json.error));
+          }
+          reject(new Error(detail ? ('服务端返回错误（HTTP ' + status + '）：' + detail)
+            : ('HTTP ' + status + ' 响应中无图片数据：' + buf.substring(0, 200))));
+        } catch (e) {
+          reject(new Error('HTTP ' + status + ' 响应不是合法 JSON：' + buf.substring(0, 200)));
+        }
       });
     });
     req.on('error', reject);
