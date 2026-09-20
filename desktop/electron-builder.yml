@@ -26,9 +26,25 @@ files:
 
 asar: true
 
+# ⚠️ 打包必须剔除「运行时用户数据」：extraResources 是**按目录整份拷贝**的，
+#    from: ../server 会把开发机的 server/db/data.db（+ WAL 边车）和 .crypto_secret（本机
+#    加密密钥）一起打进安装包 —— 2026-09-20 实际踩到（1.0.0–1.0.4 都有）。
+#    全新安装的数据库必须由程序自己初始化，绝不能随包分发。
 extraResources:
-  - { from: ../server,        to: app-payload/server }
-  - { from: ../public,        to: app-payload/public }
+  - from: ../server
+    to: app-payload/server
+    filter:
+      - '**/*'
+      - '!db/data.db'
+      - '!db/data.db-shm'
+      - '!db/data.db-wal'
+      - '!db/.crypto_secret'
+      - '!generated_images/**'
+  - from: ../public
+    to: app-payload/public
+    filter:
+      - '**/*'
+      - '!uploads/**'          # 用户上传的图片绝不入包
   - { from: ../BGM,           to: app-payload/BGM }
   - { from: ../runtime,       to: app-payload/runtime }
   - { from: ../node_modules,  to: app-payload/node_modules }
