@@ -226,7 +226,7 @@
   </style>
 
   <!-- ===== 移动端（GAL）样式：置于桌面样式之后以覆盖 ===== -->
-  <link rel="stylesheet" href="css/mobile/vn.css?v=20260913b">
+  <link rel="stylesheet" href="css/mobile/vn.css?v=20260922d">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#060B18">
@@ -320,6 +320,12 @@
           <div class="vn-dlg-tools">
             <button class="vn-tool" id="vnBtnHistory">▾ 回顾</button>
             <button class="vn-tool" id="vnBtnTTS">🔊 朗读</button>
+            <!-- 重新生成（与桌面版同一套后端链路）：
+                 ① 本轮剧情 —— 删掉本轮 AI 正文 + 管家处理结果（状态/选项/记忆/CG 判定）+ 本轮 CG，
+                    再按上一条用户发言重跑；用户自己的发言保留。走 app.js 的 regenerateMessage()。
+                 ② 当前 CG —— 把这张 CG 的原始生图指令重发一次，旧图被覆盖。走 /api/images/regenerate。 -->
+            <button class="vn-tool" id="vnBtnRegen" title="重新生成本轮剧情">↻ 重生成</button>
+            <button class="vn-tool" id="vnBtnRegenCg" title="重新生成当前 CG">↻ 重画CG</button>
             <span class="vn-seg-info">
               <span class="vn-seg-dots" id="vnSegDots"></span>
               <span class="vn-seg-badge" id="vnSegBadge">0 / 0</span>
@@ -340,6 +346,10 @@
 
         <!-- 指令条：#messageInput / #btnSend 为 app.js 契约 -->
         <div class="vn-cmd">
+          <!-- 生成中提示：骑在指令条顶边上（样式见 vn.css 的 .gen-status）。
+               app.js 的 setGeneratingUI() 按 .gen-status 选择器统一显隐，
+               所以这里只要有这个元素即可 —— 与桌面版共用同一份状态，不另记一份。 -->
+          <div class="gen-status" id="vnGenStatus" hidden>故事生成中……</div>
           <button class="plus" id="vnBtnPlus" title="导入角色卡">＋</button>
           <textarea id="messageInput" rows="1" placeholder="说点什么…"></textarea>
           <button id="btnSend" disabled>➤</button>
@@ -1586,12 +1596,12 @@
 
   <input type="file" id="characterFileInput" accept=".json,.png" style="display:none">
 
-  <script src="js/api.js?v=20260709a"></script>
+  <script src="js/api.js?v=20260922e"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20260921c"></script>
-  <script src="js/mobile/vn-shell.js?v=20260921a"></script>
-  <script src="js/mobile/vn-pages.js?v=20260921a"></script>
-  <script src="js/mobile/vn-stage.js?v=20260913b"></script>
+  <script src="js/app.js?v=20260923a"></script>
+  <script src="js/mobile/vn-shell.js?v=20260922d"></script>
+  <script src="js/mobile/vn-pages.js?v=20260923a"></script>
+  <script src="js/mobile/vn-stage.js?v=20260923a"></script>
 </body>
 
 </html>

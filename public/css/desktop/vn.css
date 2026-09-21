@@ -1305,6 +1305,98 @@
       box-shadow: 0 4px 12px rgba(54, 224, 216, .28);
     }
 
+    /* ---- 对话框左上：「重新生成」按钮（与右上 .dlg-actions 镜像）----
+       同样骑在顶边金线上，不占正文行高。 */
+    .app .dlg-actions-left {
+      position: absolute;
+      top: -14px;
+      left: 12px;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .app .dlg-actions-left .tool {
+      height: 28px;
+      padding: 0 12px;
+      font-size: 10.5px;
+      background: var(--bg-2);    /* 实底，把穿过它的那道边线压住 */
+      border-color: var(--line-2);
+    }
+
+    /* 生成中：按钮置灰（仍可点，点了会提示先停止），避免误触删掉正在生成的这一轮 */
+    .app .dlg-actions-left .tool.busy {
+      opacity: .45;
+    }
+
+    /* ===================== 生成中：沙漏光标 + 「故事生成中……」 =====================
+       只换鼠标图案，**不**禁用交互：cursor 不参与事件派发，用户仍可滚动、点击、
+       切面板、甚至继续打字。见 app.js 的 setGeneratingUI()。 */
+    body.is-generating,
+    body.is-generating * {
+      cursor: wait !important;
+    }
+
+    /* 提示条：骑在主对话框与下方指令条（输入框）之间的接缝上。
+       它挂在 .cmd 内部、向上探出 13px（= 自身高度的一半），于是垂直中线正好落在
+       「.dialog 底边 == .cmd 顶边」那道缝上。挂在 .cmd 里而不是 .dialog 里，
+       是因为 .cmd 在 DOM 靠后 + 自带层叠上下文，能确保画在指令条底色之上
+       （放 .dialog 里时下半截会被指令条压掉 —— 实测截图确认过）。
+       pointer-events:none —— 它只是提示，绝不挡住接缝处任何点击。 */
+    .gen-status {
+      position: absolute;
+      left: 50%;
+      top: -13px;
+      transform: translateX(-50%);
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      height: 26px;
+      padding: 0 14px;
+      border-radius: 999px;
+      font-family: var(--font-ui, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif);
+      font-size: 11.5px;
+      letter-spacing: .08em;
+      white-space: nowrap;
+      color: var(--text, #EAF1FF);
+      background: var(--bg-2, #0C1322);
+      border: 1px solid var(--line-2, rgba(126, 178, 255, .26));
+      box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+      pointer-events: none;
+    }
+
+    /* hidden 属性会被 display:flex 压过，必须显式关掉 */
+    .gen-status[hidden] {
+      display: none;
+    }
+
+    .gen-status::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      border: 2px solid var(--gold, #E8C878);
+      border-top-color: transparent;
+      animation: gen-status-spin .9s linear infinite;
+    }
+
+    @keyframes gen-status-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .gen-status::before { animation-duration: 2.4s; }
+    }
+
+    /* ?legacy=1 旧界面：提示条落在输入区里（那里没有「对话框接缝」可骑） */
+    html.legacy .gen-status {
+      position: static;
+      transform: none;
+      margin: 0 0 8px 0;
+    }
+
     /* 系统设置里未开启 TTS：开关置灰 + 悬停提示 */
     .app .tool.disabled, .app .tool:disabled {
       opacity: .4;

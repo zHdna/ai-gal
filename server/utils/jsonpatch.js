@@ -9,6 +9,56 @@ const FORBIDDEN = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_DEPTH = 50;
 const MAX_CLONE_BYTES = 10 * 1024 * 1024; // 10MB
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * 数值变更的**边界**与**审计**（2026-09-21 新增）
+ *
+ * 背景：`delta` / `inc` 原本是"给什么写什么" —— 全文件只有原型污染 / 深度 / 体积三道防护。
+ * 于是模型写 `{"op":"delta","path":"/好感度","value":9999}` 会**原样落库**，
+ * 而下一轮它还会被当成权威值注入回上下文 → 数值崩坏且不可追溯。
+ *
+ * 取舍：
+ *   · **只夹逼增量**（delta / inc），不夹逼绝对值（replace/add）：没有字段范围声明时，
+ *     把绝对值夹到 ±100 会毁掉"金币 5000"这类正常数据。
+ *   · 上限默认 100，可用环境变量 MVU_DELTA_ABS_MAX 覆盖（0 或负数 = 关闭夹逼）。
+ *   · 夹逼**不静默**：console.warn + 追加一行到 data/mvu-audit.log（写失败只打日志）。
+ *   · 另外把最近若干条操作留在内存里（`getMvuAuditLog()`），便于单测与排查。
+ * ══════════════════════════════════════════════════════════════════════════ */
+const MVU_DELTA_ABS_MAX = (() => {
+  const raw = process.env.MVU_DELTA_ABS_MAX;
+  if (raw === undefined || raw === '') return 100;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 100;
+})();
+const MVU_AUDIT_MAX = 200;
+const mvuAuditLog = [];
+
+function recordMvuOp(entry) {
+  try {
+    mvuAuditLog.push(entry);
+    while (mvuAuditLog.length > MVU_AUDIT_MAX) mvuAuditLog.shift();
+    if (!entry.clamped) return;
+    console.warn('[MVU] ⚠️ 数值增量被夹逼：', entry.path,
+      '申请', entry.requested, '→ 实际', entry.applied, '（上限 ±' + MVU_DELTA_ABS_MAX + '）');
+    try {
+      const fsMod = require('fs');
+      const pathMod = require('path');
+      const dir = require('../paths').DATA_DIR;
+      fsMod.mkdirSync(dir, { recursive: true });
+      fsMod.appendFileSync(pathMod.join(dir, 'mvu-audit.log'),
+        JSON.stringify({ t: new Date().toISOString(), ...entry }) + '\n', 'utf-8');
+    } catch { /* 审计写失败绝不影响状态应用 */ }
+  } catch { /* 审计本身不能抛 */ }
+}
+
+/** 夹逼一个增量；MVU_DELTA_ABS_MAX <= 0 表示关闭 */
+function clampDelta(value) {
+  const v = Number(value);
+  if (!Number.isFinite(v) || MVU_DELTA_ABS_MAX <= 0) return { applied: v, clamped: false };
+  const lim = MVU_DELTA_ABS_MAX;
+  const c = Math.max(-lim, Math.min(lim, v));
+  return { applied: c, clamped: c !== v };
+}
+
 function splitPath(path) {
   // RFC 6902: leading '/' then tokens separated by '/'; '~1' -> '/', '~0' -> '~'
   if (!path || path[0] !== '/') throw new Error('Invalid JSON Patch path: ' + path);
@@ -123,8 +173,11 @@ function applySingle(model, op) {
       // MVU custom op: increment/decrement the current value by op.value.
       // Supports tuple fields [value, label] — only index [0] is updated.
       const cur = resolve(model, tokens);
-      const deltaVal = Number(op.value);
-      if (isNaN(deltaVal)) break;
+      const deltaVal0 = Number(op.value);
+      if (isNaN(deltaVal0)) break;
+      const { applied: deltaVal, clamped } = clampDelta(deltaVal0);
+      const before0 = Array.isArray(cur) && typeof cur[0] === 'number' ? cur[0]
+        : (typeof cur === 'number' ? cur : null);
       if (Array.isArray(cur) && cur.length > 0 && typeof cur[0] === 'number') {
         cur[0] = cur[0] + deltaVal;
       } else if (typeof cur === 'number') {
@@ -137,6 +190,10 @@ function applySingle(model, op) {
         if (Array.isArray(parent)) parent[parseInt(key, 10) || 0] = deltaVal;
         else parent[key] = deltaVal;
       }
+      recordMvuOp({
+        op: 'delta', path: op.path, requested: deltaVal0, applied: deltaVal, clamped,
+        before: before0, after: (before0 == null ? deltaVal : before0 + deltaVal),
+      });
       break;
     }
     case 'get': {
@@ -152,16 +209,24 @@ function applySingle(model, op) {
      * ──────────────────────────────────────────────────────────────────────── */
     case 'inc': {
       // Increment a numeric value by op.value; init to value if missing/non-number.
-      const v = Number(op.value);
-      if (isNaN(v)) break;
+      const v0 = Number(op.value);
+      if (isNaN(v0)) break;
+      const { applied: v, clamped } = clampDelta(v0);
       const parent = ensureParent(model, parentTokens);
+      let before1 = null;
       if (Array.isArray(parent) && !isNaN(parseInt(key, 10))) {
         const idx = parseInt(key, 10);
+        before1 = typeof parent[idx] === 'number' ? parent[idx] : null;
         parent[idx] = (typeof parent[idx] === 'number' ? parent[idx] : 0) + v;
       } else {
         const cur = resolve(model, tokens);
+        before1 = typeof cur === 'number' ? cur : null;
         parent[key] = (typeof cur === 'number' ? cur : 0) + v;
       }
+      recordMvuOp({
+        op: 'inc', path: op.path, requested: v0, applied: v, clamped,
+        before: before1, after: (before1 == null ? v : before1 + v),
+      });
       break;
     }
     case 'mul': {
@@ -728,4 +793,7 @@ module.exports = {
   applyWorldStateFromText,
   seedFromStateBlock,
   extractCheckpoint,
+  // 数值边界与审计（2026-09-21 新增）
+  getMvuAuditLog: () => mvuAuditLog.slice(),
+  MVU_DELTA_ABS_MAX,
 };

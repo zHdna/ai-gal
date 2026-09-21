@@ -10,6 +10,7 @@ const { SETTINGS_ID, ANIMA_PRESET, NOVELAI_PRESET, OPENAI_COMPATIBLE_MODES, EXTE
 const { isPathWithin } = require('../utils/pathGuard');
 const savePaths = require('../savePaths');
 const { isUrlSafe } = require('../utils/urlGuard');
+const { normalizeImageSize, sizeForEngine } = require('../utils/imageSize');
 
 // Maximum allowed size for base64 data URLs (5 MB)
 const MAX_DATA_URL_BYTES = 5 * 1024 * 1024;
@@ -754,6 +755,9 @@ module.exports = (db) => {
       row.api_model = ep.apiModel;
       if (!row.image_size) row.image_size = NOVELAI_PRESET.IMAGE_SIZE;
     }
+    // 历史坏值（如 `1536X1024`）在返回给界面时就规范化：用户一打开设置页看到的就是
+    // 正确写法，保存一次即可把库里的坏值覆盖掉（本地引擎只认小写 x，见 utils/imageSize.js）。
+    if (row.image_size) row.image_size = normalizeImageSize(row.image_size) || row.image_size;
     res.json(row);
   });
 
@@ -814,6 +818,17 @@ module.exports = (db) => {
     // 工作流文件名：仅接受项目根目录下的裸文件名（后端 getWorkflowFile 会再校验）
     if (typeof cg_workflow === 'string') cg_workflow = cg_workflow.trim();
     if (typeof portrait_workflow === 'string') portrait_workflow = portrait_workflow.trim();
+    // 尺寸落库前规范化（前端已经是「宽/高两个格子」，这里是给 API 调用方与历史值兜底）：
+    // `1536X1024` → `1536x1024`。anima/sd.cpp 只认小写 x，别的写法会被静默忽略。
+    if (image_size !== undefined && image_size !== null) {
+      const before = String(image_size).trim();
+      image_size = normalizeImageSize(before);
+      if (before && !image_size) {
+        console.warn('[ImageGen] 尺寸 "%s" 无法解析为「宽x高」，已按"不指定尺寸"保存（引擎将用自身默认值）', before);
+      } else if (image_size && image_size !== before) {
+        console.log('[ImageGen] 尺寸已规范化：%s → %s', before, image_size);
+      }
+    }
     db.prepare(`UPDATE image_settings SET
       mode=COALESCE(?,mode), comfyui_url=COALESCE(?,comfyui_url),
       api_url=COALESCE(?,api_url), api_key=COALESCE(?,api_key), model=COALESCE(?,model),
@@ -864,7 +879,7 @@ module.exports = (db) => {
     let replaceIndex = 0;
     if (conversation_id) {
       try {
-        const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
+        const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(conversation_id);
         if (save) {
           const gp = path.join(save.save_path, 'cg_gallery.json');
           try {
@@ -912,14 +927,15 @@ module.exports = (db) => {
         const result = await generateViaExternalAPI(boostedPrompt, genMode, apiUrl, apiKey, settings, type);
         if (!result || (!result.url && !result.b64)) return;
         const charName = (character_name || 'character').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-        // b64_json 多为 png；url 由服务端决定扩展名
-        const ext = result.b64 ? 'png' : 'jpg';
+        // 扩展名按内容判定（见 sniffImageExt）
+        const buf = result.b64 ? Buffer.from(result.b64, 'base64') : null;
+        const ext = buf ? sniffImageExt(buf) : 'jpg';
         const filename = `${charName}_${Date.now()}.${ext}`;
         const savePath = path.join(IMAGES_DIR, filename);
         if (result.url) await downloadExternalImage(result.url, savePath);
-        else fs.writeFileSync(savePath, Buffer.from(result.b64, 'base64'));
-        replaceGalleryEntry(db, conversation_id, oldFilename, filename, savePath, prompt, character_name);
-        console.log('[ImageGen] Regenerated via ' + genMode + ':', filename);
+        else fs.writeFileSync(savePath, buf);
+        const replaced = replaceGalleryEntry(db, conversation_id, oldFilename, filename, savePath, prompt, character_name);
+        console.log('[ImageGen] Regenerated via ' + genMode + ':', filename, replaced ? '' : '（⚠ 画廊条目未替换，详见错误日志）');
       } catch (err) {
         console.error('[ImageGen-Regen] External API failed (mode=' + genMode + '):', {
           message: err.message, genMode, type, character_name, conversation_id,
@@ -963,7 +979,7 @@ module.exports = (db) => {
       // Copy to save folder and update gallery
       if (conversation_id) {
         try {
-          const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
+          const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(conversation_id);
           if (save) {
             const destDir = path.join(save.save_path, 'images');
             fs.mkdirSync(destDir, { recursive: true });
@@ -1159,17 +1175,20 @@ module.exports = (db) => {
         const result = await generateViaExternalAPI(prompt, genMode, apiUrl, apiKey, settings, type);
         if (result && (result.url || result.b64)) {
           const charName = (character_name || 'character').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-          // b64_json 多为 png；url 由服务端决定扩展名，统一按内容写盘
-          const ext = result.b64 ? 'png' : 'jpg';
+          // 扩展名按**文件内容**（magic bytes）判定，而不是按"传输方式"猜：
+          // 以前 `b64 ? png : jpg` 会把 base64 返回的 JPEG 写成 .jpg/.png 不符的名字，
+          // 于是 Content-Type、下载名、缩略图三处全错。
+          const buf = result.b64 ? Buffer.from(result.b64, 'base64') : null;
+          const ext = buf ? sniffImageExt(buf) : 'jpg';
           const filename = `${charName}_${Date.now()}.${ext}`;
           const savePath = path.join(IMAGES_DIR, filename);
           if (result.url) {
             await downloadExternalImage(result.url, savePath);
           } else {
-            fs.writeFileSync(savePath, Buffer.from(result.b64, 'base64'));
+            fs.writeFileSync(savePath, buf);
           }
-          saveToConversation(db, conversation_id, character_name, filename, savePath, type === 'cg', prompt, isSceneOnly ? { sceneEnd: true } : null);
-          console.log('[ImageGen] External API saved:', filename);
+          const stored = saveToConversation(db, conversation_id, character_name, filename, savePath, type === 'cg', prompt, isSceneOnly ? { sceneEnd: true } : null);
+          console.log('[ImageGen] External API saved:', filename, stored ? '' : '（⚠ 未进入存档画廊，详见上方错误日志）');
           return;
         }
       } catch (err) {
@@ -1219,8 +1238,8 @@ module.exports = (db) => {
             const filename = `${charName}_${Date.now()}.jpg`;
             const savePath = path.join(IMAGES_DIR, filename);
             await downloadImage(comfyuiUrl, outputImage, savePath);
-            saveToConversation(db, conversation_id, character_name, filename, savePath, type === 'cg', prompt, isSceneOnly ? { sceneEnd: true } : null);
-            console.log('[ImageGen] Saved:', filename);
+            const stored = saveToConversation(db, conversation_id, character_name, filename, savePath, type === 'cg', prompt, isSceneOnly ? { sceneEnd: true } : null);
+            console.log('[ImageGen] Saved:', filename, stored ? '' : '（⚠ 未进入存档画廊，详见上方错误日志）');
             success = true;
           }
         }
@@ -1235,7 +1254,7 @@ module.exports = (db) => {
       // If portrait generation failed, reset 'pending' to '' so it can be retried next turn
       if (type === 'portrait' && character_name && conversation_id) {
         try {
-          const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
+          const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(conversation_id);
           if (save) {
             const rp = path.join(save.save_path, 'character_roster.json');
             if (fs.existsSync(rp)) {
@@ -1268,23 +1287,41 @@ module.exports = (db) => {
 // --- Save helpers ---
 
 function saveToConversation(db, conversation_id, character_name, filename, savePath, isCG, cgPrompt, extra) {
-  if (!conversation_id) return;
+  if (!conversation_id) return false;
   try {
-    const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
-    if (!save) return;
+    // 目标存档：同秒创建的两条 saves 记录会让 `created_at DESC` 的排序不确定
+    // （实测：图片/画廊写进 A 条，界面读 B 条 → "图没进画廊"），所以再加 rowid 兜底。
+    const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(conversation_id);
+    if (!save) {
+      console.error('[ImageGen] 图片已生成但【没有存档记录】可写入（conversation_id=%s）—— 图片只留在 generated_images：%s',
+        conversation_id, filename);
+      return false;
+    }
     const destDir = path.join(save.save_path, 'images');
     fs.mkdirSync(destDir, { recursive: true });
     fs.copyFileSync(savePath, path.join(destDir, filename));
 
     if (isCG) {
       // Add to CG gallery
-      addToCGGallery(save.save_path, filename, character_name, cgPrompt, extra);
+      const added = addToCGGallery(save.save_path, filename, character_name, cgPrompt, extra);
+      if (!added) {
+        console.error('[ImageGen] 图片已复制进存档但【未能写进 cg_gallery.json】（save=%s, file=%s）—— 画廊里不会出现这张图',
+          save.id, filename);
+        return false;
+      }
     } else {
       updateRoster(save.save_path, character_name, filename);
       // Cache the generated avatar into the master folder so future sub-saves reuse it.
       savePaths.cachePortraitInMaster(db, conversation_id, character_name, save.save_path);
     }
-  } catch (e) { /* ignore */ }
+    return true;
+  } catch (e) {
+    // 以前这里是 `catch (e) { /* ignore */ }`：图片生成成功、画廊没更新，日志里却一个字都没有。
+    // 这正是"能在存档文件夹看到图、游戏里却看不到/画廊没有"无法诊断的原因。
+    console.error('[ImageGen] 保存到存档失败（图片已生成，未进画廊）:', e.message,
+      { conversation_id, character_name, filename, savePath, isCG });
+    return false;
+  }
 }
 
 /**
@@ -1293,10 +1330,13 @@ function saveToConversation(db, conversation_id, character_name, filename, saveP
  * falling back to the top entry so a missing name never loses the refresh).
  */
 function replaceGalleryEntry(db, conversation_id, oldFilename, filename, savePath, prompt, character_name) {
-  if (!conversation_id) return;
+  if (!conversation_id) return false;
   try {
-    const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
-    if (!save) return;
+    const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(conversation_id);
+    if (!save) {
+      console.error('[ImageGen] 重新生成的图片没有存档记录可写入（conversation_id=%s）', conversation_id);
+      return false;
+    }
     const destDir = path.join(save.save_path, 'images');
     fs.mkdirSync(destDir, { recursive: true });
     fs.copyFileSync(savePath, path.join(destDir, filename));
@@ -1305,24 +1345,44 @@ function replaceGalleryEntry(db, conversation_id, oldFilename, filename, savePat
       if (isPathWithin(destDir, oldPath)) { try { fs.unlinkSync(oldPath); } catch { } }
     }
     const gp = path.join(save.save_path, 'cg_gallery.json');
-    try {
-      const gallery = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+    let gallery = null;
+    try { gallery = JSON.parse(fs.readFileSync(gp, 'utf-8')); } catch (e) {
+      console.error('[ImageGen] 重新生成时读 cg_gallery.json 失败（不覆盖原文件）:', e.message, { saveId: save.id });
+      return false;
+    }
+    if (Array.isArray(gallery)) {
       const entry = gallery.find(g => g && g.filename === oldFilename) || gallery[0];
       if (entry) {
         entry.filename = filename;
         entry.timestamp = new Date().toISOString();
         if (prompt) entry.prompt = prompt;
         if (character_name) entry.character = character_name;
-        fs.writeFileSync(gp, JSON.stringify(gallery, null, 2), 'utf-8');
+        const tmp = gp + '.tmp-' + process.pid;
+        fs.writeFileSync(tmp, JSON.stringify(gallery, null, 2), 'utf-8');
+        fs.renameSync(tmp, gp);
       }
-    } catch { }
-  } catch (e) { console.error('[ImageGen] Gallery replace failed:', e.message); }
+    }
+    return true;
+  } catch (e) { console.error('[ImageGen] Gallery replace failed:', e.message); return false; }
 }
 
 function addToCGGallery(savePath, filename, character_name, prompt, extra) {
   const galleryPath = path.join(savePath, 'cg_gallery.json');
   let gallery = [];
-  try { gallery = JSON.parse(fs.readFileSync(galleryPath, 'utf-8')); } catch { }
+  try {
+    gallery = JSON.parse(fs.readFileSync(galleryPath, 'utf-8'));
+    if (!Array.isArray(gallery)) throw new Error('not an array');
+  } catch (e) {
+    // 读失败**不能**当成空数组：那会把整张画廊表覆盖掉（老条目全丢，文件还在磁盘上，
+    // 表现就是"画廊突然空了"）。先备份坏文件，再以空表重建。
+    if (fs.existsSync(galleryPath)) {
+      const bad = galleryPath + '.bad-' + new Date().toISOString().replace(/[:.]/g, '-');
+      try { fs.copyFileSync(galleryPath, bad); } catch { /* 备份失败也要继续，别把出图卡死 */ }
+      console.error('[ImageGen] cg_gallery.json 读取失败（已备份为 %s）:%s —— 将以空画廊重建',
+        path.basename(bad), e.message);
+    }
+    gallery = [];
+  }
   // New CG at top
   const entry = {
     filename,
@@ -1337,10 +1397,19 @@ function addToCGGallery(savePath, filename, character_name, prompt, extra) {
     entry.description = SCENE_END_LABEL;
   }
   gallery.unshift(entry);
-  // Keep max 20
+  // Keep max 20（只裁剪索引，图片文件保留在存档 images/ 与 generated_images/ 里）
   if (gallery.length > 20) gallery = gallery.slice(0, 20);
-  fs.writeFileSync(galleryPath, JSON.stringify(gallery, null, 2), 'utf-8');
+  try {
+    // 原子替换：先写临时文件再 rename，避免写到一半被读到半截 JSON
+    const tmp = galleryPath + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(gallery, null, 2), 'utf-8');
+    fs.renameSync(tmp, galleryPath);
+  } catch (e) {
+    console.error('[ImageGen] 写 cg_gallery.json 失败:', e.message, { savePath, filename });
+    return false;
+  }
   console.log('[ImageGen] CG gallery updated:', filename);
+  return true;
 }
 
 function fallbackFromProfileWithDB(db, conversation_id, character_name, tag) {
@@ -1355,7 +1424,7 @@ function fallbackFromProfileWithDB(db, conversation_id, character_name, tag) {
     fs.copyFileSync(picked.path, savePath);
 
     if (conversation_id) {
-      const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
+      const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(conversation_id);
       if (save) {
         const destDir = path.join(save.save_path, 'images');
         fs.mkdirSync(destDir, { recursive: true });
@@ -1509,6 +1578,23 @@ async function downloadImage(baseUrl, outputImage, savePath) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/**
+ * 按文件内容判定图片扩展名（PNG / JPEG / WebP / GIF / BMP / AVIF），判定不出回退 png。
+ * 为什么不能靠"传输方式"猜：b64 通路以前一律写 `.png`、url 通路一律写 `.jpg`，
+ * 服务商实际返回什么格式完全不管 —— 名字与内容不符会让 Content-Type、下载文件名、
+ * 缩略图生成全错（浏览器虽然多数能靠嗅探渲染，但排查时极容易误判成"格式不被支持"）。
+ */
+function sniffImageExt(buf) {
+  if (!buf || buf.length < 12) return 'png';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'png';
+  if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'jpg';
+  if (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') return 'webp';
+  if (buf.slice(0, 3).toString('ascii') === 'GIF') return 'gif';
+  if (buf[0] === 0x42 && buf[1] === 0x4D) return 'bmp';
+  if (buf.slice(4, 8).toString('ascii') === 'ftyp') return 'avif';
+  return 'png';
+}
 
 // --- External Image API ---
 
@@ -1778,9 +1864,13 @@ async function generateViaOpenAI(prompt, apiUrl, apiKey, settings, mode) {
   const model = ep.apiModel || 'dall-e-3';
   // 地址规范化：用户常填基址（https://api.siliconflow.cn/v1）或裸域，补齐 /images/generations
   const endpoint = normalizeOpenAIEndpoint(apiUrl);
-  // 尺寸：空字符串表示不指定，由各服务商使用自己的默认值（避免把 DALL-E 的 1024x1024
-  // 这种某些服务商不支持的尺寸硬塞过去导致 400 参数不合法）
-  const size = (settings && settings.image_size) || '';
+  // 尺寸：一律先规范化再发。
+  // ⚠️ anima-turbo-cg（sd.cpp）的 OpenAI 路由只认小写 `x`：`1536X1024` / `1536×1024` / `1536*1024`
+  // 会被**静默忽略**、回落到服务启动参数里的默认尺寸（实测 1536X1024 → 出图 1024x1024）。
+  // 历史库里就有这种值，所以这里必须兜住，而不能只靠前端。
+  const sized = sizeForEngine(mode, settings && settings.image_size);
+  const size = sized.size;
+  if (sized.notes.length) console.warn('[ImageGen-OpenAI] 尺寸修正：' + sized.notes.join('；'));
   // 提示词质量前缀（OpenAI兼容模式）：拼接到提示词最前面增强画质
   const qp = (settings && settings.quality_prefix) ? settings.quality_prefix.trim() : '';
   let fullPrompt = qp ? (qp + ', ' + prompt) : prompt;

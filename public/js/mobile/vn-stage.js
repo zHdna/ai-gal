@@ -231,14 +231,17 @@
 
   function setBackground(url) {
     if (!bgEl) return;
-    if (url) {
-      document.documentElement.style.setProperty('--stage-bg-img', 'url("' + url + '")');
-      if (artImg) {
+    /* 只把图交给前景立绘层（#vnArtImg，contain 完整显示）。
+       不再把同一张图设成 --stage-bg-img 放大铺满 —— 那会和这张完整图重复出现；
+       舞台底色固定用 .vn-stage-bg 的默认背景色。 */
+    try { document.documentElement.style.removeProperty('--stage-bg-img'); } catch (e) { /* 非关键 */ }
+    if (artImg) {
+      if (url) {
         artImg.src = url;
         artImg.style.display = '';
+      } else {
+        artImg.style.display = 'none';
       }
-    } else {
-      if (artImg) artImg.style.display = 'none';
     }
   }
 
@@ -538,6 +541,118 @@
   }
   VN.refreshBackground = refreshBackground;
 
+  /* ---------------- 背景 CG 实时更新 ----------------
+     app.js 的 startGalleryPoll() 是【常驻】轮询（无硬停、页面隐藏时不发请求），
+     CG 一有变化就执行「AppState.cgGallery = 新列表; renderGallery();」。
+     但 renderGallery 只重画桌面画廊那一栏，从不碰移动端的舞台背景 ——
+     于是新 CG 要等到下一轮 syncFromDom（消息块内容/长度变化）才「顺带」换上，
+     表现就是「后台已经生成好 CG 了，背景迟迟不刷新」。
+     这里在画廊重画之后补一次背景重算。手法与桌面端 vn-shell.js 的 hookRenderGallery 一致。
+  ------------------------------------------------------------------ */
+  function hookRenderGallery() {
+    if (window.__vnMobileGalleryHooked || typeof window.renderGallery !== 'function') return;
+    var orig = window.renderGallery;
+    window.renderGallery = function () {
+      var r = orig.apply(this, arguments);
+      try { refreshBackground(); } catch (e) { /* 背景刷新失败不影响画廊本身 */ }
+      return r;
+    };
+    window.__vnMobileGalleryHooked = true;
+  }
+
+  /** 最新一张 CG 的画廊条目（AppState.cgGallery 是「新的在前」） */
+  function newestCgEntry() {
+    var gal = (window.AppState && window.AppState.cgGallery) || [];
+    for (var i = 0; i < gal.length; i++) {
+      var g = gal[i];
+      if (g && (g.filename || g.file || g.name || g.url)) return g;
+    }
+    return null;
+  }
+
+  /** 当前舞台上那张 CG 的画廊条目。
+      移动端背景恒为「最新一张」，所以先用背景 URL 反查目标条目，
+      匹配不到再用最新一张（生图默认替换最新条目）—— 与桌面端 currentStageCg 同策略。 */
+  function currentStageCg() {
+    var gal = (window.AppState && window.AppState.cgGallery) || [];
+    if (!gal.length) return null;
+    var cur = (VN.pages && VN.pages.latestCG && VN.pages.latestCG()) || '';
+    var file = cur ? decodeURIComponent(String(cur).split('/').pop().split('?')[0]) : '';
+    var hit = null;
+    if (file) {
+      hit = gal.filter(function (g) {
+        var f = String((g && (g.filename || g.file || g.name)) || '');
+        return f && f === file;
+      })[0] || null;
+    }
+    return hit || newestCgEntry();
+  }
+
+  /* ---------------- 工具行：重新生成剧情 / 重画 CG ---------------- */
+  function bindGenTools() {
+    /* ① 重新生成本轮剧情：复用 app.js 的 regenerateMessage()
+          （删除范围、用户发言保留、失败/中止也能重跑，全部由它处理）。 */
+    var regen = $('#vnBtnRegen');
+    if (regen) {
+      regen.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (typeof window.regenerateMessage !== 'function') {
+          VN.shell && VN.shell.toast && VN.shell.toast('当前界面不支持重新生成');
+          return;
+        }
+        window.regenerateMessage();
+      });
+      /* 生成中置灰（仍可点：点下去会提示先停止）。
+         状态不另记一份 —— 直接看 body.is-generating，与提示条同源。 */
+      var apply = function () {
+        var busy = document.body.classList.contains('is-generating');
+        regen.classList.toggle('busy', busy);
+        regen.setAttribute('aria-busy', busy ? 'true' : 'false');
+      };
+      apply();
+      try { new MutationObserver(apply).observe(document.body, { attributes: true, attributeFilter: ['class'] }); }
+      catch (err) { /* 无 MutationObserver：至少初始化时同步一次 */ }
+    }
+
+    /* ② 重新生成当前 CG：把这张 CG 的原始生图指令重发一次，旧的图会被覆盖。
+          生图是异步的，所以提交后立刻把常驻画廊轮询调到最快，
+          等它抓到新图 → renderGallery → 上面那个钩子换背景。 */
+    var regenCg = $('#vnBtnRegenCg');
+    if (regenCg) regenCg.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var cg = currentStageCg();
+      if (!cg) { VN.shell && VN.shell.toast && VN.shell.toast('这个存档还没有 CG，先让管家 AI 触发生图'); return; }
+      if (!cg.prompt) { VN.shell && VN.shell.toast && VN.shell.toast('这张 CG 没有记录生图指令，无法重画'); return; }
+      if (regenCg.disabled) return;
+      regenCg.disabled = true;
+      var old = regenCg.innerHTML;
+      regenCg.innerHTML = '⟳ 重画中';
+      fetch('/api/images/regenerate', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: cg.prompt,
+          type: 'cg',
+          character_name: cg.character || '',
+          conversation_id: (window.AppState && window.AppState.currentConversation && window.AppState.currentConversation.id) || '',
+          /* 明确指定覆盖哪一张：否则服务端只认最新那张，
+             用户在回顾旧 CG 时点重画会把最新那张覆盖掉。 */
+          old_filename: cg.filename || cg.file || ''
+        })
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        VN.shell && VN.shell.toast && VN.shell.toast('已提交重画，生成完成后会自动替换（约需数十秒）');
+        if (typeof window.startGalleryPoll === 'function') window.startGalleryPoll(2000);
+      }).catch(function (err) {
+        VN.shell && VN.shell.toast && VN.shell.toast('重画失败：' + (err && err.message ? err.message : err));
+      }).then(function () {
+        regenCg.disabled = false;
+        regenCg.innerHTML = old;
+      });
+    });
+  }
+
   function setStreaming(on) {
     S.streaming = !!on;
     dlgEl.classList.toggle('is-streaming', !!on);
@@ -834,6 +949,8 @@
     renderSegDots();
     bindInput();
     bindViewer();
+    bindGenTools();
+    hookRenderGallery();
     observe();
     window.addEventListener('resize', function () { setTimeout(updateNarrHint, 60); });
 

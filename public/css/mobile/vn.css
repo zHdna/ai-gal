@@ -30,8 +30,8 @@
   --safe-t: env(safe-area-inset-top, 0px);
   --stage-void: #0A1020;
   --av-scale: 1;
-  --dlg-h: 196px;
-  --fs: 1;
+  --dlg-h: 304px;   /* 8 行对白（本档最大字号 fs=1.14 时仍完整显示） */
+  --fs: 1;          /* 兜底；实际由 vn-shell.js 注入（默认 1.15 = 加大两号） */
   --ink: #03060f;
   --veil: linear-gradient(0deg, rgba(6, 11, 26, .34) 0%, rgba(6, 11, 26, .06) 22%, transparent 40%);
   --dlg-bg: linear-gradient(180deg, rgba(11, 18, 38, .86), rgba(5, 9, 22, .96));
@@ -63,13 +63,15 @@ html[data-theme="light"] {
   --card-bg: linear-gradient(160deg, rgba(255, 255, 255, .95), rgba(240, 245, 252, .95));
 }
 
-/* 字号分档：放大时主对话框自动加高 */
+/* 字号分档：放大时主对话框自动加高。
+   三档高度都按【该档最大字号下的 8 行对白】留足（对白 14px×fs、line-height 1.62，
+   再加名牌行 ~34px + 工具行 ~37px + 内边距 26px），保证「加高到 8 行」在各档都成立。 */
 html[data-fs="lg"] {
-  --dlg-h: 222px;
+  --dlg-h: 332px;
 }
 
 html[data-fs="xl"] {
-  --dlg-h: 250px;
+  --dlg-h: 388px;
 }
 
 @media (max-width: 400px) {
@@ -280,16 +282,14 @@ html[data-theme="light"] .vn-brand {
   overflow: hidden;
 }
 
-/* 背景：单张图（最新 CG → 无 CG 时角色卡卡面），cover 原图铺满，不模糊不压暗 */
+/* 背景：默认背景色填充（不再铺放大的 CG）。
+   舞台上只显示一张完整 CG（.vn-stage-art 里的 #vnArtImg，contain 不裁切）；
+   若这里再按 cover 铺满同一张 CG，就会「放大的底图 + 完整图」重复出现 —— 故底图固定用底色。 */
 .vn-stage-bg {
   position: absolute;
   inset: 0;
   background-color: var(--stage-void);
-  background-image: var(--stage-bg-img);
-  background-position: center top;
-  background-size: cover;
-  background-repeat: no-repeat;
-  transition: background-image .3s;
+  background-image: none;
 }
 
 /* 前景立绘：contain + 底部对齐，完整显示不裁切 */
@@ -911,6 +911,7 @@ html[data-theme="light"] .vn-aff b {
 
 /* ===================== 7. 指令条 ===================== */
 .vn-cmd {
+  position: relative;   /* 生成中提示条 .gen-status 以此为定位基准（骑在顶边上） */
   flex: 0 0 auto;
   display: flex;
   align-items: flex-end;
@@ -922,6 +923,66 @@ html[data-theme="light"] .vn-aff b {
   border: 1px solid var(--line);
   backdrop-filter: var(--blur);
   box-shadow: 0 12px 30px rgba(0, 0, 0, .5);
+}
+
+/* ---- 生成中提示（故事生成时悬浮在指令条上方）----
+   与桌面端同一套状态源：app.js 的 setGeneratingUI() 切换 body.is-generating
+   并显隐所有 .gen-status。移动端没有「鼠标沙漏」可言，所以只保留提示条本身。
+   它挂在 .vn-cmd 内部、向上探出 13px（自身高度的一半），中线正好落在指令条顶边上；
+   pointer-events:none —— 只是提示，绝不挡住接缝处的任何点击。 */
+.gen-status {
+  position: absolute;
+  left: 50%;
+  top: -13px;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: calc(11.5px * var(--fs));
+  letter-spacing: .08em;
+  white-space: nowrap;
+  color: var(--text);
+  background: var(--dlg-bg);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+  pointer-events: none;
+}
+
+/* hidden 属性会被 display:flex 压过，必须显式关掉 */
+.gen-status[hidden] {
+  display: none;
+}
+
+.gen-status::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--gold);
+  border-top-color: transparent;
+  animation: genStatusSpin .9s linear infinite;
+}
+
+@keyframes genStatusSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gen-status::before {
+    animation-duration: 2.4s;
+  }
+}
+
+/* 生成中：重生成按钮置灰（仍可点 —— 点下去 app.js 会提示先停止） */
+.vn-tool.busy {
+  opacity: .45;
 }
 
 .vn-cmd .plus {

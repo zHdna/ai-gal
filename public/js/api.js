@@ -507,11 +507,15 @@ const ChatAPI = {
    * @param {function} callbacks.onDone - 流式完成时调用 (result: object) => void
    * @param {function} callbacks.onError - 出错时调用 (error: string) => void
    * @param {function} callbacks.onUserMessage - 用户消息已存储 (msg: object) => void
+   * @param {boolean} [callbacks.regenerate] - 重新生成：后端先删掉本轮全部产物（主AI正文 +
+   *   管家处理结果 + 本轮 CG），再用【上一条用户发言】重跑；此时 content 会被后端忽略。
+   * @param {function} callbacks.onTurnRemoved - 后端已删除本轮旧回复 (info: {message_id, round, removed_cgs}) => void
    * @returns {Promise<void>}
    */
   async stream(conversationId, content, providerId, callbacks = {}) {
     const body = { conversation_id: conversationId, content };
     if (providerId) body.provider_id = providerId;
+    if (callbacks.regenerate) body.regenerate = true;
 
     const url = `${API_BASE}/chat/stream`;
 
@@ -532,6 +536,9 @@ const ChatAPI = {
       const decoder = new TextDecoder();
       let buffer = '';
       let currentEventType = '';
+      // 是否收到过终止事件（done / error / aborted）。收不到就说明这条流是被掐断的
+      // （服务端中止、连接断开、进程被杀）—— 见循环后面的兜底。
+      let sawTerminal = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -563,6 +570,10 @@ const ChatAPI = {
                 case 'user_message':
                   callbacks.onUserMessage?.(data);
                   break;
+                case 'turn_removed':
+                  // 「重新生成」：后端已删掉本轮旧回复（含管家处理结果），前端据此精确移除那一楼
+                  callbacks.onTurnRemoved?.(data);
+                  break;
                 case 'token':
                   if (data.token !== undefined) {
                     callbacks.onToken?.(data.token);
@@ -574,14 +585,20 @@ const ChatAPI = {
                   }
                   break;
                 case 'done':
+                  sawTerminal = true;
                   callbacks.onDone?.(data);
                   break;
                 case 'error':
                   // 服务端两种字段都出现过：{message} 与 {error}
+                  sawTerminal = true;
                   callbacks.onError?.(data.error || data.message || 'Unknown stream error');
                   break;
                 case 'aborted':
-                  callbacks.onError?.('Generation aborted');
+                  // 用户点了「停止」：交给 onAborted 做中性处理（老调用方只实现了 onError，
+                  // 保持回落，行为与以前一致）。
+                  sawTerminal = true;
+                  if (callbacks.onAborted) callbacks.onAborted();
+                  else callbacks.onError?.('Generation aborted');
                   break;
                 case 'memory-drop-prompt':
                   // 第 M 轮：服务端询问是否忽略之前的对话、只保留记忆表格
@@ -592,8 +609,10 @@ const ChatAPI = {
                   if (data.token !== undefined) {
                     callbacks.onToken?.(data.token);
                   } else if (data.id && data.role === 'assistant') {
+                    sawTerminal = true;
                     callbacks.onDone?.(data);
                   } else if (data.error) {
+                    sawTerminal = true;
                     callbacks.onError?.(data.error);
                   }
               }
@@ -602,6 +621,16 @@ const ChatAPI = {
             }
           }
         }
+      }
+
+      // 兜底：流已结束，却一个终止事件都没收到。
+      // 产生原因：服务端把这条流中止了（用户点「停止」/ 同对话来了新请求把旧流掐掉），
+      // 而客户端可能还没读到那个 aborted 事件（连接先断了）。
+      // 不处理的话前端会留下一块**空占位楼层**（"幽灵楼"），看起来像这一轮生成了空白内容，
+      // 也会干扰后面判断"当前轮"。
+      if (!sawTerminal) {
+        if (callbacks.onAborted) callbacks.onAborted();
+        else callbacks.onError?.('Stream ended without result');
       }
     } catch (err) {
       if (err instanceof ApiError) throw err;
@@ -614,10 +643,17 @@ const ChatAPI = {
     }
   },
 
-  /** 中止当前生成 */
-  abort() {
+  /**
+   * 中止当前生成。
+   * ⚠️ 必须带 conversation_id：服务端的 streamId 从来没下发给前端，
+   *    老实现发的是空 body → `/abort` 永远回 400「stream_id required」→
+   *    **「停止」按钮从来没有真正停止过任何东西**（服务端继续生成到底）。
+   *    按 conversation_id 中止才是前端真正能表达的东西（服务端已支持）。
+   */
+  abort(conversationId) {
     return request('/chat/abort', {
       method: 'POST',
+      body: conversationId ? { conversation_id: conversationId } : {},
     });
   },
 };

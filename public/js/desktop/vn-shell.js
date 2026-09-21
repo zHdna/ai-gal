@@ -497,16 +497,32 @@
       于是新 CG 要等到下一轮 syncFromDom → render() → syncStage() 才出现，
       表现就是「CG 生成后不加载，进入下一轮才显示上一轮的」。
       这里在画廊重画之后补一次舞台重算：画廊一更新，当前该显示哪张立刻跟着变。
-      （boot() 里的启动轮询也会调 syncStage，但它 800ms×40 ≈ 32s 后就停了，撑不住整局游戏。） */
+      （boot() 里的启动轮询也会调 syncStage，但它 800ms×40 ≈ 32s 后就停了，撑不住整局游戏。）
+
+      ⚠️ 同时必须重画「数据中心 → CG 画廊」面板：那个面板是**打开时渲染一次的静态 DOM**，
+      AppState.cgGallery 变了它不会自己更新 —— 用户看到的就是
+      「存档文件夹里有图、游戏背景也换了，但『CG 画廊』菜单里没有新图」，
+      要手动切到别的标签再切回来才刷出来（实测复现）。 */
   function hookRenderGallery() {
     if (window.__vnGalleryHooked || typeof window.renderGallery !== 'function') return;
     var orig = window.renderGallery;
     window.renderGallery = function () {
       var r = orig.apply(this, arguments);
       try { syncStage(); } catch (e) { }
+      try { refreshGalleryPane(); } catch (e) { }
       return r;
     };
     window.__vnGalleryHooked = true;
+  }
+  /** 画廊数据变了：面板正开着就立刻重画；没开着就标脏，等切到该面板时再画 */
+  function refreshGalleryPane() {
+    if (activePane() === 'gallery') { paneDirty.gallery = false; loadPane('gallery'); }
+    else paneDirty.gallery = true;
+  }
+  /** 当前数据中心选中的面板名（'' = 面板没打开） */
+  function activePane() {
+    var t = document.querySelector('#dockTabs .dtab.on');
+    return (t && t.dataset && t.dataset.pane) || '';
   }
   /** 最新一张 CG：按【时间】取，不是按 DOM 顺序 ——
       历史坑：`App.cgGallery` 是「新的在前」，早先这里对旧画廊里的 <img> 取 .pop()（DOM 最后一张）
@@ -1316,11 +1332,14 @@
 
   /* 各 pana 对应的 app.js 懒加载函数（数据没到就催一次，别一直显示空） */
   var paneLoaded = {};
+  /** 面板需要重画（画廊数据在面板关闭期间变过） */
+  var paneDirty = {};
   function paneHasData(pane) {
     if (pane === 'memory') {
       var rows = (memCache.rows || []);
       return rows.length > 0 || (Array.isArray(window._memoryEntries) && window._memoryEntries.length > 0);
     }
+    if (pane === 'gallery') return !!((App.cgGallery || []).length);
     return true;   /* 其余面板读的是 app 的响应式状态，不存在「催了但空」的情况 */
   }
   function ensureData(pane) {
@@ -1418,7 +1437,25 @@
     ensureData('gallery');
     var el = $('.pane[data-pane="gallery"]');
     if (!el) return;
-    var gal = App.cgGallery || [];
+    // 先用内存里的列表画一版（避免闪"空"），随后一律再从接口取一次：
+    // 面板过去只读 AppState.cgGallery 且**只渲染一次**，后台生图（管家 CG / 登场 CG / 空镜）
+    // 落地后它不会自更新 —— 图在存档文件夹里、舞台背景也换了，菜单里却没有（实测复现）。
+    renderGalleryPane(el, App.cgGallery || []);
+    var sid = saveId();
+    if (!sid) return;
+    fetch('/api/saves/' + encodeURIComponent(sid) + '/cg-gallery')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || !Array.isArray(j.gallery)) return;
+        try { if (window.AppState) window.AppState.cgGallery = j.gallery; } catch (e) { }
+        renderGalleryPane(el, j.gallery);
+      })
+      .catch(function () { /* 网络抖动：保留先用内存列表画的那一版 */ });
+  }
+
+  /** 把 CG 列表画进「数据中心 → CG 画廊」面板 */
+  function renderGalleryPane(el, gal) {
+    var list = gal || [];
     /* 画廊只放 CG：头像 / 卡面一个都不进（旧存档的 cg_gallery.json 里可能混过立绘，
        所以除了「不渲染头像卡片」之外，这里再按名册头像文件名过滤一道）。 */
     var avatarFiles = {};
@@ -1429,7 +1466,7 @@
     Object.keys(roster).forEach(function (n) { markAvatar(roster[n] && roster[n].avatar); });
     markAvatar(avatarUrlFor(charName()));
     markAvatar(avatarUrlFor(personaName()));
-    var onlyCg = gal.filter(function (g) {
+    var onlyCg = list.filter(function (g) {
       var f = String(g.file || g.filename || g.url || g.image || '').split('/').pop().split('?')[0];
       return !f || !avatarFiles[f];
     });
@@ -1607,6 +1644,7 @@
   function showPane(name) {
     $$('#dockTabs .dtab').forEach(function (x) { x.classList.toggle('on', x.dataset.pane === name); });
     $$('.dock-body .pane').forEach(function (p) { p.classList.toggle('on', p.dataset.pane === name); });
+    paneDirty[name] = false;
     loadPane(name);
   }
   function loadPane(name) {
@@ -2295,6 +2333,30 @@
       btn.innerHTML = old;
     });
   });
+
+  /* ---- 对话框左上：「重新生成」----
+     删掉本轮的主 AI 正文 + 管家 AI 处理结果（状态/选项/记忆/CG 判定）+ 本轮 CG，
+     再按上一条用户发言重跑。删除与重跑都由后端 POST /api/chat/stream{regenerate:true}
+     一次完成；用户自己的发言保留。实现见 app.js 的 regenerateMessage()。 */
+  on(byId('btnRegenerate'), 'click', function (e) {
+    e.stopPropagation();
+    if (typeof regenerateMessage !== 'function') { toast('当前界面不支持重新生成'); return; }
+    regenerateMessage();
+  });
+  /* 生成中把按钮置灰（仍可点：点下去会提示先停止）。
+     app.js 的 setGeneratingUI() 只切 body.is-generating，这里跟着它走，避免两边各记一份状态。 */
+  (function () {
+    var b = byId('btnRegenerate');
+    if (!b) return;
+    function apply() {
+      var busy = !!(window.AppState && window.AppState.isGenerating);
+      b.classList.toggle('busy', busy);
+      b.setAttribute('aria-busy', busy ? 'true' : 'false');
+    }
+    apply();
+    try { new MutationObserver(apply).observe(document.body, { attributes: true, attributeFilter: ['class'] }); }
+    catch (err) { /* 无 MutationObserver：至少初始化时同步一次 */ }
+  })();
 
   on(byId('btnAuto'), 'click', function () { setAuto(!S.auto); });
   on(byId('btnSkip'), 'click', function () { S.cur = S.segs.length - 1; render(); toast('已跳到本轮最后一段'); });

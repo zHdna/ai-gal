@@ -53,6 +53,10 @@ const AppState = {
   providers: [],           // API 供应商列表
   themeVars: {},           // 当前主题 CSS 变量
   isGenerating: false,     // AI 是否正在生成中
+  // 生成序号：每次发起生成 +1。回调用它判断"我是不是已经被新一轮取代了"——
+  // 「停止」会把 isGenerating 立刻置 false（用户可以马上再发一次），
+  // 此时上一条流的 finally 若照旧清状态，就会把新一轮的"生成中"UI 抹掉（实测会串）。
+  generationSeq: 0,
   editingCharacterId: null, // 正在编辑的角色 ID (null=新建)
   editingProviderId: null,  // 正在编辑的供应商 ID (null=新建)
   worldBookEntries: [],     // 当前编辑角色的世界书条目缓存
@@ -4642,25 +4646,84 @@ async function sendMessage() {
     return;
   }
 
-  AppState.isGenerating = true;
   input.value = '';
   updateSendButton();
 
-  // 楼层计数
-  AppState.roundCounter++;
+  await runGenerationTurn({ content });
+}
+
+/**
+ * 「重新生成」：把【当前轮】交给后端删掉再重跑。
+ *
+ * 删除范围（全部由后端 POST /api/chat/stream {regenerate:true} 一次完成）：
+ *   · 主 AI 正文 —— messages 表里这一轮的 assistant 行
+ *   · 管家 AI 处理结果 —— 管家把 mood / actions / status / summarize / portrait / CG 判定
+ *     都写进了同一条 assistant 行的 formatted 字段，删行即删；另外还有 event_log.md 的
+ *     该轮记忆行、该轮触发的 CG（画廊条目 + 图片文件）
+ *   · 用户自己的发言【保留】—— 它就是要重新生成所依据的输入
+ *
+ * 画面表现：AI 那一楼原地被新的流式占位替换（用户楼层不动）。
+ */
+async function regenerateMessage() {
+  if (AppState.isGenerating) {
+    showToast('正在生成中，请先点「停止」再重新生成', 'warning');
+    return;
+  }
+  if (!AppState.currentConversation) {
+    showToast('请先选择一个角色开始对话', 'warning');
+    return;
+  }
+  // 至少要有一次用户发言才有「上一条回复」可依据（失败/中止导致 AI 没落库时，发言仍在）
+  const hasUserMsg = (AppState.messages || []).some(m => m.role === 'user');
+  if (!hasUserMsg) {
+    showToast('还没有可重新生成的回合', 'warning');
+    return;
+  }
+  if (!confirm('重新生成本轮剧情？\n\n会删掉本轮的主 AI 正文、管家 AI 处理结果（状态 / 选项 / 记忆 / CG 判定）'
+    + '以及本轮生成的 CG，然后按你上一条发言重新生成。\n你的发言会保留。')) {
+    return;
+  }
+  await runGenerationTurn({ content: '', regenerate: true });
+}
+
+/**
+ * 一轮生成的公共实现 —— 首次发送与「重新生成」走同一条链路，
+ * 渲染、失败处理、调试面板、TTS 行为完全一致，避免两份代码各自漂移。
+ * @param {object} opts
+ * @param {string} opts.content - 用户发言（重新生成时由后端改用库里的上一条发言，这里传空即可）
+ * @param {boolean} [opts.regenerate] - true = 后端先删掉本轮旧内容再重跑
+ */
+async function runGenerationTurn(opts = {}) {
+  const regenerate = !!opts.regenerate;
+  const content = regenerate ? '' : (opts.content || '');
+
+  AppState.isGenerating = true;
+  setGeneratingUI(true);
+  updateSendButton();
+
+  // 楼层计数：重新生成【不】新起一轮，沿用当前轮号（否则用户发言与它的回复会被算成两轮）
+  if (!regenerate) AppState.roundCounter++;
   const currentRound = AppState.roundCounter;
 
-  // 立即显示用户消息
-  const userMsg = {
-    id: 'temp-' + Date.now(),
-    role: 'user',
-    content,
-    formatted: {},
-    hidden: 0,
-    created_at: new Date().toISOString(),
-  };
-  AppState.messages.push(userMsg);
-  DOM.messagesArea().appendChild(createMessageElement(userMsg, currentRound));
+  if (regenerate) {
+    // ⚠️ 这里【不】预删旧楼层：真正删掉的是哪一条只有后端知道（它按 rowid 定位真实插入顺序），
+    //    由紧随其后的 turn_removed 事件回报 message_id 再精确移除（见下面的 onTurnRemoved）。
+    //    曾经按「轮号」在前端预删 —— created_at 只有秒级精度，同秒消息的排序会被 uuid 打乱，
+    //    于是把开场问候一起删了，而库里其实没删 → UI 与库不一致（实测踩过）。
+    //    旧楼层会在这里多停留几十毫秒（直到事件到达），视觉上等价于「原地替换」。
+  } else {
+    // 立即显示用户消息
+    const userMsg = {
+      id: 'temp-' + Date.now(),
+      role: 'user',
+      content,
+      formatted: {},
+      hidden: 0,
+      created_at: new Date().toISOString(),
+    };
+    AppState.messages.push(userMsg);
+    DOM.messagesArea().appendChild(createMessageElement(userMsg, currentRound));
+  }
   scrollToBottom();
 
   // Token 统计：用户消息不再手动计算，等后端返回精确统计
@@ -4686,6 +4749,9 @@ async function sendMessage() {
   // 流式累积文本
   let streamText = '';
   let isStreaming = true;
+  // 本次生成的序号 + 一个"我已被取代"的判定（见 AppState.generationSeq 的注释）
+  const genToken = ++AppState.generationSeq;
+  const isStale = () => genToken !== AppState.generationSeq;
 
   try {
     await ChatAPI.stream(
@@ -4693,21 +4759,33 @@ async function sendMessage() {
       content,
       null,
       {
+        regenerate,
+        onTurnRemoved: (info) => {
+          if (isStale()) return;
+          // 后端已把本轮旧回复删掉：按其回报的 message_id 精确移除那一楼（权威来源 ——
+          // 前端事先无法可靠判断到底该删哪一条，见上面 regenerate 分支的注释）。
+          if (info && info.message_id) dropAssistantBlockById(info.message_id);
+          // 后端同时删掉了本轮生成的 CG（画廊条目 + 图片）：刷新画廊，免得舞台停在一张不存在的图上
+          if (info && info.removed_cgs) refreshGalleryAfterRegenerate();
+        },
         onUserMessage: (msg) => {
           // 服务端已存储用户消息
           // console.log('[Stream] User message stored:', msg.id);
         },
         onToken: (token) => {
-          if (!isStreaming) return;
+          if (!isStreaming || isStale()) return;
           streamText += token;
           // 不显示裸文本，保持打字指示器直到完成
         },
         onMemoryDropPrompt: (info) => {
+          if (isStale()) return;
           // 第 M 轮（M 为注入间隔的整数倍）刚注入了完整记忆表格：
           // 询问用户是否忽略更早的对话、只保留表格。选「是」只裁剪上下文，不删消息，可随时撤销。
           try { promptMemoryDrop(info); } catch (e) { console.warn('[Memory] drop prompt failed:', e); }
         },
         onDone: (result) => {
+          // 已被新一轮取代（例如用户点了停止后立刻重发）：这条流的任何回调都不该再改 UI/状态
+          if (isStale()) { isStreaming = false; return; }
           // ⚠️ 服务端在「主AI输出为空 / 中转失败」时会先发 error 再发 done，而这个 done 携带
           // content:'' + formatted:{segments:[]}。onDone 在 onError 之后执行，若照渲染就会把
           // 刚刚显示的错误信息覆盖成一块空白（只有时间戳、无正文，vn-shell 反解 0 段 → 画面空白）。
@@ -4778,6 +4856,12 @@ async function sendMessage() {
             setTokenStats(result.tokenStats);
           }
 
+          // 服务端的补救提示（例：本轮输出预算被思维链吃光 → 已自动关闭思考模式重试）——
+          // 不弹出来，用户会奇怪"这一轮的输出为什么变了"
+          if (result.notice) {
+            try { showToast(result.notice, 'warning', 9000); } catch (e) { /* toast 非关键 */ }
+          }
+
           // BGM check
           try { const f = typeof result.formatted === 'string' ? JSON.parse(result.formatted) : result.formatted; if (f && f.mood) playBGM(f.mood); } catch { }
 
@@ -4790,21 +4874,99 @@ async function sendMessage() {
           isStreaming = false;
         },
         onError: (error) => {
+          if (isStale()) { isStreaming = false; return; }
           aiMsgDiv.innerHTML = `<div class="narration-text" style="color: #DC143C;">生成出错: ${escapeHtml(error)}</div>`;
           isStreaming = false;
+        },
+        onAborted: () => {
+          isStreaming = false;
+          // 用户点了「停止」：这一轮没有落库，别在剧情里留红色报错块。
+          // 若已被新一轮取代（停止后又立刻重发），连提示都不要弹，元素也已经不属于这一轮了。
+          if (isStale()) return;
+          aiMsgDiv.remove();
+          try { showToast('已停止本轮生成（本轮未写入存档）', 'warning', 3000); } catch (e) { /* 非关键 */ }
         }
       }
     );
   } catch (err) {
     console.error('[SendMessage] 失败:', err);
-    if (isStreaming) {
+    if (isStale()) {
+      // 已被新一轮取代：不要动 UI（这一轮的占位块和状态都不归它管了）
+    } else if (regenerate && isStreaming) {
+      // 重新生成时，HTTP 层就被拒（例如「没有可重新生成的回合」）说明本轮什么都没有发生：
+      // 把流式占位撤掉，只弹提示，别在剧情里留一块红色的失败楼层。
+      aiMsgDiv.remove();
+      try { showToast('重新生成失败：' + (err && err.message ? err.message : err), 'error'); } catch (e) { }
+    } else if (isStreaming) {
       aiMsgDiv.innerHTML = `<div class="narration-text" style="color: #DC143C;">发送失败: ${escapeHtml(err.message)}</div>`;
     }
   } finally {
-    AppState.isGenerating = false;
-    updateSendButton();
+    // ⚠️ 只有"当前这一代"才允许清状态：「停止」会立刻把 isGenerating 置 false 并允许用户马上再发，
+    //    上一条流的 finally 若照旧清，就会把新一轮的生成中 UI（沙漏 + 提示条）抹掉。
+    if (!isStale()) {
+      AppState.isGenerating = false;
+      setGeneratingUI(false);
+      updateSendButton();
+    }
     scrollToBottom();
   }
+}
+
+// ============ 生成中提示（沙漏光标 + 「故事生成中……」） ============
+
+/**
+ * 生成中 UI：鼠标图案变沙漏 + 显示「故事生成中……」提示条。
+ * 只改视觉，**不禁用**交互 —— 用户仍可滚动、点击、切面板（cursor 不影响事件）。
+ */
+function setGeneratingUI(on) {
+  const active = !!on;
+  try { document.body.classList.toggle('is-generating', active); } catch (e) { /* 非关键 */ }
+  document.querySelectorAll('.gen-status').forEach(el => { el.hidden = !active; });
+}
+
+/**
+ * 「重新生成」用：按消息 id 精确移除一楼 AI 回复（含 AppState 与该轮幕后控制台卡片）。
+ * 只认后端 turn_removed 事件回报的 message_id —— 前端自己判断「该删哪一条」不可靠
+ * （created_at 秒级精度 + uuid 排序会把开场问候也算成「当前轮」）。
+ */
+function dropAssistantBlockById(msgId) {
+  if (!msgId) return;
+  const id = String(msgId);
+  const el = DOM.messagesArea().querySelector(`.story-block[data-id="${id}"]`);
+  const round = el ? String(el.dataset.round == null ? '' : el.dataset.round) : '';
+  if (el) el.remove();
+  AppState.messages = (AppState.messages || []).filter(m => String(m.id) !== id);
+  if (round) dropDebugCardsOfRound(round);
+}
+
+/** 删掉幕后控制台里属于某一轮的调试卡片（data-round = 轮号） */
+function dropDebugCardsOfRound(round) {
+  const wanted = String(round == null ? '' : round);
+  if (!wanted) return 0;
+  let removed = 0;
+  ['debugMainAgentContent', 'debugButlerContent'].forEach(boxId => {
+    const box = document.getElementById(boxId);
+    if (!box) return;
+    box.querySelectorAll('.debug-card').forEach(card => {
+      if (String(card.dataset.round == null ? '' : card.dataset.round) === wanted) {
+        card.remove();
+        removed++;
+      }
+    });
+  });
+  return removed;
+}
+
+/** 重新生成时后端删掉了本轮的 CG：重取画廊，避免舞台停在已被删除的那张图上 */
+function refreshGalleryAfterRegenerate() {
+  const saveId = getCurrentSaveId();
+  if (!saveId) return;
+  request('/saves/' + saveId + '/cg-gallery').then(resp => {
+    if (resp && Array.isArray(resp.gallery)) {
+      AppState.cgGallery = resp.gallery;
+      renderGallery();
+    }
+  }).catch(() => { /* 画廊刷新失败不影响本轮生成 */ });
 }
 
 /**
@@ -4917,7 +5079,10 @@ async function scriptGenerate(content, opts = {}) {
   scrollToBottom();
 
   let isStreaming = true;
+  const genToken = ++AppState.generationSeq;
+  const isStale = () => genToken !== AppState.generationSeq;
   AppState.isGenerating = true;
+  setGeneratingUI(true);
   updateSendButton();
 
   return new Promise((resolve, reject) => {
@@ -4925,6 +5090,7 @@ async function scriptGenerate(content, opts = {}) {
       onUserMessage: () => {},
       onToken: () => {},
       onDone: (result) => {
+        if (isStale()) { isStreaming = false; resolve({ id: result.id, content: result.content, formatted: result.formatted }); return; }
         processAIResponse(result);
         if (result.formatted && typeof result.formatted === 'object') {
           aiMsgDiv.innerHTML = renderAIBlock(result.formatted, result.content, new Date().toISOString());
@@ -4957,22 +5123,39 @@ async function scriptGenerate(content, opts = {}) {
         const conv = AppState.currentConversation;
         if (conv) DOM.conversationTitle().textContent = conv.title || AppState.currentCharacter?.name || '对话';
         isStreaming = false;
-        AppState.isGenerating = false;
-        updateSendButton();
+        if (!isStale()) {
+          AppState.isGenerating = false;
+          setGeneratingUI(false);
+          updateSendButton();
+        }
         scrollToBottom();
         resolve({ id: result.id, content: result.content, formatted: result.formatted });
       },
       onError: (error) => {
+        if (isStale()) { isStreaming = false; reject(new Error(error)); return; }
         aiMsgDiv.innerHTML = `<div class="narration-text" style="color: #DC143C;">生成出错: ${escapeHtml(error)}</div>`;
         isStreaming = false;
         AppState.isGenerating = false;
+        setGeneratingUI(false);
         updateSendButton();
         reject(new Error(error));
       },
+      onAborted: () => {
+        isStreaming = false;
+        if (!isStale()) {
+          aiMsgDiv.remove();
+          AppState.isGenerating = false;
+          setGeneratingUI(false);
+          updateSendButton();
+        }
+        reject(new Error('Generation aborted'));
+      },
     }).catch((err) => {
+      if (isStale()) { isStreaming = false; reject(err); return; }
       if (isStreaming) aiMsgDiv.innerHTML = `<div class="narration-text" style="color: #DC143C;">发送失败: ${escapeHtml(err.message)}</div>`;
       isStreaming = false;
       AppState.isGenerating = false;
+      setGeneratingUI(false);
       updateSendButton();
       reject(err);
     });
@@ -6166,8 +6349,11 @@ async function loadRosterPage() {
     }
     let html = '';
     for (const [name, char] of entries) {
-      // Only show characters that have a real avatar (.jpg)
-      if (!char.avatar || !char.avatar.endsWith('.jpg')) continue;
+      // 只显示"真有头像"的角色。以前这里写死 `.jpg`，而 anima-turbo-cg / NovelAI 这类
+      // 走 base64 的引擎产出的头像是 **.png** → 整个名册页被静默清空（用户报过）。
+      // 判据与后端 savePaths.hasRealAvatar 对齐：非空、非 pending / 占位符即可，扩展名不参与判断。
+      if (!char.avatar || char.avatar === 'pending' || char.avatar === '已有头像' || char.avatar === 'failed' || char.avatar === 'NPCF' || char.avatar === 'NPCM') continue;
+      if (!/\.(png|jpe?g|webp|avif|gif|bmp)$/i.test(String(char.avatar))) continue;
       const info = parseRosterFields(char);
       const avatarHtml = char.avatar
         ? `<img class="roster-card-avatar" src="/api/saves/${saveId}/images/${encodeURIComponent(char.avatar)}" alt="${escapeHtml(name)}" onclick="event.stopPropagation();viewFullSizeAvatar(this.src,'${escapeJs(name)}')">`
@@ -6552,6 +6738,9 @@ async function loadGalleryPage() {
   try {
     const resp = await request('/saves/' + saveId + '/cg-gallery');
     const gallery = resp.gallery || [];
+    // 顺手把结果同步进 AppState：桌面 VN 外壳的「CG 画廊」面板与舞台都读 AppState.cgGallery，
+    // 只渲染下面那个手机网格的话，外壳那边永远停在旧快照（用户报的"画廊菜单里看不到新图"）。
+    if (Array.isArray(gallery)) AppState.cgGallery = gallery;
     _galleryItems = gallery.map(cg => ({
       url: `/api/saves/${saveId}/images/${encodeURIComponent(cg.filename)}`,
       label: cg.sceneEnd ? (cg.description || '场景 · NSFW 流程结束') : (cg.character || '')
@@ -7253,15 +7442,19 @@ function updateSendButton() {
 
 /**
  * 中止当前 AI 生成
+ * ⚠️ 一定要把 conversation_id 带给服务端 —— 服务端的 streamId 从不下发给前端，
+ *    老实现按 stream_id 中止等于没发（400），「停止」按钮其实一直没生效。
  */
 async function abortGeneration() {
   try {
     showToast('正在中止...', 'warning', 2000);
-    await ChatAPI.abort();
+    const cid = AppState.currentConversation && AppState.currentConversation.id;
+    await ChatAPI.abort(cid || undefined);
   } catch (err) {
     console.error('[Abort] 失败:', err);
   }
   AppState.isGenerating = false;
+  setGeneratingUI(false);
   updateSendButton();
 }
 
@@ -9121,15 +9314,32 @@ function imageOpenAISettingsHtml(rawSettings) {
   const m = (s.api_model || '').trim();
   const q = s.quality_prefix || '';
   const sz = s.image_size || '';
-  // 尺寸选项：空=不指定（由服务商用各自默认值）。
-  // OpenAI 系覆盖 DALL-E 与 SenseNova u1 的合法尺寸；NovelAI 覆盖常用档位（须为 64 的倍数，
-  // 超过 1024² 的档位在 Opus 订阅下会消耗 Anlas）。
+  // 尺寸预设**按引擎分开**（用户要求：不同接口的菜单彼此独立，避免把 OpenAI 的云端尺寸
+  // 丢给本地 sd.cpp、或把本地尺寸丢给云端服务商）：
+  //   anima   —— 本地 stable-diffusion.cpp：只给实测可用的常用档（512~1536；
+  //              1024² 是 Anima-Turbo 的原生训练分辨率，纯 CPU 建议 512/768）
+  //   openai/stability —— DALL·E / SenseNova u1 等云端合法尺寸
+  //   novelai —— 官方常用档（宽高须为 64 的倍数；>1024² 或 >28 步会消耗 Anlas）
+  const isAnima = ((s.mode || '') === 'anima');
   const sizeOpts = isNovelai
     ? ['', '1024x1024', '832x1216', '1216x832', '1024x1536', '1536x1024', '1216x1632', '1632x1216']
-    : ['', '1024x1024', '1792x1024', '1024x1792',
-      '2048x2048', '1536x2752', '2752x1536', '1664x2496', '2496x1664',
-      '1760x2368', '2368x1760', '1824x2272', '2272x1824', '1344x3136', '3072x1376'];
-  const sizeLabels = { '': '服务商默认（不指定尺寸）' };
+    : (isAnima
+      ? ['', '512x512', '768x768', '1024x1024', '832x1216', '1216x832', '1024x1536', '1536x1024']
+      : ['', '1024x1024', '1792x1024', '1024x1792',
+        '2048x2048', '1536x2752', '2752x1536', '1664x2496', '2496x1664',
+        '1760x2368', '2368x1760', '1824x2272', '2272x1824', '1344x3136', '3072x1376']);
+  const sizeLabels = isAnima
+    ? {
+      '': '用服务启动参数里的尺寸（不指定）',
+      '512x512': '512x512（纯 CPU 推荐）',
+      '768x768': '768x768（低显存推荐）',
+      '1024x1024': '1024x1024（模型原生 · 推荐）',
+      '832x1216': '832x1216（竖构图）',
+      '1216x832': '1216x832（横构图）',
+      '1024x1536': '1024x1536（竖构图 · 大图）',
+      '1536x1024': '1536x1024（横构图 · 大图）',
+    }
+    : { '': '服务商默认（不指定尺寸）' };
   const qOpts = [
     ['', '无（不添加）'],
     ['high quality, detailed, sharp focus', '标准增强'],
@@ -9163,13 +9373,21 @@ function imageOpenAISettingsHtml(rawSettings) {
     modelOptions.push(`<option value="__custom__" ${m ? '' : 'selected'}>自定义...</option>`);
   }
   const showModelCustom = !m || (isNovelai && m && !['nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-3', 'nai-diffusion-furry-3'].includes(m));
-  const sizeCustom = !sizeOpts.includes(sz);
+  // 尺寸一律先规范化（'1536X1024' / '1536 × 1024' / '1536*1024' → '1536x1024'）：
+  // 本地 sd.cpp 的 OpenAI 路由只认小写 x，其它写法会被**静默忽略**（回落默认尺寸）。
+  const szNorm = normalizeSizeString(sz);
+  const sizeCustom = !!szNorm && !sizeOpts.includes(szNorm);
+  const sizeDims = sizeCustom ? szNorm.split('x') : ['', ''];
+  const sizeW = sizeDims[0] || '';
+  const sizeH = sizeDims[1] || '';
   const qCustom = !qOpts.some(([v]) => v === q);
-  const sizeOptions = sizeOpts.map(o => `<option value="${esc(o)}" ${o === sz ? 'selected' : ''}>${esc(sizeLabels[o] || o)}</option>`).join('');
+  const sizeOptions = sizeOpts.map(o => `<option value="${esc(o)}" ${o === szNorm ? 'selected' : ''}>${esc(sizeLabels[o] || o)}</option>`).join('');
   const modelCustomPlaceholder = isNovelai ? '自定义模型名，如 nai-diffusion-4-full' : '自定义模型名，如 gpt-image-1';
-  const sizeCustomPlaceholder = isNovelai
-    ? '自定义尺寸，宽x高（须为 64 的倍数，如 832x1216；超过 1024² 或 28 步会消耗 Anlas）'
-    : '自定义尺寸，如 1536x1024（须为服务商支持的尺寸）';
+  const sizeHint = isAnima
+    ? '本地引擎：建议 512~1536、宽高取 8 的倍数（64 更好）。这里填的宽高会以「宽x高」发送，不会再出现大小写 x 不被识别的问题。'
+    : (isNovelai
+      ? 'NovelAI：宽高必须是 64 的倍数（如 832x1216）；超过 1024² 或 28 步会消耗 Anlas。'
+      : '云端服务商：请填服务商文档支持的尺寸（如 DALL·E 3 的 1024x1024 / 1792x1024）。');
   return `
     <label style="margin-top:8px;display:block">生图模型</label>
     <div style="display:flex;gap:6px;align-items:center">
@@ -9192,21 +9410,42 @@ function imageOpenAISettingsHtml(rawSettings) {
     <label style="margin-top:8px;display:block">图片尺寸</label>
     <select id="imageSize" class="setting-select">
       ${sizeOptions}
-      <option value="__custom__" ${sizeCustom ? 'selected' : ''}>自定义...</option>
+      <option value="__custom__" ${sizeCustom ? 'selected' : ''}>自定义（宽 × 高）…</option>
     </select>
-    <input type="text" id="imageSizeCustom" class="setting-input" style="display:${sizeCustom ? 'block' : 'none'};margin-top:4px" placeholder="${esc(sizeCustomPlaceholder)}" value="${esc(sizeCustom ? sz : '')}">
+    <div id="imageSizeCustomRow" style="display:${sizeCustom ? 'flex' : 'none'};gap:6px;align-items:center;margin-top:4px">
+      <input type="number" id="imageSizeW" class="setting-input" style="flex:1;min-width:0" min="64" max="4096" step="8"
+             inputmode="numeric" placeholder="宽，如 1536" value="${esc(sizeW)}">
+      <span style="color:var(--text-muted)">×</span>
+      <input type="number" id="imageSizeH" class="setting-input" style="flex:1;min-width:0" min="64" max="4096" step="8"
+             inputmode="numeric" placeholder="高，如 1024" value="${esc(sizeH)}">
+    </div>
+    <small style="color:var(--text-muted);display:block;margin-top:4px">${esc(sizeHint)}</small>
   `;
 }
 
-// 为自定义（__custom__）选项绑定显示/隐藏，并对尺寸自定义做同样处理
+// 「+ 自定义…」的显隐绑定。尺寸控件单独处理：它不是"下拉+文本框"，而是"下拉 + 宽/高两个数字格"。
 function wireOpenAICustom(root) {
-  const pairs = [['#apiModel', '#apiModelCustom'], ['#qualityPrefix', '#qualityPrefixCustom'], ['#imageSize', '#imageSizeCustom']];
+  const pairs = [['#apiModel', '#apiModelCustom'], ['#qualityPrefix', '#qualityPrefixCustom']];
   for (const [sel, inp] of pairs) {
     const s = root.querySelector(sel);
     const i = root.querySelector(inp);
     if (s && i) {
       s.addEventListener('change', () => { i.style.display = (s.value === '__custom__') ? 'block' : 'none'; });
     }
+  }
+  const sizeSel = root.querySelector('#imageSize');
+  if (sizeSel) {
+    sizeSel.addEventListener('change', () => {
+      // 选回预设档 = 清掉两个数字格里的旧值，避免"看着是 1024²，实际发的是格子里的残留值"
+      if (sizeSel.value !== '__custom__') {
+        const w = root.querySelector('#imageSizeW');
+        const h = root.querySelector('#imageSizeH');
+        if (w) w.value = '';
+        if (h) h.value = '';
+      }
+      syncSizeRow(root);
+    });
+    syncSizeRow(root);
   }
   const fb = root.querySelector('#fetchImageModels');
   if (fb) fb.addEventListener('click', () => fetchImageModelsInto(root));
@@ -9281,6 +9520,62 @@ function fetchImageModelsInto(root) {
   })();
 }
 
+/**
+ * 尺寸字符串规范化：`1536X1024` / `1536 × 1024` / `1536*1024` / `1536 x 1024` → `1536x1024`。
+ *
+ * 为什么必须有它：anima-turbo-cg（stable-diffusion.cpp）的 OpenAI 路由用 `size.find('x')`
+ * 解析尺寸 —— **只认小写 x**，其它写法（大写 X、全角 ×、*、带空格）会被静默忽略，
+ * 直接回落到服务启动参数里的默认尺寸（实测 `1536X1024` → 出图仍是 1024x1024）。
+ * 解析不出宽高时返回 ''（宁可"不指定尺寸"，也不要发一个引擎看不懂的串）。
+ */
+function normalizeSizeString(raw) {
+  const m = String(raw == null ? '' : raw).trim().match(/^(\d{1,5})\s*[xX×*✕╳]\s*(\d{1,5})$/);
+  if (!m) return '';
+  const w = parseInt(m[1], 10);
+  const h = parseInt(m[2], 10);
+  if (!(w > 0) || !(h > 0)) return '';
+  return w + 'x' + h;
+}
+
+/** 读尺寸控件的当前值：预设档直接取；自定义档用「宽」「高」两个数字格拼成 `宽x高` */
+function readSizeValue(root) {
+  const sel = root.querySelector('#imageSize');
+  if (!sel) return '';
+  if (sel.value !== '__custom__') return normalizeSizeString(sel.value);
+  const w = parseInt((root.querySelector('#imageSizeW') || {}).value, 10);
+  const h = parseInt((root.querySelector('#imageSizeH') || {}).value, 10);
+  if (!(w > 0) || !(h > 0)) return '';
+  return w + 'x' + h;
+}
+
+/** 自定义尺寸那一行（宽/高两个格子）只在选中「自定义…」时出现 */
+function syncSizeRow(root) {
+  const sel = root.querySelector('#imageSize');
+  const row = root.querySelector('#imageSizeCustomRow');
+  if (sel && row) row.style.display = (sel.value === '__custom__') ? 'flex' : 'none';
+}
+
+/** 把 `宽x高` 写回尺寸控件：能对上预设档就选预设，否则落到「自定义…」并拆进两个数字格 */
+function applySizeControl(root, value) {
+  const sel = root.querySelector('#imageSize');
+  if (!sel) return;
+  const wEl = root.querySelector('#imageSizeW');
+  const hEl = root.querySelector('#imageSizeH');
+  const norm = normalizeSizeString(value);
+  const opts = Array.from(sel.options || []).map(o => o.value);
+  if (!norm || opts.indexOf(norm) >= 0) {
+    sel.value = norm || (opts.length ? opts[0] : '');
+    if (wEl) wEl.value = '';
+    if (hEl) hEl.value = '';
+  } else {
+    sel.value = '__custom__';
+    const d = norm.split('x');
+    if (wEl) wEl.value = d[0];
+    if (hEl) hEl.value = d[1];
+  }
+  syncSizeRow(root);
+}
+
 // 从控件中解析出最终要保存的值
 function resolveOpenAIValues(root) {
   const pick = (sel, inp) => {
@@ -9293,7 +9588,7 @@ function resolveOpenAIValues(root) {
   return {
     api_model: pick('#apiModel', '#apiModelCustom'),
     quality_prefix: pick('#qualityPrefix', '#qualityPrefixCustom'),
-    image_size: pick('#imageSize', '#imageSizeCustom'),
+    image_size: readSizeValue(root),
   };
 }
 
@@ -9444,7 +9739,6 @@ function prefillApiFieldsForMode(root, mode, force, prevMode, prevSnapshot) {
   const modelSel = root.querySelector('#apiModel');
   const modelCustom = root.querySelector('#apiModelCustom');
   const sizeSel = root.querySelector('#imageSize');
-  const sizeCustom = root.querySelector('#imageSizeCustom');
   const qSel = root.querySelector('#qualityPrefix');
   const qCustom = root.querySelector('#qualityPrefixCustom');
 
@@ -9514,10 +9808,14 @@ function prefillApiFieldsForMode(root, mode, force, prevMode, prevSnapshot) {
         setModel(savedStr('api_model'));
       }
     }
-    if (sizeSel && sizeCustom) {
-      const cur = currentSelectValue(sizeSel, sizeCustom);
-      if (force) applySelectOrCustom(sizeSel, sizeCustom, savedStr('image_size') || sizeFallback);
-      else if (!/^\d+\s*[xX×]\s*\d+$/.test(cur)) applySelectOrCustom(sizeSel, sizeCustom, sizeFallback);
+    if (sizeSel) {
+      // 尺寸：预设档按引擎分（见 imageOpenAISettingsHtml 的 sizeOpts）；自定义是「宽」「高」两个格子。
+      // force=true（切引擎）：取目标引擎自己的槽位 / 默认值。
+      // force=false（打开界面）：只在"当前值不是合法宽x高"时才补默认 —— 合法的自定义尺寸必须保留
+      // （readSizeValue 会把旧库里的 `1536X1024` 规范化成 `1536x1024`，所以它就落在"合法"里）。
+      const cur = readSizeValue(root);
+      if (force) applySizeControl(root, savedStr('image_size') || sizeFallback);
+      else if (!/^\d+x\d+$/.test(cur)) applySizeControl(root, sizeFallback);
     }
     if (qSel && qCustom && force && savedStr('quality_prefix')) {
       applySelectOrCustom(qSel, qCustom, savedStr('quality_prefix'));

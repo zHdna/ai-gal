@@ -224,7 +224,7 @@
       }
     }
   </style>
-  <link rel="stylesheet" href="css/desktop/vn.css?v=20260917j">
+  <link rel="stylesheet" href="css/desktop/vn.css?v=20260922b">
 </head>
 
 <body>
@@ -400,6 +400,13 @@
           <span class="corner tl"></span><span class="corner tr"></span>
           <span class="corner bl"></span><span class="corner br"></span>
 
+          <!-- 左上：重新生成本轮剧情。不满当前剧情 / 生成出错时用 —— 后端会删掉本轮
+               主AI正文 + 管家AI处理结果（状态/选项/记忆/CG判定）+ 本轮 CG，再按上一条
+               用户发言重跑；用户自己的发言保留。生成中该按钮提示先停止。 -->
+          <span class="dlg-actions-left">
+            <button class="tool tip" id="btnRegenerate" data-tip="重新生成本轮剧情（删掉本轮 AI 回复与管家处理结果后重跑）">↻ 重新生成</button>
+          </span>
+
           <!-- 右上三个按钮骑在顶边金线上（--[]--[]--[]--）：不占正文高度。
                数据中心（#fabData）挪到这里，夹在「语音」和「隐藏UI」之间；
                ⚠ 它只负责开关，弹窗本体 .dock 仍是右下角绝对定位，位置不随按钮走。 -->
@@ -441,6 +448,11 @@
 
         <!-- 指令条：与主对话框合并成一个面板（无缝，去掉了导入角色卡的 ＋ 键） -->
         <div class="cmd">
+          <!-- 生成中提示：骑在主对话框与这条指令条（输入框）之间的接缝上。
+               放在 .cmd 里（不是 .dialog 里）是因为 .cmd 在 DOM 靠后、且自带层叠上下文，
+               能保证提示条画在指令条底色【之上】—— 放 .dialog 里会被指令条压掉下半截。
+               仅作视觉提示（pointer-events:none），不挡任何点击。 -->
+          <div class="gen-status" id="genStatus" hidden>故事生成中……</div>
           <textarea id="messageInput" rows="1" placeholder="输入你的行动或台词…（Enter 发送，Shift + Enter 换行）"></textarea>
           <span class="hint"><kbd>Enter</kbd> 发送 · <kbd>Esc</kbd> 收起面板</span>
           <button class="send" id="btnSend">发 送</button>
@@ -1171,6 +1183,8 @@ confidence = 0.88</pre>
 
         <div class="input-area">
           <textarea id="messageInput" placeholder="输入消息... (Ctrl+Enter 发送)" rows="1" autofocus></textarea>
+          <!-- 生成中提示（?legacy=1 旧界面专用；VN 外壳里那份在 .dialog 内） -->
+          <div class="gen-status" id="genStatusLegacy" hidden>故事生成中……</div>
           <div class="input-actions">
             <button class="btn btn-sm" id="btnResetPhonePos" title="复位悬浮按钮和手机界面">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -2072,9 +2086,9 @@ confidence = 0.88</pre>
 
   <input type="file" id="characterFileInput" accept=".json,.png" style="display:none">
 
-  <script src="js/api.js?v=20260709a"></script>
+  <script src="js/api.js?v=20260922e"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20260921c"></script>
+  <script src="js/app.js?v=20260923a"></script>
   <script>
     // === Theater Enhancement: UI Logic ===
     (function () {
@@ -2143,7 +2157,7 @@ confidence = 0.88</pre>
     </div>
     <div id="ttsListPopupBody" class="tts-list-popup-body"></div>
   </div>
-  <script src="js/desktop/vn-shell.js?v=20260921a"></script>
+  <script src="js/desktop/vn-shell.js?v=20260923a"></script>
 </body>
 
 </html>

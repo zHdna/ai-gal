@@ -4,9 +4,9 @@
  */
 const { Router } = require('express');
 const { v4: uuidv4 } = require('uuid');
-const path = require('path');
-const fs = require('fs');
-const { EVENT_LOG_FILE } = require('../constants');
+// 轮次清理（event_log 记忆行）与 chat.js 的「重新生成」共用同一套语义，
+// 避免两边各写一份导致「删第 1 轮却清了第 2 轮记忆」那类漂移。
+const { getAffectedRounds, cleanupEventLog } = require('../utils/turnCleanup');
 
 function safeLimit(limit) {
   const n = parseInt(limit);
@@ -237,73 +237,4 @@ function parseStoryDialogInline(text, segments) {
   const after = text.slice(lastIdx).trim();
   if (after) segments.push({ type: 'story', text: after });
   if (segments.length === 0) segments.push({ type: 'story', text });
-}
-
-/**
- * Get round numbers for given message IDs (before deletion).
- * Round = ceil(message_position / 2) where position is ordered by created_at.
- */
-function getAffectedRounds(db, messageIds) {
-  if (!messageIds || messageIds.length === 0) return new Set();
-
-  // Get conversation_id and created_at for each message
-  const placeholders = messageIds.map(() => '?').join(',');
-  const rows = db.prepare(`SELECT id, conversation_id, created_at FROM messages WHERE id IN (${placeholders})`).all(...messageIds);
-  if (rows.length === 0) return new Set();
-
-  const rounds = new Set();
-
-  for (const row of rows) {
-    // Find position of this message in its conversation (ordered by created_at)
-    const position = db.prepare(`
-      SELECT COUNT(*) as cnt FROM messages
-      WHERE conversation_id = ? AND created_at <= ?
-    `).get(row.conversation_id, row.created_at);
-    const roundNum = Math.ceil(position.cnt / 2);
-    rounds.add(roundNum);
-  }
-
-  return rounds;
-}
-
-/**
- * Remove entries for deleted rounds from event_log.md and renumber.
- * Format: one line per round: "第N轮 | time | place | chars | event"
- * Also clears memory_context to force rebuild.
- */
-function cleanupEventLog(db, conversation_id, affectedRounds) {
-  if (!affectedRounds || affectedRounds.size === 0) return;
-  if (!conversation_id) return;
-
-  const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
-  if (!save) return;
-
-  const eventLogPath = path.join(save.save_path, EVENT_LOG_FILE);
-  if (!fs.existsSync(eventLogPath)) return;
-
-  const content = fs.readFileSync(eventLogPath, 'utf-8');
-  const lines = content.split('\n').filter(l => l.trim());
-  if (lines.length === 0) return;
-
-  const deletedSet = new Set([...affectedRounds].map(Number));
-
-  // Filter: keep lines whose round number is NOT in the deleted set
-  const remaining = lines.filter(l => {
-    const m = l.match(/^第(\d+)轮/);
-    return m && !deletedSet.has(parseInt(m[1]));
-  });
-
-  // Re-number sequentially
-  const renumbered = remaining.map((l, idx) => {
-    return l.replace(/^第\d+轮/, `第${idx + 1}轮`);
-  });
-
-  const newContent = renumbered.join('\n') + '\n';
-  fs.writeFileSync(eventLogPath, newContent, 'utf-8');
-
-  // Clear memory_context (will be rebuilt at next 20-round boundary)
-  db.prepare('UPDATE conversations SET memory_context = ? WHERE id = ?')
-    .run(JSON.stringify({}), conversation_id);
-
-  console.log('[Messages] Event log cleaned: removed rounds', [...deletedSet], '→', renumbered.length, 'entries remain');
 }

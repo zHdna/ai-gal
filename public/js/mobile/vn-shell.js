@@ -58,7 +58,10 @@
      （会被抹掉，表现就是「设置里仍显示 120%，实际字号已回到 100%」）。
      改为注入一个专用 <style> 承载 --fs —— 只更新它的文本，永不被清除。
   ------------------------------------------------------------------ */
-  var FS_KEY = 'mobile-font-scale', FS_MIN = 0.85, FS_MAX = 1.6, FS_STEP = 0.1;
+  var FS_KEY = 'mobile-font-scale', FS_MIN = 0.85, FS_MAX = 1.6, FS_STEP = 0.1,
+    /* 默认字号：比原基准（1 ≈ 14px）加大两号，适配竖屏阅读。
+       用户手动调过的值仍以 localStorage 为准，不受影响。 */
+    FS_DEFAULT = 1.15;
 
   function applyFontScale(v) {
     v = Math.min(FS_MAX, Math.max(FS_MIN, Math.round((parseFloat(v) || 1) * 100) / 100));
@@ -86,13 +89,13 @@
   }
 
   function initFontScale() {
-    var v = 1;
+    var v = FS_DEFAULT;
     try {
       var qp = new URLSearchParams(location.search);
       // ?fs= 深链：顺手写入偏好（便于验证「关闭再打开」是否记住）
-      if (qp.get('fs')) { try { localStorage.setItem(FS_KEY, String(parseFloat(qp.get('fs')) || 1)); } catch (e) { } }
+      if (qp.get('fs')) { try { localStorage.setItem(FS_KEY, String(parseFloat(qp.get('fs')) || FS_DEFAULT)); } catch (e) { } }
       var p = qp.get('fs');
-      v = p ? parseFloat(p) : (parseFloat(localStorage.getItem(FS_KEY)) || 1);
+      v = p ? parseFloat(p) : (parseFloat(localStorage.getItem(FS_KEY)) || FS_DEFAULT);
     } catch (e) { }
     applyFontScale(v);
     var minus = $('#vnFsMinus'), plus = $('#vnFsPlus'), reset = $('#vnFsVal');
@@ -103,7 +106,7 @@
       applyFontScale(currentFs() + FS_STEP); toast('字号 ' + $('#vnFsVal').textContent);
     });
     if (reset) reset.addEventListener('click', function () {
-      applyFontScale(1); toast('字号已重置为 100%');
+      applyFontScale(FS_DEFAULT); toast('字号已重置为默认');
     });
   }
 
