@@ -130,6 +130,13 @@ body {
   flex-direction: column;
   background: var(--void);
   overflow: hidden;
+  /* 软键盘占位：值由 vn-shell.js 的 initKeyboardInset() 写进 --kb-inset（未弹出时为 0px）。
+     移动端软键盘弹出时【布局视口不变、只有视觉视口变矮】，底部指令条会被键盘盖住；
+     这里把整个外壳的内容盒压到键盘上方（= 浏览器原生 interactive-widget=resizes-content
+     的语义，但 iOS/Android 一致），于是 HUD / 页面区 / 底部标签一起让位，指令条正好落在键盘上沿。
+     ⚠️ 必须加在【根容器】上，不能加在 #vnPages 上 —— 绝对定位的 .vn-page 的包含块是
+     #vnPages 的【内边距盒】（含量含 padding），给它加 padding 根本压不矮它（实测无效）。 */
+  padding-bottom: var(--kb-inset, 0px);
 }
 
 #vnRoot .vn-top {
@@ -249,7 +256,7 @@ html[data-theme="light"] .vn-brand {
   background: rgba(232, 200, 120, .12);
 }
 
-/* 页面容器 */
+/* 页面容器（软键盘占位加在 #vnRoot 上，原因见那里的注释 —— 加在这里无效） */
 #vnPages {
   position: relative;
   flex: 1 1 auto;
@@ -280,6 +287,59 @@ html[data-theme="light"] .vn-brand {
   flex: 1 1 auto;
   min-height: 130px;
   overflow: hidden;
+}
+
+/* 软键盘弹出时（vn-shell.js 的 initKeyboardInset() 打上 .kb-open）：
+   舞台让位，优先保证「对话框 + 指令条」同屏可见。
+   .vn-dlg / .vn-cmd 都是 flex:0 0 auto 不可压缩，所以只要放开舞台的 min-height，
+   空间不够时它自己会收成一条窄边 —— 这样键盘上方不会缺一截，也不必滚动页面。 */
+#vnRoot.kb-open .vn-stage {
+  min-height: 0;
+}
+
+/* 指令条【吸底】（2026-09-23 第二轮，用户反馈"输入框还是被挡住，但下方菜单会自动上移"）。
+   ⚠️ 只让舞台让位还不够：浏览器缩【布局视口】时（Android Chrome / 各 WebView 常见），
+   #vnPageChat 里的内容照样可能装不下 → 指令条被滚出可视区，视觉上就是
+   「底部菜单贴着对话框上移、中间的输入框不见了」。
+   sticky 让指令条必然停在滚动区下沿（= 底部标签正上方），与「浏览器缩的是哪个视口」无关。
+
+   z-index 必须显式 > .vn-dlg(5)：吸底时它会盖住对话框下沿，而 position:sticky 的
+   z-index:auto 属于层叠顺序的第 8 级、z-index>0 属于第 9 级 —— 不给值就会被对话框压过去。
+   9 同时高于 .vn-choices(6)，所以下面要按百分比给它让出位置。 */
+#vnRoot.kb-open .vn-cmd {
+  position: sticky;
+  bottom: 0;
+  z-index: 9;
+}
+
+/* 键盘弹出时【对话框可压缩】：小屏（360×640 + 键盘）下 舞台0 + 对话框306 + 指令条59
+   会超出页面高度 → 整页滚动，绝对定位的行动选项跟着漂出屏幕。
+   放开 flex-shrink + 给一个 132px（≈工具行 + 三行对白）的下限，让它先让位，
+   这样通常【不产生溢出】（选项就不会漂、也不必滚动），实在装不下才轮到下面的 sticky + pinCmd 兜底。 */
+#vnRoot.kb-open .vn-dlg {
+  flex: 0 1 auto;
+  min-height: 132px;
+}
+
+/* 键盘弹出时行动选项的定位要重算（2026-09-23 第二轮）：
+   平时靠 `bottom: calc(var(--dlg-h) + 68px)` 这条【按未压缩对话框高度算出的死带子】避让对话框，
+   页面被键盘压矮后它可能超过容器高度 → 盒子高度被压成 0、按钮从盒子里溢出去。
+   实测 360×640 + kb300：4 个选项全落在 y<0（一个都点不到）；390×844 + kb300 也只剩一条 40px 的缝。
+   改成「占满页面高度减去吸底指令条」，safe center 让内容溢出时从顶部开始排（配合 overflow-y 可滚），
+   再把按钮略微收紧 —— 保证小屏 4 个选项也整块落在键盘上方、且不被吸底指令条盖住。 */
+#vnRoot.kb-open .vn-choices {
+  top: 0;
+  bottom: auto;
+  height: calc(100% - 74px);
+  max-height: calc(100% - 74px);
+  padding: 2px;
+  gap: 4px;
+  justify-content: safe center;
+}
+
+#vnRoot.kb-open .vn-ch {
+  padding: 5px 10px 5px 8px;
+  font-size: calc(12.5px * var(--fs));
 }
 
 /* 背景：默认背景色填充（不再铺放大的 CG）。
@@ -471,8 +531,11 @@ html[data-theme="light"] .vn-welcome h2 {
 
 /* ===================== 5. 主对话框（GAL 逐段演出） ===================== */
 .vn-dlg {
-  position: relative;
-  z-index: 3;
+  position: relative;   /* 生成中提示条 .gen-status 以此为定位基准（骑在上缘的金线上） */
+  /* 5 = 压在舞台的一切覆盖层之上（.vn-welcome 是 4）——
+     对话框上缘与舞台重叠 26px（margin-top:-26px），旧值 3 会被 .vn-welcome 盖住，
+     连带把骑在上缘的生成中提示条一起压掉。刻意低于 .vn-back-latest(90) / .vn-choices(95)。 */
+  z-index: 5;
   flex: 0 0 auto;
   height: var(--dlg-h);
   margin: -26px 12px 0;
@@ -836,7 +899,10 @@ html[data-theme="light"] .vn-aff b {
   top: 0;
   bottom: calc(var(--dlg-h) + 68px);
   transform: translateX(-50%);
-  z-index: 4;
+  /* 6 = 仍要压在对话框(5)之上。平时靠 bottom 的 68px 让开对话框，两者不重叠；
+     但小屏（舞台被压到 min-height:130px）时对话框会上移进这条带子里 ——
+     选项是交互元素，绝不能被盖住（旧值 4 在对话框还是 3 时是够的，同批抬到 5 后必须跟着抬）。 */
+  z-index: 6;
   width: min(520px, calc(100% - 48px));
   max-height: 68%;
   overflow-y: auto;
@@ -911,7 +977,7 @@ html[data-theme="light"] .vn-aff b {
 
 /* ===================== 7. 指令条 ===================== */
 .vn-cmd {
-  position: relative;   /* 生成中提示条 .gen-status 以此为定位基准（骑在顶边上） */
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: flex-end;
@@ -925,32 +991,64 @@ html[data-theme="light"] .vn-aff b {
   box-shadow: 0 12px 30px rgba(0, 0, 0, .5);
 }
 
-/* ---- 生成中提示（故事生成时悬浮在指令条上方）----
+/* ---- 生成中提示（故事生成时骑在【对话框上缘】= 对话框与 CG 的交界金线上）----
    与桌面端同一套状态源：app.js 的 setGeneratingUI() 切换 body.is-generating
    并显隐所有 .gen-status。移动端没有「鼠标沙漏」可言，所以只保留提示条本身。
-   它挂在 .vn-cmd 内部、向上探出 13px（自身高度的一半），中线正好落在指令条顶边上；
-   pointer-events:none —— 只是提示，绝不挡住接缝处的任何点击。 */
+
+   ⚠️ 为什么挂在 .vn-dlg 里、而不是像桌面版那样挂在指令条 .vn-cmd 里：
+   ① .vn-cmd 带 backdrop-filter → 自成层叠上下文，它内部的 z-index 出不来；
+      而 .vn-dlg 带 z-index（见上文 5），会把它【整个】盖住 —— 旧版提示条就正好卡在这道缝里
+      被压住（实测：挂回 .vn-cmd 后，同一探测点命中的是 .vn-dlg，只露出下半截）。
+      挂在 .vn-dlg 内部后，它随对话框一起压在舞台（CG + .vn-welcome）之上，天然在最上层。
+   ② 对话框上缘是 CG 与对白区的交界，位置最醒目（用户 2026-09-23 明确要求移到此处）。
+   定位基准 = .vn-dlg（position:relative）；向上探出自身高度的一半（-15px/30px），
+   中线正好落在那条金线上；pointer-events:none —— 只是提示，绝不挡住接缝处的任何点击。 */
 .gen-status {
   position: absolute;
   left: 50%;
-  top: -13px;
+  top: -15px;
   transform: translateX(-50%);
-  z-index: 6;
+  z-index: 8;
   display: flex;
   align-items: center;
-  gap: 7px;
-  height: 26px;
-  padding: 0 14px;
+  gap: 8px;
+  height: 30px;
+  padding: 0 16px;
   border-radius: 999px;
   font-family: inherit;
-  font-size: calc(11.5px * var(--fs));
-  letter-spacing: .08em;
+  font-size: calc(12.5px * var(--fs));
+  font-weight: 700;
+  letter-spacing: .12em;
   white-space: nowrap;
-  color: var(--text);
-  background: var(--dlg-bg);
-  border: 1px solid var(--line);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+  color: #04121a;
+  background: linear-gradient(135deg, var(--gold), #f6e3ad);
+  border: 1px solid rgba(255, 255, 255, .4);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .55), 0 0 0 3px rgba(6, 11, 26, .3),
+    0 0 20px rgba(232, 200, 120, .35);
   pointer-events: none;
+  animation: genStatusIn .22s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+/* 亮色主题：对话框本身是浅底，再放一块亮金色提示条就不显眼了 → 换成「深古金底 + 米白字」。
+   取色按 WCAG 算过对比度：渐变两端 #6B4A16 / #8A6423 对 #FFF6E2 分别是 7.5:1 / 5.0:1，
+   都过 AA（4.5:1）；原先那版 #A97C2F→#C79A45 配浅字只有 2.5:1，实测不达标。 */
+html[data-theme="light"] .gen-status {
+  color: #FFF6E2;
+  background: linear-gradient(135deg, #6B4A16, #8A6423);
+  border-color: rgba(255, 255, 255, .5);
+  box-shadow: 0 8px 22px rgba(20, 32, 58, .35), 0 0 18px rgba(107, 74, 22, .35);
+}
+
+@keyframes genStatusIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px) scale(.94);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(-50%);
+  }
 }
 
 /* hidden 属性会被 display:flex 压过，必须显式关掉 */
@@ -960,11 +1058,14 @@ html[data-theme="light"] .vn-aff b {
 
 .gen-status::before {
   content: "";
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
   border-radius: 50%;
-  border: 2px solid var(--gold);
+  /* 用 currentColor：底色是金色，金圈会看不见 */
+  border: 2px solid currentColor;
   border-top-color: transparent;
+  opacity: .85;
   animation: genStatusSpin .9s linear infinite;
 }
 

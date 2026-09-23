@@ -40,6 +40,13 @@ function initDatabase() {
     db.exec('ALTER TABLE api_providers ADD COLUMN thinking INTEGER DEFAULT 1');
   } catch (e) { /* column already exists */ }
 
+  // Migrate: 模型上下文窗口（tokens）。顶栏「稳定度」= 当前上下文占用 ÷ 这个上限；
+  // 0 = 未知（本地 llama.cpp / Ollama / KoboldCpp 会尝试自动探测，云端请手填）。
+  // 见 server/utils/contextWindow.js。
+  try {
+    db.exec('ALTER TABLE api_providers ADD COLUMN context_window INTEGER DEFAULT 0');
+  } catch (e) { /* column already exists */ }
+
   // --- Character Cards (SillyTavern compatible) ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS characters (

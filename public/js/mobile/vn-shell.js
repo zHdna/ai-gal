@@ -1,4 +1,4 @@
-﻿/* =============================================================================
+/* =============================================================================
    AI-GAL 移动端 · 外壳（vn-shell.js）
    -----------------------------------------------------------------------------
    职责：顶栏 HUD、底部标签与页面路由、侧滑抽屉（全量菜单）、主题（明/暗）、
@@ -108,6 +108,97 @@
     if (reset) reset.addEventListener('click', function () {
       applyFontScale(FS_DEFAULT); toast('字号已重置为默认');
     });
+  }
+
+  /* ---------------- 软键盘遮挡：把指令条顶到键盘上方 ----------------
+     用户报「手动输入时输入框被输入法挡住」。第一版只处理了下面模型 ①，
+     第二版（本轮）用户反馈「输入框还是被挡住，但下方菜单会自动移到键盘上方」。
+
+     移动端软键盘只有两种模型，iOS 与 Android 各占一个：
+     ① 【只缩视觉视口】（iOS Safari 等）：布局视口不动，innerHeight 不变，
+        visualViewport.height 变小 → kb > 0，用 --kb-inset 把内容盒压到键盘上方。
+     ② 【直接缩布局视口】（Android Chrome / 多数 WebView）：innerHeight 与
+        visualViewport.height【一起】变小 → 差值恒为 0 → 第一版判成"没有键盘"：
+        · .kb-open 不加 → 舞台仍占着 min-height:130px，页面装不下；
+        · pinCmd() 不调 → 溢出的指令条不会被滚进可视区。
+        而 #vnRoot 是 position:fixed;inset:0，会跟着被缩小的布局视口走 →
+        底部标签因此"自动上移"（看着像我们的占位生效了，其实是浏览器干的），
+        夹在中间的指令条则被滚出可视区 —— 用户看到的"被挤掉"。
+
+     修法（对两种模型都成立）：
+     A. 「键盘模式」的判据改成【输入框正在编辑】，kb>0 只决定要不要再加 --kb-inset；
+     B. vn.css 的 #vnRoot.kb-open .vn-cmd 改成 sticky 吸底 —— 只要在编辑，指令条
+        必然停在滚动区下沿（= 底部标签正上方），与浏览器缩哪个视口无关；
+     C. 编辑期间补几拍 pinCmd()（键盘动画期间高度会连续变化，单拍常落在动画中段）。
+
+     两个仍必须的守卫：
+     ① 只在【输入框聚焦】时才算 —— Android 地址栏伸缩同样会让两个视口差出几十像素；
+     ② 差值小于 120px 一律当 0（只用于 --kb-inset）—— 地址栏 <120px，软键盘 >200px。 */
+  var KB_MIN = 120;
+
+  function initKeyboardInset() {
+    var root = document.getElementById('vnRoot');
+    var vv = window.visualViewport;
+    if (!root || !vv) return;   // 老浏览器：不支持就不做（不会更差）
+
+    var raf = 0;
+    var pinTimer = 0;
+
+    function editing() {
+      var a = document.activeElement;
+      if (!a) return false;
+      var t = a.tagName;
+      return t === 'TEXTAREA' || t === 'INPUT' || a.isContentEditable === true;
+    }
+
+    /* 键盘占位后页面可能不够高（小屏 + 大字号，或模型②下布局视口被浏览器缩掉）→ 滚到底，
+       保证指令条确实落在可视区最下方，而不是被顶出容器。
+       挂点：#vnPageChat（vn.css 里 overflow-y:auto 的那个），取不到就退回 data-page 选择器。 */
+    function pinCmd() {
+      var page = document.getElementById('vnPageChat') ||
+        document.querySelector('.vn-page[data-page="chat"]');
+      if (!page || page.scrollHeight <= page.clientHeight) return;   // 装得下就不动它
+      requestAnimationFrame(function () { page.scrollTop = page.scrollHeight; });
+    }
+
+    /* 编辑期间用同一个定时器句柄补拍：键盘弹出的动画约 150~300ms，期间高度连续变化，
+       只看第一帧会把指令条留在半路（连续事件也只会留下一个待执行回调，不会堆积）。 */
+    function pinSoon() {
+      pinCmd();
+      if (pinTimer) clearTimeout(pinTimer);
+      pinTimer = setTimeout(function () {
+        pinTimer = 0;
+        pinCmd();
+      }, 260);
+    }
+
+    function apply() {
+      raf = 0;
+      var ed = editing();
+      var kb = 0;
+      if (ed) {
+        kb = (window.innerHeight || 0) - vv.height - vv.offsetTop;
+        if (kb < KB_MIN) kb = 0; else kb = Math.round(kb);
+      }
+      root.style.setProperty('--kb-inset', kb + 'px');
+      /* ⚠️ 键盘模式的判据是【正在编辑】，不是 kb > 0 —— 模型②下 kb 恒为 0 而键盘确实弹着。
+         反向也不会误伤：不聚焦时一律关掉，布局与没加这套东西之前完全一致。 */
+      root.classList.toggle('kb-open', ed);
+      if (ed) pinSoon();
+    }
+
+    function schedule() {
+      if (raf) return;
+      raf = requestAnimationFrame(apply);
+    }
+
+    vv.addEventListener('resize', schedule);
+    vv.addEventListener('scroll', schedule);
+    window.addEventListener('resize', schedule);
+    // 聚焦/失焦各补一拍：键盘动画期间 vv 会连续变化，这里只负责兜底最后一次状态
+    document.addEventListener('focusin', function () { setTimeout(schedule, 60); });
+    document.addEventListener('focusout', function () { setTimeout(schedule, 60); });
+    apply();
   }
 
   /* ---------------- 页面路由 ---------------- */
@@ -681,6 +772,7 @@
   function init() {
     initTheme();
     initFontScale();
+    initKeyboardInset();
     bindTabs();
     bindDrawer();
     bindTop();

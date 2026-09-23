@@ -4,8 +4,9 @@
  * Used by:
  *   - chat.js   → buildMvuPromptModule(): conditionally inject the main-AI
  *                 variable-sync module (only when the active card is an MVU card).
- *   - cardFixer.js → detectMvuCard(): decide whether to run the MVU normalization
- *                 branch instead of the legacy prompt rewrite.
+ *   - detectMvuCard(): card-format helper (kept exported for tooling/tests;
+ *                 the legacy cardFixer route was retired — cardStudio.js has
+ *                 its own engine detection).
  *
  * Kept dependency-free so it can be unit-tested in isolation.
  */

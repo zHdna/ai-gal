@@ -11,6 +11,12 @@ const { isUrlSafe } = require('../utils/urlGuard');
 module.exports = (db) => {
   const router = Router();
 
+  /** 上下文窗口（tokens）：非正数/空 → 0 = 未知（由 server/utils/contextWindow.js 决定是否自动探测） */
+  const posIntOrZero = (v) => {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+
   // The exact placeholder the GET endpoints return in place of a stored key.
   const API_KEY_MASK = '••••••••';
 
@@ -95,7 +101,7 @@ module.exports = (db) => {
 
   // Create provider
   router.post('/', (req, res) => {
-    const { name, provider_type, base_url, api_key, model, custom_headers, temperature, max_tokens, is_default, thinking } = req.body;
+    const { name, provider_type, base_url, api_key, model, custom_headers, temperature, max_tokens, is_default, thinking, context_window } = req.body;
 
     if (!name || !base_url || !model) {
       return res.status(400).json({ error: 'Missing required fields: name, base_url, model' });
@@ -115,9 +121,9 @@ module.exports = (db) => {
       });
     }
     db.prepare(`
-      INSERT INTO api_providers (id, name, provider_type, base_url, api_key, model, custom_headers, temperature, max_tokens, is_default, thinking)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, name, provider_type || 'openai', base_url, encrypt(api_key || ''), model, JSON.stringify(custom_headers || {}), temperature ?? 0.7, max_tokens ?? 4096, is_default ? 1 : 0, thinkVal);
+      INSERT INTO api_providers (id, name, provider_type, base_url, api_key, model, custom_headers, temperature, max_tokens, is_default, thinking, context_window)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, name, provider_type || 'openai', base_url, encrypt(api_key || ''), model, JSON.stringify(custom_headers || {}), temperature ?? 0.7, max_tokens ?? 4096, is_default ? 1 : 0, thinkVal, posIntOrZero(context_window));
 
     res.status(201).json({ id, message: 'Provider created' });
   });
@@ -127,7 +133,7 @@ module.exports = (db) => {
     const existing = db.prepare('SELECT * FROM api_providers WHERE id = ?').get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Provider not found' });
 
-    const { name, provider_type, base_url, api_key, model, custom_headers, temperature, max_tokens, is_default, thinking } = req.body;
+    const { name, provider_type, base_url, api_key, model, custom_headers, temperature, max_tokens, is_default, thinking, context_window } = req.body;
 
     // Validate: non-null fields must be non-empty
     if (name !== undefined && name !== null && !String(name).trim()) {
@@ -173,6 +179,7 @@ module.exports = (db) => {
         max_tokens = COALESCE(?, max_tokens),
         is_default = COALESCE(?, is_default),
         thinking = COALESCE(?, thinking),
+        context_window = COALESCE(?, context_window),
         updated_at = datetime('now')
       WHERE id = ?
     `).run(
@@ -180,6 +187,7 @@ module.exports = (db) => {
       custom_headers !== undefined ? JSON.stringify(custom_headers) : null,
       temperature, max_tokens, is_default !== undefined ? (is_default ? 1 : 0) : null,
       thinking !== undefined ? ((thinking === false || thinking === 0) ? 0 : 1) : null,
+      context_window !== undefined ? posIntOrZero(context_window) : null,
       req.params.id
     );
 

@@ -9,7 +9,6 @@ exports.SETTINGS_ID = 'default';
 // ── app_settings keys ──
 exports.APP_KEYS = {
   GLOBAL_SYSTEM_PROMPT: 'global_system_prompt',
-  CARD_FIXER_PROMPT: 'card_fixer_prompt',
   MEMORY_AGENT_PROMPT: 'memory_agent_prompt',
   BUTLER_PROVIDER_ID: 'butler_provider_id',
   PAINTER_PROVIDER_ID: 'painter_provider_id',

@@ -141,6 +141,12 @@
   animation: stabilityPulse 1.5s ease-in-out infinite;
 }
 
+/* 上限未设置：不画比例，整体转灰（不假装有占用率） */
+.stability-fill[data-level="unknown"] {
+  background: var(--text-muted);
+  opacity: .35;
+}
+
 @keyframes stabilityPulse {
 
   0%,

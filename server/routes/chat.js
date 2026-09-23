@@ -29,6 +29,7 @@ const { isPathWithin } = require('../utils/pathGuard');
 const { buildMvuPromptModule } = require('../mvu');
 const savePaths = require('../savePaths');
 const { lookupAnimeEnglishName } = require('../utils/anime-names');
+const { resolveContextWindow } = require('../utils/contextWindow');
 const { cleanupEventLog } = require('../utils/turnCleanup');
 
 /**
@@ -1213,7 +1214,7 @@ module.exports = (db) => {
 
 
   // --- Token stats for a conversation (called when loading a conversation) ---
-  router.get('/token-stats/:conversation_id', (req, res) => {
+  router.get('/token-stats/:conversation_id', async (req, res) => {
     const { conversation_id } = req.params;
     try {
       const cumulative = updateCumulativeTokens(conversation_id);
@@ -1233,16 +1234,62 @@ module.exports = (db) => {
       const { messages: apiMessages } = buildApiMessages(systemPrompt, messages, '', conv, null);
       const tokenStats = calculateTokenStats(apiMessages);
 
-      res.json({
-        contextTokens: tokenStats.contextTokens,
-        systemTokens: tokenStats.systemTokens,
-        historyTokens: tokenStats.historyTokens,
-        cumulativeTotal: cumulative.cumulativeTotal
-      });
+      // ⚠️ 必须 await：buildTokenStatsPayload 是 async（要探测/读取上下文窗口），
+      // 直接把 Promise 交给 res.json 会被序列化成 `{}`。
+      // 传 resolveMainProvider()：载荷里的 providerId 让前端在「换了供应商」时作废旧上限。
+      res.json(await buildTokenStatsPayload(tokenStats, cumulative.cumulativeTotal, resolveMainProvider(), true));
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  /**
+   * 组装 tokenStats 载荷（顶栏「稳定度」的数据源）。
+   *
+   * `contextWindow` = 模型上下文窗口（0 = 未知）—— **顶栏那条的比例分母是它**，
+   * 不是 `cumulativeTotal`。旧实现把累计消耗当上限，于是比例从 100% 单调衰减到 ~0%，
+   * 条要么顶满要么全空，完全体现不出"上下文用得怎么样"（用户 2026-09-21 报的"稳定度没效果"）。
+   *
+   * @param {boolean} [allowProbe] 是否允许在本次调用里发起本地自省探测。
+   *   端点（打开存档/界面）用 true；**对话回合里用 false** —— 生成过程中不该往供应商
+   *   打一串无关请求，也不该让响应等它（本地探测失败的最坏代价是 1.5s）。
+   *   回合内走缓存，并顺手后台预热，下一轮自然就有值。
+   */
+  async function buildTokenStatsPayload(tokenStats, cumulativeTotal, provider, allowProbe) {
+    let win = { tokens: 0, source: '' };
+    try {
+      win = await resolveContextWindow(provider || resolveMainProvider(), presetMaxContext(), { allowProbe: allowProbe !== false });
+    } catch (e) {
+      console.warn('[ContextWindow] 解析失败（按未知处理）:', e.message);
+    }
+    const ctx = tokenStats.contextTokens || 0;
+    return {
+      contextTokens: ctx,
+      systemTokens: tokenStats.systemTokens || 0,
+      historyTokens: tokenStats.historyTokens || 0,
+      newContentTokens: tokenStats.newContentTokens || 0,
+      cumulativeTotal: cumulativeTotal,
+      contextWindow: win.tokens,
+      contextWindowSource: win.source,
+      contextPercent: win.tokens > 0 ? Math.min(1, ctx / win.tokens) : null,
+      providerId: (provider && provider.id) || null,
+    };
+  }
+
+  /** 聊天预设里导入 ST 预设时可能带来的 max_context（多数预设没有，有就用） */
+  function presetMaxContext() {
+    try {
+      const s = db.prepare("SELECT value FROM app_settings WHERE key = 'main_ai_preset_id'").get();
+      if (!s || !s.value) return 0;
+      const preset = db.prepare("SELECT data, enabled_params FROM api_presets WHERE id = ? AND preset_type = 'chat'").get(s.value);
+      if (!preset) return 0;
+      const data = coercePresetData(preset.data);
+      const enabled = new Set(coerceStringArray(preset.enabled_params));
+      if (!enabled.has('max_context')) return 0;
+      const n = parseInt(data.max_context, 10);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    } catch { return 0; }
+  }
 
   // --- Non-streaming chat completion ---
   router.post('/completions', async (req, res) => {
@@ -1303,12 +1350,7 @@ module.exports = (db) => {
       // Update cumulative token total and attach stats
       const newCumulative = cumulativeTotal + tokenStats.contextTokens;
       updateCumulativeTokens(conversation_id, tokenStats.contextTokens);
-      result.tokenStats = {
-        contextTokens: tokenStats.contextTokens,
-        systemTokens: tokenStats.systemTokens,
-        historyTokens: tokenStats.historyTokens,
-        cumulativeTotal: newCumulative
-      };
+      result.tokenStats = await buildTokenStatsPayload(tokenStats, newCumulative, presetProvider, false);
 
       res.json(result);
     } catch (err) {
@@ -2987,13 +3029,9 @@ module.exports = (db) => {
           // Update cumulative token total and attach stats
           const newCumulative = cumulativeTotal + tokenStats.contextTokens;
           updateCumulativeTokens(conversation_id, tokenStats.contextTokens);
-          result.tokenStats = {
-            contextTokens: tokenStats.contextTokens,
-            systemTokens: tokenStats.systemTokens,
-            historyTokens: tokenStats.historyTokens,
-            cumulativeTotal: newCumulative
-          };
-          console.log('[TokenStats] Context:', tokenStats.contextTokens, 'System:', tokenStats.systemTokens, 'History:', tokenStats.historyTokens, 'Cumulative:', newCumulative);
+          result.tokenStats = await buildTokenStatsPayload(tokenStats, newCumulative, presetProvider, false);
+          console.log('[TokenStats] Context:', tokenStats.contextTokens, 'System:', tokenStats.systemTokens, 'History:', tokenStats.historyTokens, 'Cumulative:', newCumulative,
+            '| Window:', result.tokenStats.contextWindow || '未知', result.tokenStats.contextWindowSource ? '(' + result.tokenStats.contextWindowSource + ')' : '');
 
           // 本轮是靠「自动关闭思考模式重试」救回来的 → 明确告诉用户（否则他会奇怪输出为什么变了）
           if (noThinkingRetried) {

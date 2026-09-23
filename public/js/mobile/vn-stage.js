@@ -72,30 +72,93 @@
 
   /**
    * 解析说话者头像地址。
-   * app.js 的做法（保持一致）：名册里 avatar 不是完整地址时，
-   * 走 `/api/saves/:saveId/avatar/:角色名` —— 后端按**角色名**去找生成的头像文件，
-   * 而不是按 avatar 字段里的文件名。之前这里按文件名拼路径，所以读不出头像。
+   * 名册里 avatar 不是完整地址时走 `/api/saves/:saveId/avatar/:角色名` —— 后端是按
+   * 名册条目里记录的 **avatar 文件名**（`char.avatar`）去 images/ 取图的，URL 里的角色名
+   * 只是用来在名册里定位条目（旧注释写成"按角色名找文件"，与后端实现不符）。
+   * 玩家侧判定与取图直接复用 app.js 的共享实现，保证与桌面端同一套语义。
    */
   function resolveAvatar(name, rosterAvatar) {
     if (rosterAvatar && /^(\/|https?:|data:)/.test(rosterAvatar)) return rosterAvatar;
-    // 玩家侧：用真实身份 / 扮演身份头像（与 app.js 的 getUserAvatarForName 一致）
-    var up = window.AppState && window.AppState.userProfile;
-    if (up && name) {
-      var pn = up.persona_name || '';
-      if (name === (up.name || '我') || name === '你' || (pn && name === pn)) {
-        if (pn && name === pn && up.persona_avatar) return up.persona_avatar;
-        return up.avatar || '';
-      }
-    }
+    // 玩家侧：用真实身份 / 扮演身份头像；确认是玩家侧就不再落到名册里去找
+    if (name && isUserSide(name)) return userAvatarFor(name) || '';
     var hit = lookupRoster(name);
     if (!hit) return '';
     var entry = hit.entry || {};
     var av = entry.avatar;
-    if (!av || av === 'pending' || av === '已有头像') return '';
+    // 名册把玩家侧（主角 / 游戏内扮演身份）标成「已有头像」= 用用户上传的头像
+    if (av === '已有头像') return userAvatarFor(name) || '';
+    if (!av || av === 'pending' || av === 'failed') return '';
     if (/^(\/|https?:|data:)/.test(av)) return av;
     var sid = currentSaveId();
     if (!sid) return '';
     return '/api/saves/' + encodeURIComponent(sid) + '/avatar/' + encodeURIComponent(hit.matchName || name);
+  }
+
+  /** 玩家侧说话者判定：优先复用 app.js 的共享实现（覆盖 我/你/自己/俺/咱 + 用户名 + 扮演名） */
+  function isUserSide(name) {
+    try {
+      if (typeof window.isUserSideName === 'function') return !!window.isUserSideName(name);
+    } catch (e) { /* 共享实现不可用时退回本地等价判定 */ }
+    var n = String(name == null ? '' : name).trim();
+    if (!n) return false;
+    if (n === '我' || n === '你' || n === '自己' || n === '俺' || n === '咱') return true;
+    var up = window.AppState && window.AppState.userProfile;
+    if (!up) return false;
+    var pn = up.persona_name || '';
+    return n === (up.name || '我') || (!!pn && n === pn);
+  }
+
+  /** 玩家侧头像：优先复用 app.js 的共享实现 */
+  function userAvatarFor(name) {
+    try {
+      if (typeof window.getUserAvatarForName === 'function') return window.getUserAvatarForName(name) || '';
+    } catch (e) { /* 同上 */ }
+    var up = window.AppState && window.AppState.userProfile;
+    if (!up) return '';
+    var pn = up.persona_name || '';
+    if (pn && name === pn && up.persona_avatar) return up.persona_avatar;
+    return up.avatar || '';
+  }
+
+  /**
+   * 名册里这个说话者的头像是否「还没落地」—— 只有这种情况重拉名册才有意义。
+   * 登场生成的真实顺序：管家先登记条目（avatar='pending'）→ 画像生成完再写回文件名。
+   * 所以「名册里有这个人、但 avatar 还是 pending/空」恰恰是最需要重拉的状态；
+   * 旧守卫只判「名册里有没有这个人」，这种情况正好被漏掉 → 头像永远出不来。
+   */
+  function rosterAvatarPending(name) {
+    var hit = lookupRoster(name);
+    if (!hit) return true;
+    var av = (hit.entry || {}).avatar;
+    return !av || av === 'pending' || av === 'failed';
+  }
+
+  /* 名册重拉的节流（逐段翻页时不至于每段都打一次接口） */
+  var _rosterRetry = { at: 0, running: false };
+  var ROSTER_RETRY_MS = 3000;
+
+  /** 头像缺失 → 重拉一次名册（force 绕过记忆化）并补画当前段的头像 */
+  function refreshAvatarFromRoster(force) {
+    if (!VN.pages || typeof VN.pages.fetchRoster !== 'function') return;
+    if (_rosterRetry.running) return;
+    var now = Date.now();
+    if (!force && now - _rosterRetry.at < ROSTER_RETRY_MS) return;
+    _rosterRetry.at = now;
+    _rosterRetry.running = true;
+    VN.pages.fetchRoster(true).then(function () {
+      _rosterRetry.running = false;
+      repaintCurrentAvatar();
+    }, function () { _rosterRetry.running = false; });
+  }
+
+  /** 用（可能已更新的）名册重画当前段的头像 */
+  function repaintCurrentAvatar() {
+    var cur = S.segments[S.idx];
+    if (!cur || cur.type !== 'line') return;
+    var av = resolveAvatar(cur.speaker);
+    if (!av) return;
+    setAvatarUrl(avatarL, av, cur.speaker);
+    setAvatarUrl(avatarR, av, cur.speaker);
   }
 
   /** 当前存档 id（优先对话的 save_id） */
@@ -255,6 +318,8 @@
       img.onerror = function () {
         el.innerHTML = '';
         el.textContent = (name || '?').charAt(0);
+        // 图挂了就别留着地址：否则「点头像看大图」会去开一个坏链
+        el.dataset.url = '';
       };
       el.appendChild(img);
       el.dataset.url = url;
@@ -321,16 +386,9 @@
       setAvatarUrl(avatarL, av, seg.speaker);
       setAvatarUrl(avatarR, av, seg.speaker);
 
-      // 名册可能还没加载（对白头像依赖它）：拉取后补一次头像
-      if (!av && !lookupRoster(seg.speaker) && VN.pages && VN.pages.fetchRoster) {
-        VN.pages.fetchRoster().then(function () {
-          if (S.idx !== i) return;                     // 已经翻页就不补了
-          var av2 = resolveAvatar(seg.speaker);
-          if (!av2) return;
-          setAvatarUrl(avatarL, av2, seg.speaker);
-          setAvatarUrl(avatarR, av2, seg.speaker);
-        });
-      }
+      // 名册可能还没加载 / 头像还没生成完（对白头像依赖它）：
+      // 只要头像没解析出来、且名册里它仍是「未落地」状态，就重拉一次名册再补画。
+      if (!av && rosterAvatarPending(seg.speaker)) refreshAvatarFromRoster(false);
 
       // 好感度（若名册里有则显示）
       updateAffinity(seg.speaker);
@@ -555,9 +613,19 @@
     window.renderGallery = function () {
       var r = orig.apply(this, arguments);
       try { refreshBackground(); } catch (e) { /* 背景刷新失败不影响画廊本身 */ }
+      try { refreshAvatarOnGalleryChange(); } catch (e) { /* 名册补画失败不影响画廊 */ }
       return r;
     };
     window.__vnMobileGalleryHooked = true;
+  }
+
+  /** 画廊变化（登场画像与登场 CG 通常同一批落地）→ 当前说话者还没头像就补拉名册重画 */
+  function refreshAvatarOnGalleryChange() {
+    var cur = S.segments[S.idx];
+    if (!cur || cur.type !== 'line' || !cur.speaker) return;
+    if (resolveAvatar(cur.speaker)) return;            // 已经有头像，不必打扰
+    if (!rosterAvatarPending(cur.speaker)) return;     // 名册里已有头像文件，重拉也没用
+    refreshAvatarFromRoster(true);
   }
 
   /** 最新一张 CG 的画廊条目（AppState.cgGallery 是「新的在前」） */
@@ -746,12 +814,21 @@
     var vc = $('#vnViewerClose');
     if (vc) vc.addEventListener('click', function (e) { e.stopPropagation(); closeViewer(); });
 
-    if (avatarL) avatarL.addEventListener('click', function () {
-      openViewer(avatarL.dataset.url || currentFace(), avatarL.dataset.name, '轻点任意处关闭');
-    });
-    if (avatarR) avatarR.addEventListener('click', function () {
-      openViewer(avatarR.dataset.url || currentFace(), avatarR.dataset.name, '轻点任意处关闭');
-    });
+    /* 点头像框 = 看这个角色的头像大图。
+       注意：头像没解析出来时**绝不能**回落去开 CG —— 那会弹出最新章节 CG
+       （用户报的「点头像框显示登场 CG」就是这个回落造成的）。这里如实提示「暂无头像」。 */
+    function openAvatarBox(el) {
+      if (!el) return;
+      var url = el.dataset.url || '';
+      if (!url) {
+        var nm = el.dataset.name || '该角色';
+        VN.shell && VN.shell.toast && VN.shell.toast(nm + ' 暂无头像');
+        return;
+      }
+      openViewer(url, el.dataset.name, '轻点任意处关闭');
+    }
+    if (avatarL) avatarL.addEventListener('click', function () { openAvatarBox(avatarL); });
+    if (avatarR) avatarR.addEventListener('click', function () { openAvatarBox(avatarR); });
 
     // 隐藏 UI → 全屏看最新 CG（保持原比例，未铺满处用底色）；点任意处 / Esc 恢复界面
     var btnHide = $('#vnBtnHideUI');

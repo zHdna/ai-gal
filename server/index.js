@@ -129,7 +129,7 @@ app.use('/api/images', require('./routes/images')(db));
 app.use('/api/themes', require('./routes/themes')(db));
 app.use('/api/memory-agent', require('./routes/memoryAgent')(db));
 app.use('/api/chat', require('./routes/chat')(db));
-app.use('/api/card-fixer', require('./routes/cardFixer')(db));
+app.use('/api/card-studio', require('./routes/cardStudio')(db));
 app.use('/api/user', require('./routes/user')(db));
 app.use('/api/saves', require('./routes/saves')(db));
 app.use('/api/presets', require('./routes/presets')(db));

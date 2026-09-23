@@ -5,33 +5,6 @@
  */
 
 // Default prompts (shown when no custom prompt is saved)
-const DEFAULT_CARD_FIXER_PROMPT = `你是一个角色卡分析和优化助手。你的唯一任务是把输入的角色卡系统提示词进行结构优化。
-
-【优化规则】
-
-1. **去重合并**：把重复的、含义相近的段落合并为一段简洁的描述。保留所有关键信息，但去除冗余表述。
-
-2. **HTML注释转换**：如果角色卡中含有 <!-- --> 包裹的信息（如角色属性数据），必须原样保留其内容，用 <p class="nowork"><!--原始内容--></p> 格式包裹。不要删除或修改注释内的数据。
-
-3. **角色个性保留**：不要修改角色的性格、说话风格、世界观设定。只优化格式和组织结构。不要加入任何输出格式指令，格式规范已由主AI负责。
-
-4. **状态变量提取**：从角色卡中识别所有需要追踪的动态状态和属性变量（如生命值、魔力值、金钱、经验、物品、好感度等），在优化后的系统提示词末尾以独立段落追加状态变量白名单：
-
-<p class="nowork">
-<!-- STATUS_VARS -->
-{
-  "可追踪状态": [
-    {"变量名": "HP", "中文名": "生命值", "初始值": "100/100", "描述": "角色的生命值"},
-    {"变量名": "MP", "中文名": "魔力值", "初始值": "50/50", "描述": "角色的魔力值"}
-  ]
-}
-<!-- /STATUS_VARS -->
-</p class="nowork">
-
-变量名用英文标识符（可以作为代码中的key），中文名用于前端显示。初始值根据角色卡设定填写（如未设定则填"未设定"）。描述用简短中文说明该变量的含义。
-
-5. **输出格式**：直接输出优化后的完整系统提示词文本，不要加任何解释、前言或后缀。`;
-
 const DEFAULT_MEMORY_AGENT_PROMPT = `你是一个记忆记录助手。请你分析以下对话/叙述内容，将其浓缩为一句摘要。
 
 摘要必须包含以下要素（如果缺失，标注"未提及"）：
@@ -82,9 +55,16 @@ const AppState = {
   allUsers: [],
   editingUserId: null,
   // Token 统计 (from backend)
-  tokenContext: 0,    // 当前上下文窗口token (system+history+current input)
-  tokenTotal: 0,     // 对话累计总消耗token
-  systemTokens: 0,   // 系统提示词token (preset+角色卡+内置提示词)
+  tokenContext: 0,    // 当前上下文占用 token (system+history+current input) —— 分子
+  tokenWindow: 0,     // 模型上下文窗口 token（上限；0 = 未知）—— 分母
+  tokenWindowSource: '', // 上限来源：供应商设置 / llama.cpp /props / Ollama /api/ps / 预设 max_context …
+  tokenTotal: 0,      // 兼容旧字段：等同 tokenWindow（历史上被当作"上限"用）
+  tokenCumulative: 0, // 本对话累计消耗 token（只用于展示，不参与比例）
+  tokenProviderId: '', // 上限对应的供应商 id（换供应商时旧上限要作废）
+  tokenPercent: 0,    // 上下文占用比例 0..1（窗口未知时为 0）
+  systemTokens: 0,    // 系统提示词token (preset+角色卡+内置提示词)
+  historyTokens: 0,   // 历史对话 token
+  newContentTokens: 0,// 本轮输入 token
   // 角色颜色映射 { name: { dark: 'rgba(...)', light: 'rgba(...)', index: N } }
   characterColors: {},
   // 角色名册 { name: { avatar: 'path/to/img.jpg', ... } }
@@ -191,6 +171,7 @@ const DOM = {
   tokenCounter: () => document.getElementById('tokenCounter'),
   tokenContext: () => document.getElementById('tokenContext'),
   tokenTotal: () => document.getElementById('tokenTotal'),
+  tokenCumulative: () => document.getElementById('tokenCumulative'),
 
   // 信息面板
   infoPanel: () => document.getElementById('infoPanel'),
@@ -281,7 +262,6 @@ const DOM = {
   charTags: () => document.getElementById('charTags'),
   btnCancelCharacter: () => document.getElementById('btnCancelCharacter'),
   btnSaveCharacter: () => document.getElementById('btnSaveCharacter'),
-  btnFixCharacter: () => document.getElementById('btnFixCharacter'),
 
   // 供应商弹窗
   providerModal: () => document.getElementById('providerModal'),
@@ -296,6 +276,7 @@ const DOM = {
   providerModel: () => document.getElementById('providerModel'),
   providerModelSelect: () => document.getElementById('providerModelSelect'),
   providerThinking: () => document.getElementById('providerThinking'),
+  providerContextWindow: () => document.getElementById('providerContextWindow'),
   btnFetchModels: () => document.getElementById('btnFetchModels'),
   providerHeaders: () => document.getElementById('providerHeaders'),
   providerIsDefault: () => document.getElementById('providerIsDefault'),
@@ -606,7 +587,6 @@ function bindEvents() {
   DOM.characterModalOverlay().addEventListener('click', closeCharacterModal);
   DOM.btnCancelCharacter().addEventListener('click', closeCharacterModal);
   DOM.btnSaveCharacter().addEventListener('click', saveCharacter);
-  DOM.btnFixCharacter().addEventListener('click', fixCharacterCard);
   DOM.btnAddWBEntry().addEventListener('click', addNewWBEntry);
 
   // 供应商弹窗
@@ -1311,16 +1291,6 @@ async function saveSystemPrompt() {
     const prompt = DOM.systemPromptEditor().value;
     await ThemeAPI.saveSettings({ global_system_prompt: prompt });
     showToast('主 AI 提示词已保存', 'success');
-  } catch (err) {
-    showToast('保存失败: ' + err.message, 'error');
-  }
-}
-
-async function saveCardFixerPrompt() {
-  try {
-    const prompt = DOM.cardFixerPromptEditor().value;
-    await ThemeAPI.saveSettings({ card_fixer_prompt: prompt });
-    showToast('修卡提示词已保存', 'success');
   } catch (err) {
     showToast('保存失败: ' + err.message, 'error');
   }
@@ -7046,19 +7016,59 @@ function updateTokenCounter() {
   // Token stats are now provided by the backend (includes system prompt, character card, preset, etc.)
   // This function only updates the UI display
   DOM.tokenContext().textContent = formatTokenNum(AppState.tokenContext);
-  DOM.tokenTotal().textContent = formatTokenNum(AppState.tokenTotal);
+  // ⚠️ #tokenTotal 是「**上限**」而不是累计消耗 —— 顶栏「稳定度」与旧版稳定度条都拿
+  // `已用 ÷ #tokenTotal` 算比例，所以这里必须放 contextWindow（0/未知时显示 '—'，
+  // 让比例算成 0 而不是拿一个几十万的累计值把比例压成 0.1%）。累计消耗另有 #tokenCumulative。
+  DOM.tokenTotal().textContent = AppState.tokenWindow > 0 ? formatTokenNum(AppState.tokenWindow) : '—';
+  const cumEl = DOM.tokenCumulative();
+  if (cumEl) cumEl.textContent = formatTokenNum(AppState.tokenCumulative);
+  // 旧版稳定度条（.token-stability）的标题也更新成真实含义
+  const st = document.getElementById('tokenStability');
+  if (st) {
+    st.title = AppState.tokenWindow > 0
+      ? `时空稳定性 = 上下文占用 ${AppState.tokenContext} / ${AppState.tokenWindow} tokens`
+        + `（${Math.round((AppState.tokenPercent || 0) * 100)}%）· 本对话累计消耗 ${AppState.tokenCumulative}`
+        + (AppState.tokenWindowSource ? ` · 上限来源：${AppState.tokenWindowSource}` : '')
+      : `上下文已用 ${AppState.tokenContext} tokens（本对话累计消耗 ${AppState.tokenCumulative}）`
+        + ' · 未设置「上下文窗口」，无法算占用比例 —— 到「AI 与供应商」里填该模型的上限即可';
+  }
 }
 
 /**
  * Update token stats from backend response
- * @param {object} tokenStats - { contextTokens, systemTokens, historyTokens, cumulativeTotal }
+ * @param {object} tokenStats - { contextTokens, systemTokens, historyTokens, newContentTokens,
+ *                                cumulativeTotal, contextWindow, contextWindowSource, contextPercent }
  */
 function setTokenStats(tokenStats) {
   if (!tokenStats) return;
   AppState.tokenContext = tokenStats.contextTokens || 0;
-  AppState.tokenTotal = tokenStats.cumulativeTotal || 0;
+  // 窗口（上限）：回合内的载荷走缓存、可能给 0（未知）——**不能**用它把已知的上限抹掉，
+  // 否则聊到第二轮就退回"上限未设置"。只有换供应商、或端点明确给出上限时才更新。
+  const incoming = tokenStats.contextWindow || 0;
+  if (incoming > 0) {
+    AppState.tokenWindow = incoming;
+    AppState.tokenWindowSource = tokenStats.contextWindowSource || '';
+  } else if (tokenStats.providerId && AppState.tokenProviderId && tokenStats.providerId !== AppState.tokenProviderId) {
+    AppState.tokenWindow = 0;              // 换了供应商 → 旧上限不再适用
+    AppState.tokenWindowSource = '';
+  } else if (!AppState.tokenWindow) {
+    AppState.tokenWindow = 0;
+    AppState.tokenWindowSource = '';
+  }
+  if (tokenStats.providerId) AppState.tokenProviderId = tokenStats.providerId;
+  // 兼容旧字段：`tokenTotal` 历史上被当成"上限"用（顶栏/旧稳定度条/状态面板），
+  // 所以这里让它等于窗口，而不是累计消耗 —— 否则比例永远是 ~0%。
+  AppState.tokenTotal = AppState.tokenWindow;
+  AppState.tokenCumulative = tokenStats.cumulativeTotal || 0;
+  AppState.tokenPercent = AppState.tokenWindow > 0 ? AppState.tokenContext / AppState.tokenWindow : 0;
   AppState.systemTokens = tokenStats.systemTokens || 0;
+  AppState.historyTokens = tokenStats.historyTokens || 0;
+  AppState.newContentTokens = tokenStats.newContentTokens || 0;
   updateTokenCounter();
+  if (typeof window !== 'undefined' && typeof window.syncTokens === 'function') {
+    // 桌面外壳顶栏那条「稳定」条由 vn-shell 自己画；数据一变立刻跟上（不必等它的轮询节拍）
+    try { window.syncTokens(); } catch { /* 外壳未加载 */ }
+  }
 }
 
 /**
@@ -7923,70 +7933,6 @@ async function saveCharacter() {
   }
 }
 
-async function fixCharacterCard() {
-  const systemPrompt = DOM.charSystemPrompt().value.trim();
-  const personality = DOM.charPersonality().value.trim();
-  const description = DOM.charDescription().value.trim();
-  const postHistory = DOM.charPostHistory().value.trim();
-
-  if (!systemPrompt && !personality && !description) {
-    showToast('请先填写系统提示词或性格描述', 'warning');
-    return;
-  }
-
-  const btn = DOM.btnFixCharacter();
-  btn.disabled = true;
-  btn.textContent = '修卡中...';
-  showToast('AI 正在优化角色卡，请稍候...', 'info', 0);
-
-  try {
-    const result = await CardFixerAPI.fix({
-      system_prompt: systemPrompt,
-      personality: personality,
-      description: description,
-      post_history_instructions: postHistory,
-      character_id: AppState.currentCharacter ? AppState.currentCharacter.id : undefined,
-    });
-
-    if (result.fixed_prompt) {
-      DOM.charSystemPrompt().value = result.fixed_prompt;
-      // 清空其他字段（已合并到系统提示词）
-      DOM.charPostHistory().value = '';
-
-      // MVU 修卡：更新内存中的 mvu_meta，使状态面板立即反映中文变量与分组
-      if (result.mvu && result.mvu_meta && AppState.currentCharacter) {
-        AppState.currentCharacter.mvu_meta = result.mvu_meta;
-        AppState.currentCharacter.markup_mode = 'game-xml';
-        if (typeof AppState.currentCharacter.metadata === 'string') {
-          try {
-            const m = JSON.parse(AppState.currentCharacter.metadata);
-            m.ui_hints = { hasMVU: true, requiresStatus: false };
-            AppState.currentCharacter.metadata = JSON.stringify(m);
-          } catch { /* ignore */ }
-        } else if (AppState.currentCharacter.metadata && typeof AppState.currentCharacter.metadata === 'object') {
-          AppState.currentCharacter.metadata.ui_hints = { hasMVU: true, requiresStatus: false };
-        }
-        if (typeof renderWorldStatePanel === 'function') { try { renderWorldStatePanel(); } catch {} }
-      }
-
-      // 存储 AI 分析的文化/性别 metadata（含 MVU UI hint，供保存时一并写入）
-      if (result.metadata) {
-        AppState._cardMetadata = result.metadata;
-        const extra = result.mvu ? '（MVU 变量已适配）' : '';
-        showToast('角色卡已优化！文化: ' + result.metadata.culture + ' | 性别: ' + result.metadata.gender + extra, 'success');
-      } else {
-        showToast('角色卡已优化！请检查并手动保存', 'success');
-      }
-    }
-  } catch (err) {
-    console.error('[FixCharacter] 失败:', err);
-    showToast('修卡失败: ' + (err.message || '未知错误'), 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '🔧 一键修卡';
-  }
-}
-
 async function deleteCharacter(characterId) {
   if (!confirm('确定要删除该角色吗？相关对话也将被删除。')) return;
 
@@ -8346,6 +8292,8 @@ function openProviderModal(providerId = null) {
       DOM.providerModel().value = p.model || '';
       DOM.providerHeaders().value = p.custom_headers ? (typeof p.custom_headers === 'string' ? p.custom_headers : JSON.stringify(p.custom_headers, null, 2)) : '';
       DOM.providerIsDefault().checked = !!p.is_default;
+      const cwEl = DOM.providerContextWindow();
+      if (cwEl) cwEl.value = p.context_window > 0 ? String(p.context_window) : '';
     }
   } else {
     AppState.editingProviderId = null;
@@ -8370,6 +8318,11 @@ async function saveProvider() {
     is_default: DOM.providerIsDefault().checked,
     thinking: DOM.providerThinking().checked ? 1 : 0,
   };
+  // 上下文窗口：0/留空 = 未知（本地服务自动探测）。显式发送，便于用户把它改回 0。
+  {
+    const cwEl = DOM.providerContextWindow();
+    data.context_window = cwEl ? (parseInt(cwEl.value, 10) > 0 ? parseInt(cwEl.value, 10) : 0) : 0;
+  }
 
   // Only send api_key when the user actually typed one.
   //   - left empty while editing → omit the field entirely → the backend keeps the stored key
@@ -8402,6 +8355,12 @@ async function saveProvider() {
     closeProviderModal();
     AppState.providers = await ProviderAPI.list();
     renderProviderList();
+    // 刚改过「上下文窗口」→ 立刻重取一次 token 统计，顶栏「稳 定」条马上反映新上限
+    // （上限只在打开存档/端点时探测，这里主动刷一次，省得用户去重开存档）
+    if (AppState.currentConversation?.id) {
+      AppState.tokenWindow = 0; AppState.tokenWindowSource = ''; AppState.tokenProviderId = '';
+      loadTokenStats().catch(() => { });
+    }
   } catch (err) {
     console.error('[SaveProvider] 失败:', err);
     showToast(`保存失败: ${err.message}`, 'error');

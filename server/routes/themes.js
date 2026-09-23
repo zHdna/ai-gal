@@ -147,7 +147,6 @@ module.exports = (db) => {
   // Settings store (system prompts etc.)
   db.exec(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT DEFAULT '')`);
   db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)').run(APP_KEYS.GLOBAL_SYSTEM_PROMPT, '');
-  db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)').run(APP_KEYS.CARD_FIXER_PROMPT, '');
   db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)').run(APP_KEYS.MEMORY_AGENT_PROMPT, '');
   db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)').run(APP_KEYS.BUTLER_PROVIDER_ID, '');
   db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)').run(APP_KEYS.MAIN_AI_PROVIDER_ID, '');

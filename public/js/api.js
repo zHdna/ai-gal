@@ -170,17 +170,6 @@ const SavesAPI = {
   },
 };
 
-// ============ Card Fixer ============
-
-const CardFixerAPI = {
-  fix(data) {
-    return request('/card-fixer/fix', {
-      method: 'POST',
-      body: data,
-    });
-  },
-};
-
 // ============ API Presets ============
 
 const PresetAPI = {

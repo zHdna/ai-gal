@@ -226,7 +226,7 @@
   </style>
 
   <!-- ===== 移动端（GAL）样式：置于桌面样式之后以覆盖 ===== -->
-  <link rel="stylesheet" href="css/mobile/vn.css?v=20260922d">
+  <link rel="stylesheet" href="css/mobile/vn.css?v=20260923e">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#060B18">
@@ -273,7 +273,10 @@
     <div id="vnPages">
 
       <!-- ============ 对话（GAL 舞台） ============ -->
-      <section class="vn-page show" data-page="chat">
+      <!-- id="vnPageChat" 是 vn.css 的滚动/触摸规则（#vnPageChat{overflow-y:auto;touch-action:pan-y}）
+           一直在等的挂点 —— 之前漏写了，于是「内容装不下时可以滚」这条兜底从未生效
+           （软键盘占位后小屏可能装不下对话框+指令条，需要它把指令条滚进可视区）。 -->
+      <section class="vn-page show" data-page="chat" id="vnPageChat">
         <div class="vn-stage" id="vnStage">
           <div class="vn-stage-bg" id="vnStageBg"></div>
           <div class="vn-stage-art"><img id="vnArtImg" alt="立绘" style="display:none"></div>
@@ -295,6 +298,12 @@
 
         <!-- 唯一主对话框：GAL 式逐段演出（对白 / 旁白轮流，永不并存） -->
         <div class="vn-dlg by-left" id="vnDlg">
+          <!-- 生成中提示：骑在【对话框上缘】= 对话框与 CG 的交界金线上（样式见 vn.css 的 .gen-status）。
+               挂在这里而不是指令条内部：.vn-cmd 带 backdrop-filter → 自成层叠上下文，
+               它内部的 z-index 出不来，而 .vn-dlg 的 z-index 会把它整个盖住（旧版就是这样被压住的）。
+               app.js 的 setGeneratingUI() 按 .gen-status 选择器统一显隐，
+               所以这里只要有这个元素即可 —— 与桌面版共用同一份状态，不另记一份。 -->
+          <div class="gen-status" id="vnGenStatus" hidden>故事生成中……</div>
           <span class="vn-spk-av left" id="vnAvLeft"></span>
           <span class="vn-spk-av right" id="vnAvRight"></span>
 
@@ -346,10 +355,6 @@
 
         <!-- 指令条：#messageInput / #btnSend 为 app.js 契约 -->
         <div class="vn-cmd">
-          <!-- 生成中提示：骑在指令条顶边上（样式见 vn.css 的 .gen-status）。
-               app.js 的 setGeneratingUI() 按 .gen-status 选择器统一显隐，
-               所以这里只要有这个元素即可 —— 与桌面版共用同一份状态，不另记一份。 -->
-          <div class="gen-status" id="vnGenStatus" hidden>故事生成中……</div>
           <button class="plus" id="vnBtnPlus" title="导入角色卡">＋</button>
           <textarea id="messageInput" rows="1" placeholder="说点什么…"></textarea>
           <button id="btnSend" disabled>➤</button>
@@ -611,6 +616,7 @@
         <circle cx="7" cy="7" r="2" />
       </svg>
       <span class="stability-text"><b id="tokenContext">0</b> / <b id="tokenTotal">0</b></span>
+      <span class="stability-text" style="opacity:.7;font-size:10px;margin-left:6px" title="本对话累计消耗（不计入稳定度比例）">Σ <b id="tokenCumulative">0</b></span>
       <div class="stability-bar">
         <div class="stability-fill" id="stabilityFill"></div>
       </div>
@@ -986,14 +992,6 @@
           </div>
         </section>
         <section class="settings-section">
-          <h4>一键修卡提示词</h4>
-          <div class="form-group">
-            <label>角色卡优化助手的系统提示词</label>
-            <textarea id="cardFixerPromptEditor" rows="6" placeholder="修卡 AI 的提示词..."></textarea>
-          </div>
-          <button class="btn btn-sm" id="btnSaveCardFixerPrompt">保存</button>
-        </section>
-        <section class="settings-section">
           <h4>管家 AI 提示词</h4>
           <div class="form-group">
             <label>管家AI负责：分析氛围(BGM)、提取角色属性、生成行动选项、记忆摘要、触发生图</label>
@@ -1297,7 +1295,6 @@
       </div>
       <div class="modal-footer">
         <button class="btn" id="btnCancelCharacter">取消</button>
-        <button class="btn btn-warning" id="btnFixCharacter" title="AI 优化角色卡格式">一键修卡</button>
         <button class="btn btn-primary" id="btnSaveCharacter">保存</button>
       </div>
     </div>
@@ -1358,6 +1355,14 @@
             </label>
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
               本地 Qwen3 等思考模型若只返回思维链、正文为空，请取消勾选，让其直接输出正文
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="providerContextWindow">上下文窗口 (tokens)</label>
+            <input type="number" id="providerContextWindow" min="0" max="10000000" step="1024" placeholder="0 = 自动探测 / 未知">
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+              「稳定度」= 当前上下文占用 ÷ 这个上限。本地 llama.cpp / Ollama / KoboldCpp 会自动探测；
+              云端模型请填服务商文档里的上下文长度（如 32768），留 0 则显示「上限未设置」。
             </div>
           </div>
         </form>
@@ -1596,12 +1601,12 @@
 
   <input type="file" id="characterFileInput" accept=".json,.png" style="display:none">
 
-  <script src="js/api.js?v=20260922e"></script>
+  <script src="js/api.js?v=20260923c"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20260923a"></script>
-  <script src="js/mobile/vn-shell.js?v=20260922d"></script>
-  <script src="js/mobile/vn-pages.js?v=20260923a"></script>
-  <script src="js/mobile/vn-stage.js?v=20260923a"></script>
+  <script src="js/app.js?v=20260923c"></script>
+  <script src="js/mobile/vn-shell.js?v=20260923e"></script>
+  <script src="js/mobile/vn-pages.js?v=20260923c"></script>
+  <script src="js/mobile/vn-stage.js?v=20260923c"></script>
 </body>
 
 </html>

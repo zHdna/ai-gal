@@ -788,7 +788,7 @@
     sw.appendChild(em);
   }
 
-  /** 顶栏 tokens 稳定度：优先 AppState，其次 app.js 写的 #tokenContext / #tokenTotal */
+  /** "8.4K" / "13.2k" → 数字（app.js 写的 #tokenContext/#tokenTotal 是格式化过的文本） */
   function num(el) {
     var t = el ? String(el.textContent || '').trim() : '';
     if (!t) return 0;
@@ -798,24 +798,51 @@
     var u = m[2].toLowerCase();
     return Math.round(u === 'k' ? v * 1000 : u === 'm' ? v * 1e6 : v);
   }
+  /**
+   * 顶栏「稳 定」条 = **当前上下文占用 ÷ 模型上下文窗口**。
+   *
+   * ⚠️ 2026-09-21 修：以前分母用的是「本对话累计消耗」（`AppState.tokenTotal` 存的是
+   * cumulativeTotal）→ 比例从第一轮的 100% 单调衰减到 ~0%，条要么顶满要么全空，
+   * 完全体现不出上下文用得怎么样（用户报的"世界稳定度没有实际效果"）。
+   * 现在 `AppState.tokenWindow` 才是上限（供应商手填 / 本地自动探测 / 预设 max_context），
+   * 拿不到就显示「—」并在提示里说明去哪儿设置，绝不编一个假的百分比。
+   */
+  function fmtK(n) {
+    var v = Number(n) || 0;
+    return v >= 1000 ? (v / 1000).toFixed(1) + 'k' : String(v);
+  }
   function syncTokens() {
     var box = $('.stability', app);
     if (!box) return;
     var ctx = App.tokenContext || num(byId('tokenContext'));
-    var total = App.tokenTotal || num(byId('tokenTotal'));
+    var win = App.tokenWindow || 0;
+    var cum = App.tokenCumulative || 0;
+    var src = App.tokenWindowSource || '';
     var numEl = $('.num', box);
-    if (!total) {
-      txt(numEl, '—');
-      box.dataset.level = 'safe';
-      var bar0 = $('i, .fill', box);
-      if (bar0) bar0.style.width = '0%';
+    var bar = $('i, .fill', box);
+    var tipEl = box.getAttribute ? box : null;
+
+    if (!win) {
+      // 上限未知：只报"已用"，不假装有比例
+      txt(numEl, fmtK(ctx) + ' / —');
+      box.dataset.level = 'unknown';
+      if (bar) bar.style.width = '0%';
+      if (tipEl) tipEl.setAttribute('data-tip',
+        '上下文已用 ' + ctx + ' tokens（本对话累计消耗 ' + cum + '）\n'
+        + '未设置「上下文窗口」→ 无法计算占用比例。\n'
+        + '到「设置 → AI 与供应商」编辑主 AI 供应商，填它的上下文长度（如 32768）即可。\n'
+        + '本地 llama.cpp / Ollama / KoboldCpp 会自动探测，无需手填。');
       return;
     }
-    txt(numEl, (ctx / 1000).toFixed(1) + 'k / ' + (total / 1000).toFixed(1) + 'k');
-    var pct = Math.min(100, Math.round(ctx / total * 100));
-    var bar = $('i, .fill', box);
+    var pct = Math.max(0, Math.min(100, Math.round(ctx / win * 100)));
+    txt(numEl, fmtK(ctx) + ' / ' + fmtK(win));
     if (bar) bar.style.width = pct + '%';
     box.dataset.level = pct > 85 ? 'danger' : pct > 65 ? 'warning' : 'safe';
+    if (tipEl) tipEl.setAttribute('data-tip',
+      '时空稳定度 = 上下文占用比例 ' + pct + '%（' + ctx + ' / ' + win + ' tokens）\n'
+      + '上限来源：' + (src || '模型上下文窗口') + '\n'
+      + '本对话累计消耗 ' + cum + ' tokens（不计入比例）\n'
+      + '>65% 转黄、>85% 转红：接近上限时旧对话会被模型忽略，建议用「隐藏记录」或收尾当前剧情。');
   }
 
   /* ---------------- 5. 逐段导航 / 选项 / 输入 ---------------- */
@@ -1400,11 +1427,24 @@
           return '<div class="kv"><span class="k">' + escapeHtml(r.path) + '</span><span class="v" style="font-size:13px">' + escapeHtml(r.value) + '</span></div>';
         }).join('') + '</div></div>');
     }
-    var ctx = App.tokenContext || 0, total = App.tokenTotal || 0;
-    if (total) {
-      var pct = Math.min(100, Math.round(ctx / total * 100));
-      out.push('<div class="card"><h5>上下文占用<span>' + (ctx / 1000).toFixed(1) + 'k / ' + (total / 1000).toFixed(1) + 'k</span></h5>' +
-        meter(pct > 85 ? 'rose' : '', pct) + '</div>');
+    /* 上下文占用卡：分子=当前上下文（系统+历史+本轮输入），分母=模型上下文窗口。
+       窗口未知（0）时不再编造百分比，如实说明去哪儿设置。 */
+    var ctx = App.tokenContext || 0;
+    var win = App.tokenWindow || 0;
+    var cum = App.tokenCumulative || 0;
+    if (ctx || win) {
+      var pct = win > 0 ? Math.min(100, Math.round(ctx / win * 100)) : null;
+      var head = pct != null ? (fmtK(ctx) + ' / ' + fmtK(win) + '  ·  ' + pct + '%') : (fmtK(ctx) + ' / 上限未设置');
+      var detail = '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.7">'
+        + '系统/角色卡 ' + (App.systemTokens || 0) + ' · 历史 ' + (App.historyTokens || 0)
+        + ' · 本轮输入 ' + (App.newContentTokens || 0) + '<br>'
+        + '本对话累计消耗 ' + cum + ' tokens'
+        + (App.tokenWindowSource ? '<br>上限来源：' + escapeHtml(App.tokenWindowSource) : '')
+        + (win ? '' : '<br>未设置上下文窗口 → 到「设置 → AI 与供应商」填该模型的上限（本地服务会自动探测）')
+        + '</div>';
+      out.push('<div class="card"><h5>上下文占用<span>' + escapeHtml(head) + '</span></h5>'
+        + (pct != null ? meter(pct > 85 ? 'rose' : '', pct) : '')
+        + detail + '</div>');
     }
     el.innerHTML = out.join('') || '<div class="card"><h5>主要状态<span>暂无</span></h5><div class="empty-state">暂无状态数据（进行对话后出现）</div></div>';
   }
@@ -2970,6 +3010,8 @@
 
     document.addEventListener('visibilitychange', function () { if (!document.hidden) { syncFromDom(false); syncTokens(); } });
     applyUrlState();
+    /* 让 app.js 在拿到新的 tokenStats 后能立刻重画顶栏这条（setTokenStats → window.syncTokens） */
+    window.syncTokens = syncTokens;
     console.log('[VN] 桌面视觉小说外壳已就绪');
   }
 

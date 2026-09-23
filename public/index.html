@@ -224,7 +224,7 @@
       }
     }
   </style>
-  <link rel="stylesheet" href="css/desktop/vn.css?v=20260922b">
+  <link rel="stylesheet" href="css/desktop/vn.css?v=20260923b">
 </head>
 
 <body>
@@ -243,10 +243,10 @@
       </div>
 
       <div class="hud-center">
-        <span class="stability tip" data-tip="时空稳定度 = 上下文占用比例（8.4k / 13.2k tokens）">
+        <span class="stability tip" data-tip="时空稳定度 = 当前上下文占用 ÷ 模型上下文窗口（上限）。上限可在「AI 与供应商」里填；本地服务会自动探测。">
           <span class="lbl">稳 定</span>
-          <span class="bar"><i style="width:63%"></i></span>
-          <span class="num">8.4k / 13.2k</span>
+          <span class="bar"><i style="width:0%"></i></span>
+          <span class="num">— / —</span>
         </span>
 
         <!-- 隐藏 / 显示记录：等同 /hide 与 /unhide，点击后询问轮次范围（紧挨上下文条） -->
@@ -1081,6 +1081,7 @@ confidence = 0.88</pre>
         <circle cx="7" cy="7" r="2" />
       </svg>
       <span class="stability-text"><b id="tokenContext">0</b> / <b id="tokenTotal">0</b></span>
+      <span class="stability-text" style="opacity:.7;font-size:10px;margin-left:6px" title="本对话累计消耗（不计入稳定度比例）">Σ <b id="tokenCumulative">0</b></span>
       <div class="stability-bar">
         <div class="stability-fill" id="stabilityFill"></div>
       </div>
@@ -1789,7 +1790,7 @@ confidence = 0.88</pre>
       </div>
       <div class="modal-footer">
         <button class="btn" id="btnCancelCharacter">取消</button>
-        <button class="btn btn-warning" id="btnFixCharacter" title="AI 优化角色卡格式">一键修卡</button>
+        <button class="btn btn-info" id="btnCardStudio" title="读取中…">卡坊体检</button>
         <button class="btn btn-primary" id="btnSaveCharacter">保存</button>
       </div>
     </div>
@@ -1850,6 +1851,14 @@ confidence = 0.88</pre>
             </label>
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
               本地 Qwen3 等思考模型若只返回思维链、正文为空，请取消勾选，让其直接输出正文
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="providerContextWindow">上下文窗口 (tokens)</label>
+            <input type="number" id="providerContextWindow" min="0" max="10000000" step="1024" placeholder="0 = 自动探测 / 未知">
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+              顶栏「稳 定」条 = 当前上下文占用 ÷ 这个上限。本地 llama.cpp / Ollama / KoboldCpp 会自动探测；
+              云端模型请填服务商文档里的上下文长度（如 32768 / 131072），留 0 则在界面上显示「上限未设置」。
             </div>
           </div>
         </form>
@@ -2086,9 +2095,9 @@ confidence = 0.88</pre>
 
   <input type="file" id="characterFileInput" accept=".json,.png" style="display:none">
 
-  <script src="js/api.js?v=20260922e"></script>
+  <script src="js/api.js?v=20260923c"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20260923a"></script>
+  <script src="js/app.js?v=20260923c"></script>
   <script>
     // === Theater Enhancement: UI Logic ===
     (function () {
@@ -2114,15 +2123,23 @@ confidence = 0.88</pre>
       }
 
       // Token Stability Bar Update
+      // 比例 = 已用上下文 ÷ 模型上下文窗口（上限）。上限未知时 app.js 会把 #tokenTotal 写成
+      // '—'（以前这里拿到的是"累计消耗"，比例恒为 ~0%，条永远空着 —— 用户报的"没效果"）。
       function updateStability() {
         var ctx = document.getElementById('tokenContext');
         var total = document.getElementById('tokenTotal');
         var fill = document.getElementById('stabilityFill');
         if (ctx && total && fill) {
           var c = parseInt(ctx.textContent) || 0;
-          var t = parseInt(total.textContent) || 0;
-          var ratio = t > 0 ? c / t : 0;
-          fill.style.width = (ratio * 100) + '%';
+          var rawT = String(total.textContent || '').trim();
+          var t = /^\d/.test(rawT) ? (parseInt(rawT) || 0) : 0;
+          if (!t) {                       // 上限未设置：不画比例，明确标成 unknown
+            fill.style.width = '0%';
+            fill.setAttribute('data-level', 'unknown');
+            return;
+          }
+          var ratio = c / t;
+          fill.style.width = Math.min(100, ratio * 100) + '%';
           if (ratio > 0.85) { fill.setAttribute('data-level', 'danger'); }
           else if (ratio > 0.65) { fill.setAttribute('data-level', 'warning'); }
           else { fill.setAttribute('data-level', 'safe'); }
@@ -2157,7 +2174,8 @@ confidence = 0.88</pre>
     </div>
     <div id="ttsListPopupBody" class="tts-list-popup-body"></div>
   </div>
-  <script src="js/desktop/vn-shell.js?v=20260923a"></script>
+  <script src="js/card-studio.js?v=3"></script>
+  <script src="js/desktop/vn-shell.js?v=20260923b"></script>
 </body>
 
 </html>

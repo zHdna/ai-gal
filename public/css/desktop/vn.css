@@ -597,6 +597,25 @@
       color: var(--text-2);
     }
 
+    /* 档位配色：黄=偏高、红=危险、unknown=上限未设置（不假装有比例，条与文字都转灰） */
+    .app .stability[data-level="warning"] .bar i {
+      background: linear-gradient(90deg, #b98b2e, var(--gold, #E8C878));
+      box-shadow: 0 0 10px rgba(232, 200, 120, .55);
+    }
+
+    .app .stability[data-level="danger"] .bar i {
+      background: linear-gradient(90deg, #8c2f3a, #ff6b7a);
+      box-shadow: 0 0 10px rgba(255, 107, 122, .6);
+    }
+
+    .app .stability[data-level="unknown"] {
+      opacity: .72;
+    }
+
+    .app .stability[data-level="unknown"] .num {
+      color: var(--text-mut);
+    }
+
     .app .hud-right {
       flex: 0 0 auto;
       display: flex;

@@ -103,13 +103,21 @@
         }
       }
 
-      // Token / 稳定度
+      // Token / 稳定度：已用上下文 ÷ 模型上下文窗口（上限）。上限未知时如实说明，
+      // 不再拿"累计消耗"冒充上限（那样比例永远是 ~0%，看不出上下文用得怎么样）。
       var ctx = document.getElementById('tokenContext');
       var tot = document.getElementById('tokenTotal');
+      var cumEl = document.getElementById('tokenCumulative');
       if (ctx && tot) {
+        var used = ctx.textContent;
+        var limit = String(tot.textContent || '').trim();
+        var known = /^\d/.test(limit);
         html += '<div class="vn-card"><h5>上下文 <span>token</span></h5>' +
-          '<div class="vn-kv"><span class="k">已用</span><span class="v cyan">' + esc(ctx.textContent) + '</span></div>' +
-          '<div class="vn-kv"><span class="k">上限</span><span class="v">' + esc(tot.textContent) + '</span></div></div>';
+          '<div class="vn-kv"><span class="k">已用</span><span class="v cyan">' + esc(used) + '</span></div>' +
+          '<div class="vn-kv"><span class="k">上限</span><span class="v">' + esc(known ? limit : '未设置') + '</span></div>' +
+          (cumEl ? '<div class="vn-kv"><span class="k">累计消耗</span><span class="v">' + esc(cumEl.textContent) + '</span></div>' : '') +
+          (known ? '' : '<div class="vn-kv"><span class="k">提示</span><span class="v">到「设置 → AI 与供应商」填该模型的上下文长度</span></div>') +
+          '</div>';
       }
 
       box.innerHTML = html || '<div class="vn-empty">当前没有可显示的状态数据。</div>';
@@ -203,9 +211,17 @@
   function rosterAvatarUrl(entry, name) {
     if (!entry) return '';
     var av = entry.avatar;
-    if (!av || av === 'pending' || av === '已有头像') return '';
+    // 名册把玩家侧（主角 / 游戏内扮演身份）标成「已有头像」= 用用户上传的头像
+    if (av === '已有头像') {
+      try {
+        if (typeof window.getUserAvatarForName === 'function') return window.getUserAvatarForName(name) || '';
+      } catch (e) { /* 共享实现不可用则退回 userProfile */ }
+      var up = (window.AppState && window.AppState.userProfile) || null;
+      return (up && up.avatar) || '';
+    }
+    if (!av || av === 'pending' || av === 'failed') return '';
     if (/^(\/|https?:|data:)/.test(av)) return av;          // 已是完整地址
-    // 注意：后端按「角色名」找生成的头像文件，而不是按 avatar 里的文件名
+    // 后端按名册条目记录的 avatar 文件名取图，URL 里的角色名只用于在名册里定位条目
     var sid = P._rosterSaveId || saveRecordId() || '';
     if (!sid) return '';
     return '/api/saves/' + encodeURIComponent(sid) + '/avatar/' + encodeURIComponent(name);
