@@ -20,6 +20,7 @@ data/generated_images/
 data/tts-cache/
 data/tts-cache-bak/
 data/tts-queue.json
+data/thumbs/
 server/generated_images/
 public/uploads/
 
@@ -35,6 +36,12 @@ desktop-config.json
 *.out
 *.err
 .probe-tmp/
+
+# ---- 本机会话记忆（含本机绝对路径与私有笔记）----
+# AGENTS.local.md / AGENTS-ARCHIVE.local.md 是**每台机器各自的**记忆文件，绝不入库。
+# 这条必须写在仓库自己的 .gitignore 里：只靠用户级全局 ignore（~/.config/git/ignore），
+# 换一台机器克隆下来它们就会变成未跟踪文件，一次 `git add -A` 就会连本机路径一起推上去。
+*.local.md
 
 # ---- 桌面版构建产物 & 工具链 ----
 # desktop/ 的源码要提交；下面是它的依赖与产物，不入库。

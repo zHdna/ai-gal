@@ -74,9 +74,10 @@ module.exports = (db) => {
     const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
     if (!save) return res.json({ round: 0, entries: [], injectedAt: 0 });
 
-    // Current round == number of user turns (matches chat.js countRounds)
+    // Current round == number of user turns (matches chat.js countRounds).
+    // NB: no `hidden` filter — hiding floors must not renumber rounds.
     const userTurns = db.prepare(
-      "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND role = 'user' AND hidden = 0"
+      "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND role = 'user'"
     ).get(conversation_id).n;
 
     const eventLogPath = path.join(save.save_path, EVENT_LOG_FILE);

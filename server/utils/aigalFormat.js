@@ -270,6 +270,33 @@ function extractTailActions(displayText) {
   return result;
 }
 
+// `### actions` 段抽取（照 app.js:extractActionsSection，紧随 stripMetaSections 之后）：
+// stripMetaSections 会把该段整段丢弃（设计上由 formatted.actions 承载），
+// 但开场白这类 messages.formatted = '{}' 的消息没有这条通道 —— 必须在丢弃前先抠出来，
+// 否则行动选项被静默吞掉（前端一个按钮都不渲染，这里也会给出 G3 假阴性）。
+// 判据与 extractTailActions 完全一致；序号交给 normalizeActions 一次剥净
+// （`--1、--1、` 双序号也在这里被还原成干净文案）。
+function extractActionsSection(text) {
+  if (!text) return [];
+  const out = [];
+  const sections = String(text).split(/\n###\s+/);
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
+    const firstLine = section.split('\n')[0]?.trim() || '';
+    // 首段只有在自带 `###` 前缀时才算标题段（否则它只是正文开头）
+    const isHeader = i > 0 || /^###\s*\S/.test(firstLine);
+    if (!isHeader) continue;
+    const header = firstLine.replace(/^###\s*/, '').toLowerCase();
+    if (!header.startsWith('actions')) continue;
+    const body = section.slice(section.indexOf('\n') + 1);
+    for (const line of body.split('\n')) {
+      const t = line.trim();
+      if (ACTION_LINE_RE.test(t) && t.length > 5) out.push(t);
+    }
+  }
+  return normalizeActions(out);
+}
+
 const STATUS_MARKER = '=== 状态栏 ===';
 
 /**
@@ -304,7 +331,14 @@ function parseGreeting(rawText, opts) {
 
   const kept = stripMetaSections(rawText2);
   out.visibleText = kept;
-  if (!kept) return out;
+  // `### actions` 段会被 stripMetaSections 整段丢弃 —— 先抠出来备用
+  // （前端兜底链与 formatted.actions 的关系见 app.js renderAIBlock 的无 segments 分支）
+  const sectionActions = extractActionsSection(rawText2);
+  if (!kept) {
+    out.actions = sectionActions.slice();
+    out.actionLines = sectionActions.slice();
+    return out;
+  }
 
   const segs = splitInlineBlocks(kept);
   for (const s of segs) {
@@ -339,6 +373,11 @@ function parseGreeting(rawText, opts) {
         }
       }
     }
+  }
+  // 与前端一致：正文末尾已经出过行动选项就不再补 `### actions` 段那一份（不然会出两个菜单）
+  if (out.actions.length === 0 && sectionActions.length > 0) {
+    out.actions.push(...sectionActions);
+    out.actionLines.push(...sectionActions);
   }
   return out;
 }
@@ -786,6 +825,7 @@ module.exports = {
   splitInlineBlocks,
   parseStatusSectionClient,
   extractTailActions,
+  extractActionsSection,
   parseGreeting,
   // 服务端语义族
   normalizeHeaders,

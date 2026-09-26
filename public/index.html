@@ -590,18 +590,11 @@
         <div class="pane" data-pane="memory">
           <div class="card">
             <h5>记忆表格<span>管家 AI 摘要</span></h5>
-            <div class="mem">
-              <div class="k">那张星图<em>第 12 轮</em></div>
-              <p class="v">三日前夹在她借去的《冬季星座》里，正面是北岭的星轨，背面用铅笔写着「23:40，老地方」。</p>
-            </div>
-            <div class="mem">
-              <div class="k">雪夜的缆车<em>第 09 轮</em></div>
-              <p class="v">末班缆车停运后你们走了两小时山路，她一路没说话，却把围巾分了一半给你。</p>
-            </div>
-            <div class="mem">
-              <div class="k">天文社的旧照片<em>第 05 轮</em></div>
-              <p class="v">照片背面写着一行日期与「北岭」两个字，笔迹与星图上的铅笔字一致。</p>
-            </div>
+            <!-- 占位空态：真实内容由 desktop/vn-shell.js 的 renderMemoryPane() 填入。
+                 ⚠️ 这里以前放的是三条**写死的示例记忆**（那张星图 第12轮 / 雪夜的缆车 第09轮 /
+                 天文社的旧照片 第05轮）。一旦面板渲染没跑到（脚本早退、取数失败），
+                 用户看到的就是这三条假记忆，且与真实存档完全无关、无从分辨。 -->
+            <div class="empty-state">打开存档后显示本局记忆摘要</div>
           </div>
         </div>
 
@@ -881,6 +874,7 @@ confidence = 0.88</pre>
             <button class="mi" data-pane="status"><span class="ic">📊</span><span class="tx"><b>主要状态</b><small>MVU 变量 / 数值条</small></span></button>
             <button class="mi" data-pane="roster"><span class="ic">👥</span><span class="tx"><b>角色名册</b><small>性别 · 年龄 · 关系</small></span></button>
             <button class="mi" data-pane="gallery"><span class="ic">🖼</span><span class="tx"><b>CG 画廊</b><small>全屏看图</small></span></button>
+            <button class="mi" data-pane="memory"><span class="ic">📜</span><span class="tx"><b>记忆表格</b><small>每轮摘要 · 三色灯</small></span></button>
             <button class="mi" data-pane="world"><span class="ic">🌐</span><span class="tx"><b>世界状态 (MVU)</b><small>播种 / 重放 / 清除</small></span></button>
           </div>
         </div>
@@ -1965,6 +1959,12 @@ confidence = 0.88</pre>
               <select id="ttsProviderVoice" class="setting-select">
                 <option value="alloy">Alloy</option>
               </select>
+              <input type="text" id="ttsProviderVoiceCustom" class="setting-input" style="margin-top:4px;width:100%"
+                placeholder="可选：手动填音色ID以覆盖下拉所选（留空则用上方下拉）">
+              <div style="font-size:10px;color:var(--text-muted);margin-top:3px;line-height:1.4">
+                音色ID 与其所属模型请到供应商官网查询（如 Volink：<a href="https://volink.org" target="_blank"
+                  rel="noopener" style="color:var(--text-muted)">volink.org</a>）。音色与模型是绑定的，跨模型混用会被服务端拒绝。
+              </div>
             </div>
           </div>
           <div class="form-group">
@@ -2097,7 +2097,7 @@ confidence = 0.88</pre>
 
   <script src="js/api.js?v=20260923c"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20260923c"></script>
+  <script src="js/app.js?v=20260924a"></script>
   <script>
     // === Theater Enhancement: UI Logic ===
     (function () {
@@ -2175,7 +2175,7 @@ confidence = 0.88</pre>
     <div id="ttsListPopupBody" class="tts-list-popup-body"></div>
   </div>
   <script src="js/card-studio.js?v=3"></script>
-  <script src="js/desktop/vn-shell.js?v=20260923b"></script>
+  <script src="js/desktop/vn-shell.js?v=20260925b"></script>
 </body>
 
 </html>

@@ -1228,9 +1228,7 @@ module.exports = (db) => {
       }
       const userProfile = db.prepare('SELECT * FROM user_profile WHERE is_active = 1 LIMIT 1').get();
       const systemPrompt = replaceVariables(buildSystemPrompt(conv, character), userProfile, character);
-      const messages = db.prepare(`
-        SELECT role, content, formatted FROM messages WHERE conversation_id = ? AND hidden = 0 ORDER BY created_at ASC
-      `).all(conversation_id);
+      const messages = loadRoundedHistory(conversation_id).visible;
       const { messages: apiMessages } = buildApiMessages(systemPrompt, messages, '', conv, null);
       const tokenStats = calculateTokenStats(apiMessages);
 
@@ -3145,10 +3143,10 @@ module.exports = (db) => {
     // 5. Build system prompt
     const systemPrompt = replaceVariables(buildSystemPrompt(conv, character), userProfile, character);
 
-    // 6. Collect message history (skip hidden messages)
-    let messages = db.prepare(`
-      SELECT role, content, formatted FROM messages WHERE conversation_id = ? AND hidden = 0 ORDER BY created_at ASC
-    `).all(conversation_id);
+    // 6. Collect message history via the shared loader (see loadRoundedHistory): every
+    // message is tagged with its canonical round BEFORE hidden ones are dropped, so that
+    // `/hide N` can never shift round numbering or the memory-trim boundary.
+    let messages = loadRoundedHistory(conversation_id).visible;
 
     // 6b. 「重新生成」：摘掉最后一条 user 消息（它仍留在库里），
     //     由 buildApiMessages 把本次内容作为最新一条 user 消息重新追加 —— 否则会重复。
@@ -3687,17 +3685,13 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
     const trimBefore = (conv && Number(conv.memory_trim_before)) || 0;
     let recent = history;
     if (trimBefore > 0) {
-      // Keep only dialogue from round `trimBefore` onward.  Rounds are counted by USER
-      // messages; we walk the history and drop every user turn whose 1-based user-index
-      // is below the threshold, together with the assistant reply that follows it.
+      // Keep only dialogue from round `trimBefore` onward.  Rounds come from `userRound`,
+      // which was computed over ALL messages (/hide N cannot shift it) — walking a
+      // hidden-filtered array here would move the boundary whenever floors are hidden.
       const kept = [];
-      let userIdx = 0;
       let dropping = false;
       for (const m of history) {
-        if (m.role === 'user') {
-          userIdx += 1;
-          dropping = userIdx < trimBefore;
-        }
+        if (m.role === 'user') dropping = m.userRound < trimBefore;
         if (!dropping) kept.push(m);
       }
       recent = kept;
@@ -6742,12 +6736,48 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
    * occupied a slot, so the first real reply was labelled 第2轮 and round 1 was never
    * recorded).  Counting user messages makes round 1 == the first user turn, and the
    * opening greeting is folded into round 1's summary instead of being lost.
+   *
+   * ⚠️ `hidden` MUST NOT be filtered here.  `hidden` (set by `/hide N`) only means
+   * "leave this message out of the AI context" — it must never change round NUMBERING.
+   * If it did, hiding rounds 1-10 would renumber every later round (the 11th user turn
+   * would become 第1轮 again), so newly written event_log rows would collide with rows
+   * already in the memory table, and the story text's round numbers would contradict it.
+   * The frontend numbers rounds the same way — `AppState.roundCounter` increments on
+   * every user message it renders, and GET /api/messages/conversation/:id does NOT
+   * filter hidden — so counting all user turns is what keeps the two in agreement.
    */
   function countRounds(conversation_id) {
     const row = db.prepare(
-      "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND role = 'user' AND hidden = 0"
+      "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND role = 'user'"
     ).get(conversation_id);
     return row ? row.n : 0;
+  }
+
+  /**
+   * Load a conversation's messages tagged with their canonical round.
+   *
+   * Every message gets a `userRound` (0 for anything before the first user turn, i.e. the
+   * pre-seeded opening greeting).  Assistant replies inherit the round of the user turn
+   * they answer.  Crucially the tag is computed over **all** messages, *before* the
+   * `hidden` ones are filtered out, because `hidden` (set by `/hide N`) only removes a
+   * message from the AI context — it must never shift round numbers.
+   *
+   * Both consumers must agree, otherwise they disagree about what "round 60" means:
+   *   · the real request path (prepareChatContext → buildApiMessages, uses `.visible`)
+   *   · the token-stats preview (GET /api/token-stats, also uses `.visible`)
+   *
+   * @returns {{ all: object[], visible: object[] }} `visible` = `all` minus hidden messages
+   */
+  function loadRoundedHistory(conversation_id) {
+    const all = db.prepare(`
+      SELECT id, role, content, formatted, hidden FROM messages WHERE conversation_id = ? ORDER BY created_at ASC
+    `).all(conversation_id);
+    let u = 0;
+    for (const m of all) {
+      if (m.role === 'user') u += 1;
+      m.userRound = u;
+    }
+    return { all, visible: all.filter(m => !m.hidden) };
   }
 
   /** Read memory-injection settings with safe defaults. */

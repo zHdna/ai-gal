@@ -1469,6 +1469,12 @@
               <select id="ttsProviderVoice" class="setting-select">
                 <option value="alloy">Alloy</option>
               </select>
+              <input type="text" id="ttsProviderVoiceCustom" class="setting-input" style="margin-top:4px;width:100%"
+                placeholder="可选：手动填音色ID以覆盖下拉所选（留空则用上方下拉）">
+              <div style="font-size:10px;color:var(--text-muted);margin-top:3px;line-height:1.4">
+                音色ID 与其所属模型请到供应商官网查询（如 Volink：<a href="https://volink.org" target="_blank"
+                  rel="noopener" style="color:var(--text-muted)">volink.org</a>）。音色与模型是绑定的，跨模型混用会被服务端拒绝。
+              </div>
             </div>
           </div>
           <div class="form-group">
@@ -1603,7 +1609,7 @@
 
   <script src="js/api.js?v=20260923c"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20260923c"></script>
+  <script src="js/app.js?v=20260924a"></script>
   <script src="js/mobile/vn-shell.js?v=20260923e"></script>
   <script src="js/mobile/vn-pages.js?v=20260923c"></script>
   <script src="js/mobile/vn-stage.js?v=20260923c"></script>

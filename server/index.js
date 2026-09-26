@@ -136,6 +136,10 @@ app.use('/api/presets', require('./routes/presets')(db));
 app.use('/api/script-vars', require('./routes/script-vars')(db));
 app.use('/api/script', require('./routes/script-commands')(db));
 
+// 缩略图（头像 / 画廊格子用）。必须挂在下面 /api 的 404 兜底**之前**，
+// 否则请求根本到不了这里。原图路由（/uploads、/api/saves/...）保持不变。
+app.use('/api/thumbs', require('./routes/thumbs')(db));
+
 // TTS Module (cloud API — no local dependencies)
 app.use('/api/tts', require('./routes/tts')(db));
 
@@ -195,6 +199,25 @@ function listenOn(port, attempt) {
     // 固定格式，供 Electron 外壳 / 启动器解析实际端口
     console.log(`[Server] PORT=${port}`);
     console.log(`[paths] ${appPaths.describe()}`);
+
+    // 后台预热缩略图缓存：把**已经存在**的老图补上缩略图，用户第一次进界面
+    // 就不必为每张头像各等一次生成（首次请求生成约 50~100ms）。
+    // 走 setImmediate 逐个做：既挡不住启动，也不长时间占住事件循环。
+    try {
+      const thumbnails = require('./utils/thumbnails');
+      const dirs = [appPaths.CHARACTER_AVATARS_DIR, appPaths.AVATARS_DIR, appPaths.PROFILE_DIR];
+      try {
+        const rows = db.prepare('SELECT save_path FROM saves').all();
+        for (const r of rows) {
+          if (r && r.save_path) dirs.push(path.join(r.save_path, 'images'));
+        }
+      } catch { /* 老库没有 saves 表也不该影响启动 */ }
+      thumbnails.warmCache(dirs, (done, total, skipped) => {
+        if (total > 0) console.log(`[Thumbs] 预热完成：生成 ${done}/${total} 张（已有缓存 ${skipped} 张）`);
+      });
+    } catch (e) {
+      console.warn('[Thumbs] 预热跳过:', e && e.message);
+    }
   });
 
   server.on('error', (err) => {

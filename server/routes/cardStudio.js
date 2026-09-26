@@ -980,6 +980,18 @@ module.exports = (db) => {
     return t;
   }
 
+  // 行动选项净化：模型会把原卡 `### actions` 段的行逐字抄进 actions 数组（连 `--N、` 序号一起），
+  // 而 emitGreeting 又无条件前置序号（aigalFormat.js 的 `--' + (i+1) + '、'`）→ `--1、--1、文案`。
+  // 这里把抄来的序号剥净（可重复出现，双序号一并处理）。**只作用于 actions**：
+  // 正文行可能是「-1.5 米的距离…」这类以负号起头的叙事，不能在同一处剥。
+  function sanitizeActionText(s) {
+    let t = sanitizeGreetingText(s);
+    if (!t) return '';
+    // 与前端 ACTION_LINE_RE 同形：`--N、` / `-N、` / `**--N、**`，允许连续重复
+    t = t.replace(/^(?:\*\*)?(?:-{1,2}\s*\d+\s*[、．.]\s*)+/, '');
+    return t.trim();
+  }
+
   // P4 组装：LLM 只出语义件（氛围/正文行/名册/选项），结构由 emitGreeting 模板定死；
   // 正文内状态通道（=== 状态栏 ===）与引擎变量块（### status 载体）由代码逐字节直传。
   // 状态通道净化：原文标记同行时首键会被啃出 `=` 前缀（G5 的成因）——剥前缀再过键校验。
@@ -994,7 +1006,7 @@ module.exports = (db) => {
       mood: sanitizeGreetingText(typeof g.mood === 'string' && g.mood.trim() ? g.mood : 'relaxed') || 'relaxed',
       story: (Array.isArray(g.story_lines) ? g.story_lines : []).map(s => sanitizeGreetingText(s)).filter(Boolean).join('\n'),
       roster: Array.isArray(g.roster) ? g.roster.map(s => sanitizeGreetingText(s)).filter(Boolean) : [],
-      actions: (Array.isArray(g.actions) ? g.actions : []).map(s => sanitizeGreetingText(s)).filter(a => a.length > 5).slice(0, 4),
+      actions: (Array.isArray(g.actions) ? g.actions : []).map(s => sanitizeActionText(s)).filter(a => a.length > 5).slice(0, 4),
       status: cleanStatus,
       variableBlocks
     });

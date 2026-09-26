@@ -5,7 +5,7 @@
 const { Router } = require('express');
 const { SETTINGS_ID, APP_KEYS } = require('../constants');
 
-// Default Blue Deep Theme — matches CSS :root variables in style.css
+// Default Blue Deep Theme — matches CSS :root variables in public/css/ai-gal-redesign.css
 const DEFAULT_DARK_THEME = {
   '--bg-primary': '#080E1A',
   '--bg-secondary': '#0C1423',

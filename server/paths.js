@@ -76,6 +76,8 @@ const DATA_DIR = path.join(DATA_ROOT, 'data');
 const GENERATED_IMAGES_DIR = path.join(DATA_DIR, 'generated_images');
 const TTS_CACHE_DIR = path.join(DATA_DIR, 'tts-cache');
 const TTS_QUEUE_FILE = path.join(DATA_DIR, 'tts-queue.json');
+/** 缩略图缓存（按「源图路径+尺寸」的 sha1 命名，见 server/utils/thumbnails.js） */
+const THUMBS_DIR = path.join(DATA_DIR, 'thumbs');
 const UPLOADS_DIR = path.join(DATA_ROOT, 'public', 'uploads');
 const AVATARS_DIR = path.join(UPLOADS_DIR, 'avatars');
 const CHARACTER_AVATARS_DIR = path.join(UPLOADS_DIR, 'characters');
@@ -89,7 +91,7 @@ const BGM_DIR = path.join(APP_ROOT, 'BGM');
 const SERVER_DATA_DIR = path.join(APP_ROOT, 'server', 'data');
 
 const WRITABLE_DIRS = [
-  DB_DIR, SAVES_DIR, DATA_DIR, GENERATED_IMAGES_DIR, TTS_CACHE_DIR,
+  DB_DIR, SAVES_DIR, DATA_DIR, GENERATED_IMAGES_DIR, TTS_CACHE_DIR, THUMBS_DIR,
   UPLOADS_DIR, AVATARS_DIR, CHARACTER_AVATARS_DIR, PROFILE_DIR,
 ];
 
@@ -127,6 +129,7 @@ module.exports = {
   GENERATED_IMAGES_DIR,
   TTS_CACHE_DIR,
   TTS_QUEUE_FILE,
+  THUMBS_DIR,
   UPLOADS_DIR,
   AVATARS_DIR,
   CHARACTER_AVATARS_DIR,

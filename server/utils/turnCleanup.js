@@ -12,11 +12,13 @@
  * ⚠️ 两条硬规则（都踩过）：
  *
  * 1) 轮次定义必须与 chat.js 的 countRounds() 一致：
- *    «轮次 = 该消息之前（含自身）的、未隐藏的 user 消息条数»，
+ *    «轮次 = 该消息之前（含自身）的 user 消息条数»（**不看 hidden**），
  *    开场的问候语（预置的 assistant）折进第 1 轮，不单独占一个轮号。
  *    旧实现用的是 `ceil(message_position / 2)`（按总消息数折半）—— 那正是
  *    countRounds() 注释里写明的「设计错误」，在带开场问候的存档里会算错一轮
  *    （删第 1 轮的回复却去 event_log 里删了第 2 轮的记忆）。
+ *    ⚠️ 同样**不能**加 `hidden = 0`：hidden 只是「这条不进 AI 上下文」，
+ *    用它筛轮号会让 /hide 1-10 之后所有轮号前移，与正文/记忆表格的轮次矛盾。
  *
  * 2) **一律用 rowid（真实插入顺序）定位，不要用 created_at 排序。**
  *    messages.created_at 默认是 `datetime('now')`，只有**秒级**精度：
@@ -40,7 +42,7 @@ function roundOfRowId(db, conversationId, rowId) {
   if (!conversationId || rowId == null) return 0;
   const row = db.prepare(`
     SELECT COUNT(*) AS n FROM messages
-    WHERE conversation_id = ? AND role = 'user' AND hidden = 0 AND rowid <= ?
+    WHERE conversation_id = ? AND role = 'user' AND rowid <= ?
   `).get(conversationId, rowId);
   return row ? row.n : 0;
 }

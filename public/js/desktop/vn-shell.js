@@ -64,10 +64,19 @@
     optionsOpen: true,  /* 本轮是否还有未做出的选择 */
     cgManual: null,     /* 上方箭头手动选中的背景 CG（cgTimeline 下标）；换段/换楼即失效 */
     cgKey: '',          /* 上一次的「楼:段」；一变就把手动选择清掉，回到按文本自动分配 */
+    stageUrl: '',       /* 舞台当前显示的**原图** URL。#cgImg.src 可能是缩略图，不能拿来当身份用 */
     auto: false,
     autoTimer: null
   };
-  window.VN = { desktop: { S: S, render: function () { render(); }, sync: function (f) { syncFromDom(!!f); } } };
+  window.VN = {
+    desktop: {
+      S: S,
+      render: function () { render(); },
+      sync: function (f) { syncFromDom(!!f); },
+      /* 舞台背景的 3 张滑窗（诊断用）：cache = 当前保活的 CG，max = 上限 */
+      stage: function () { return { cache: Object.keys(stageCache), max: STAGE_WINDOW }; }
+    }
+  };
 
   function messagesArea() { return byId('messagesArea'); }
   function allBlocks() { var a = messagesArea(); return a ? $$('.story-block', a) : []; }
@@ -209,11 +218,15 @@
     if (slot) slot.dataset.initial = (name || '').trim().charAt(0) || '?';
     if (img) {
       if (url) {
-        if (img.getAttribute('src') !== url) img.setAttribute('src', url);
+        // 框里挂缩略图，原图记在 data-full —— 点开大图时读 data-full（见下面 avL 的点击）
+        var tv = (typeof window.thumbUrl === 'function') ? window.thumbUrl(url, 384) : url;
+        if (img.getAttribute('src') !== tv) img.setAttribute('src', tv);
+        img.dataset.full = url;
         img.style.visibility = '';
         img.dataset.empty = '';
       } else {
         img.removeAttribute('src');
+        delete img.dataset.full;
         img.dataset.empty = '1';
         img.style.visibility = 'hidden';
       }
@@ -531,8 +544,8 @@
     var t = cgTimeline();
     if (t.length) return { url: t[t.length - 1].url, count: t[t.length - 1].blockNo || (1 << 30) };
     var gv = byId('galleryViewport');
-    var last = gv ? $$('img.cg-image', gv).filter(function (x) { return x.getAttribute('src'); }).pop() : null;
-    return last ? { url: last.getAttribute('src'), count: 1 << 30 } : null;
+    var last = gv ? $$('img.cg-image', gv).filter(function (x) { return x.dataset.big || x.getAttribute('src'); }).pop() : null;
+    return last ? { url: last.dataset.big || last.getAttribute('src'), count: 1 << 30 } : null;
   }
 
   /** 旧画廊（#galleryViewport）里的 CG URL 列表 —— App.cgGallery 为空时的兜底：
@@ -542,7 +555,8 @@
     if (!gv) return [];
     var out = [];
     $$('img.cg-image', gv).forEach(function (el) {
-      var s = el.getAttribute('src') || el.dataset.big || '';
+      /* src 现在是缩略图（/api/thumbs/...），舞台必须用 data-big 里的原图 */
+      var s = el.dataset.big || el.getAttribute('src') || '';
       if (s && out.indexOf(s) < 0) out.push(s);
     });
     $$('[data-big]', gv).forEach(function (el) {
@@ -675,9 +689,8 @@
     var nav = byId('cgNav');
     if (!nav) return;
     var t = cgTimeline();
-    var cur = '';
-    var img = byId('cgImg');
-    if (img && img.getAttribute('src')) cur = img.getAttribute('src');
+    /* 身份一律取原图 URL：img.src 可能是先顶上来的缩略图，拿它去 cgIndexOf 会找不到 */
+    var cur = S.stageUrl || '';
     var i = cur ? cgIndexOf(cur) : -1;
     if (i < 0 && S.cgManual != null) i = S.cgManual;
     var show = t.length > 1 && !app.classList.contains('ui-gone');
@@ -692,8 +705,7 @@
   function stepCg(dir) {
     var t = cgTimeline();
     if (!t.length) { toast('这个存档还没有 CG'); return; }
-    var img = byId('cgImg');
-    var cur = img && img.getAttribute('src') || '';
+    var cur = S.stageUrl || '';
     var i = cgIndexOf(cur);
     if (i < 0) i = S.cgManual != null ? S.cgManual : t.length - 1;
     i = (i + dir + t.length) % t.length;
@@ -707,6 +719,64 @@
       if (!sb || sb === 'none' || sb === 'default') return '';
       return /^(https?:|data:|\/)/i.test(sb) ? sb : '/' + sb.replace(/^\/+/, '');
     } catch (e) { return ''; }
+  }
+
+  /* ── 舞台背景：缩略图先上屏，原图读完再替换 ────────────────────────────────
+     背景是铺满全屏的一张大图，原图常是 1~6MB。等它下载 + 解码完再显示的话，
+     每次切段/翻页都会先空一拍（或停在上一次的图上）。所以先用 384px 缩略图顶上
+     —— 它通常已经在缓存里，几乎瞬到 —— 再在后台把原图读进来换上。
+
+     ⚠️ 因此 #cgImg 的 src 不再等于「当前是哪张 CG」：cgIndexOf / stepCg / 角标
+     一律改读 S.stageUrl（原图 URL）。这是本次改动的关键不变量。 */
+  var stageToken = 0;
+  var stageCache = {};                 /* url -> Image：保住窗口内 3 张的已解码位图 */
+  var STAGE_WINDOW = 3;                /* 舞台只留「当前 ±1」共 3 张，更早的放掉 */
+
+  /** 只保留窗口内的图；窗口外的显式置空 src 并丢掉引用，让浏览器立即回收位图。
+      这就是需求里的「背景CG只加载最多3张，更早的CG从内存中清掉」——
+      用户往上翻 / 点画廊某张时，那张会重新进窗口并按需重新加载。 */
+  function primeStageWindow(url) {
+    var t = cgTimeline();
+    var idx = -1;
+    for (var i = 0; i < t.length; i++) if (t[i].url === url) { idx = i; break; }
+    var keep = {};
+    if (idx >= 0) {
+      var half = Math.floor(STAGE_WINDOW / 2);
+      for (var d = -half; d <= half; d++) {
+        var j = idx + d;
+        if (j < 0 || j >= t.length) continue;
+        keep[t[j].url] = 1;
+        if (!stageCache[t[j].url]) {
+          var im = new Image();
+          im.decoding = 'async';
+          im.src = t[j].url;                 /* 直接读原图：舞台要的就是全画质 */
+          stageCache[t[j].url] = im;
+        }
+      }
+    } else {
+      keep[url] = 1;
+    }
+    Object.keys(stageCache).forEach(function (u) {
+      if (!keep[u]) {
+        try { stageCache[u].src = ''; } catch (e) { }
+        delete stageCache[u];
+      }
+    });
+  }
+
+  function applyStageUrl(img, url) {
+    var token = ++stageToken;
+    var full = String(url || '');
+    var thumb = (typeof window.thumbUrl === 'function') ? window.thumbUrl(full, 384) : full;
+    if (img.getAttribute('src') !== thumb) img.setAttribute('src', thumb);   /* 1) 缩略图先上屏 */
+    if (thumb === full) return;                     /* 认不出的 URL（外链/卡面）：一步到位 */
+    var pre = new Image();
+    pre.decoding = 'async';
+    pre.onload = function () {
+      if (token !== stageToken) return;             /* 期间用户又切了 → 放弃这次替换 */
+      if (img.getAttribute('src') !== full) img.setAttribute('src', full);
+    };
+    pre.src = full;                                 /* 2) 原图在后台读，读完换上 */
   }
 
   function syncStage() {
@@ -727,11 +797,20 @@
     }
     if (!url) url = cg ? cg.url : cardFace();
     if (url) {
-      if (img.getAttribute('src') !== url) img.setAttribute('src', url);
+      url = String(url);
+      /* 只有目标变了才重新上图 —— syncStage 每次同步都会调，无条件重设会把
+         「缩略图 → 原图」的升级过程反复打断（每次都退回缩略图，原图永远上不来） */
+      if (S.stageUrl !== url) {
+        S.stageUrl = url;
+        applyStageUrl(img, url);
+        primeStageWindow(url);
+      }
       img.style.display = '';
       img.dataset.empty = '';
       app.classList.add('has-cg');
     } else {
+      S.stageUrl = '';
+      stageToken++;                        /* 让在途的原图回调失效 */
       img.removeAttribute('src');
       img.style.display = 'none';
       img.dataset.empty = '1';
@@ -1465,8 +1544,9 @@
         .filter(Boolean).join(' · ') || (name === personaName() ? '玩家' : '');
       var affKey = Object.keys(r).filter(function (k) { return /好感|affinity|信任/.test(k) && !isNaN(parseFloat(r[k])); })[0];
       var aff = affKey ? Math.max(0, Math.min(100, parseFloat(r[affKey]))) : null;
+      var thumbUrl2 = url && (typeof window.thumbUrl === 'function') ? window.thumbUrl(url, 256) : url;
       return '<div class="roster" data-name="' + escapeHtml(name) + '"' + (url ? ' data-big="' + escapeHtml(url) + '"' : '') + '>' +
-        '<div class="av"' + (url ? ' style="background-image:url(' + escapeHtml(url) + ')"' : '') + '>' + (url ? '' : escapeHtml(firstChar(name))) + '</div>' +
+        '<div class="av"' + (thumbUrl2 ? ' style="background-image:url(' + escapeHtml(thumbUrl2) + ')"' : '') + '>' + (url ? '' : escapeHtml(firstChar(name))) + '</div>' +
         '<div class="info"><b>' + escapeHtml(name) + '</b><p>' + escapeHtml(desc) + '</p>' + (aff != null ? meter('rose', Math.round(aff)) : '') + '</div>' +
         (aff != null ? '<span class="rel">' + escapeHtml(affKey) + ' ' + Math.round(aff) + '</span>' : '') +
         '</div>';
@@ -1514,8 +1594,11 @@
       var file = g.file || g.filename || g.url || g.image || '';
       var url = imgUrlFor(file);
       var cap = g.description || g.name || g.title || g.character || ('CG ' + (i + 1));
+      /* 格子里铺缩略图（原图可能 1~6MB，一屏 20 格全读原图就是几十 MB 解码）；
+         原图放 data-big —— 点开大图由 dock 的 [data-big] 委托读它 */
+      var thumb = url && (typeof window.thumbUrl === 'function') ? window.thumbUrl(url, 384) : url;
       return '<div class="cg" data-big="' + escapeHtml(url) + '" data-name="' + escapeHtml(cap) + '"' +
-        (url ? ' style="background-image:url(' + escapeHtml(url) + ')"' : '') + '><span class="cap">' + escapeHtml(cap) + '</span></div>';
+        (thumb ? ' style="background-image:url(' + escapeHtml(thumb) + ')"' : '') + '><span class="cap">' + escapeHtml(cap) + '</span></div>';
     });
     el.innerHTML = items.length
       ? '<div class="card"><h5>CG 画廊<span>' + onlyCg.length + ' 张</span></h5><div class="cg-grid">' + items.join('') + '</div></div>'
@@ -1533,50 +1616,69 @@
 
   /* 三色灯状态：黄=已登记（已写入 event_log.md，尚未进入任何一次注入）
                   绿=已注入（已包含在注入的记忆表格中）
-                  红=内容缺失（该轮没有摘要，或摘要为空） */
+                  红=内容缺失（该轮没有摘要，或摘要为空）
+
+     ⚠️ 每次打开面板都要重新拉一次（stale-while-revalidate）。
+     旧实现在拿到一次结果后就**永久缓存**（`memStatus.save === cid` 直接 return），
+     于是面板冻结在「第一次打开时的快照」—— 实测：面板只显示第 1 条记忆，
+     而存档里的 event_log.md 已经有几十条实时更新。切到新存档会「又正常」，
+     那只是因为换了 cid 恰好绕过了这份缓存，并不是它被修好了。 */
   function memoryStatus() {
-    var sid = saveId();
     var cid = (App.currentConversation && App.currentConversation.id) || '';
     if (!cid) return memStatus;
-    if (memStatus.save === cid) return memStatus;
     if (memStatus.fetching) return memStatus;
     memStatus.fetching = true;
-    memStatus.save = cid;
+    var want = cid;
     fetch('/api/memory-agent/memory-status?conversation_id=' + encodeURIComponent(cid))
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
         memStatus.fetching = false;
         if (!j) return;
+        if (want !== ((App.currentConversation && App.currentConversation.id) || '')) return;
+        memStatus.save = cid;
         memStatus.injectedAt = j.injectedAt || 0;
         memStatus.round = j.round || 0;
         memStatus.byRound = {};
         (j.entries || []).forEach(function (e) { memStatus.byRound[e.round] = e.status; });
-        if ($('.pane[data-pane="memory"]')) loadPane('memory');
+        renderMemoryPane();
       })
+      /* 失败只复位 fetching，**不写 save**：旧实现在 fetch 之前就 `memStatus.save = cid`，
+         一次网络抖动之后 `save === cid` 命中，这个对话就永远不再重试、灯全灰。 */
       .catch(function () { memStatus.fetching = false; });
     return memStatus;
   }
 
-  function memDotFor(key) {
-    var st = memoryStatus();
+  /* 当前对话的三色灯表；对话不匹配时返回空表，避免把上一个存档的颜色画到这一局 */
+  function statusRoundMap() {
+    var cid = (App.currentConversation && App.currentConversation.id) || '';
+    return (cid && memStatus.save === cid) ? memStatus.byRound : {};
+  }
+
+  function memDotFor(key, byRound) {
     var m = String(key || '').match(/第(\d+)轮/);
     if (!m) return '<span class="mem-dot mem-dot-none"></span>';
-    var s = st.byRound[Number(m[1])];
+    var map = byRound || statusRoundMap();
+    var s = map[Number(m[1])];
     var cls = s === 'injected' ? 'green' : s === 'missing' ? 'red' : s === 'registered' ? 'yellow' : 'none';
     var title = s === 'injected' ? '已注入' : s === 'missing' ? '内容缺失' : s === 'registered' ? '已登记' : '';
     return '<span class="mem-dot mem-dot-' + cls + '"' + (title ? ' title="' + title + '"' : '') + '></span>';
   }
 
+  /* ⚠️ 同样每次打开都重拉，理由见 memoryStatus 上面那段。
+     刷新回来后**直接调 renderMemoryPane()**，不要再 `loadPane('memory')` ——
+     那会重新进入 memoryRows() 再发一次请求，形成「请求 → 重画 → 请求」的死循环。 */
   function memoryRows() {
     var sid = saveId();
     if (!sid) return memCache.rows || [];
-    if (memCache.save === sid && memCache.rows) return memCache.rows;
     if (memCache.fetching) return memCache.rows || [];
+    if (memCache.save !== sid) { memCache.save = sid; memCache.rows = null; }
     memCache.fetching = true;
-    memCache.save = sid;
+    var want = sid;
     fetch('/api/saves/' + encodeURIComponent(sid) + '/memory')
       .then(function (r) { return r.ok ? r.json() : { memory: [] }; })
       .then(function (j) {
+        memCache.fetching = false;
+        if (want !== saveId()) return;   /* 期间切了存档 → 丢弃这次结果 */
         var mem = (j && j.memory) || [];
         var entries = Array.isArray(mem) ? mem : Object.keys(mem).map(function (k) { return { key: k, value: mem[k] }; });
         memCache.rows = entries.map(function (m) {
@@ -1586,8 +1688,7 @@
             v: m.value || m.content || m.summary || m.text || ''
           };
         });
-        memCache.fetching = false;
-        if ($('.pane[data-pane="memory"]')) loadPane('memory');
+        renderMemoryPane();
       })
       .catch(function () { memCache.fetching = false; });
     return memCache.rows || [];
@@ -1595,11 +1696,28 @@
 
   function paneMemory() {
     ensureData('memory');
+    /* 两个刷新都在后台跑，回来各自调 renderMemoryPane()；这里先用手上的缓存画一版，
+       避免每次点开都闪一下空白。 */
+    memoryStatus();
+    memoryRows();
+    renderMemoryPane();
+  }
+
+  function renderMemoryPane() {
     var el = $('.pane[data-pane="memory"]');
     if (!el) return;
-    var st = memoryStatus();
-    var rows = memoryRows();
-    if (!rows.length) {
+    var sid = saveId();
+    var byRound = statusRoundMap();
+    var st = { injectedAt: (byRound === memStatus.byRound) ? (memStatus.injectedAt || 0) : 0 };
+    /* 行也必须验明存档：换了存档就别把上一局的行画出来 */
+    var rows = (sid && memCache.save === sid) ? (memCache.rows || []) : [];
+    /* ⚠️ 下面这组兜底**只在拿不到 save id 时**才用。
+       `window._memoryEntries` 是 app.js 的 loadMemoryPage() 在本次会话**第一次**打开面板时
+       抓的一份快照（ensureData 有 paneLoaded 一次性守卫，之后不再更新）。
+       若在有 save id 的情况下还拿它兜底，面板就会停在那份旧快照上 ——
+       用户实测「只显示前 3 轮、而 event_log.md 已有 9 轮」正是这个形态。
+       有 save id 就以接口为准：取不到就显示空态，等下一次刷新，绝不用旧快照冒充当前数据。 */
+    if (!sid && !rows.length) {
       var mem = window._memoryEntries;
       if (Array.isArray(mem) && mem.length) {
         rows = mem.map(function (m) {
@@ -1628,8 +1746,28 @@
       return;
     }
     el.innerHTML = '<div class="card"><h5>记忆表格<span>共 ' + rows.length + ' 条 · 管家 AI 摘要</span></h5>' + legend + rows.map(function (r) {
-      return '<div class="mem"><div class="k">' + memDotFor(r.k) + escapeHtml(r.k) + (r.tag ? '<em>' + escapeHtml(String(r.tag)) + '</em>' : '') + '</div><p class="v">' + escapeHtml(String(r.v)) + '</p></div>';
+      return '<div class="mem"><div class="k">' + memDotFor(r.k, byRound) + escapeHtml(r.k) + (r.tag ? '<em>' + escapeHtml(String(r.tag)) + '</em>' : '') + '</div><p class="v">' + escapeHtml(String(r.v)) + '</p></div>';
     }).join('') + '</div>';
+  }
+
+  /* 数据中心里**当前可见**的那一页，在被打开期间也要跟着回合往前走。
+     只靠「打开时拉一次」是不够的：把面板开着继续对话，它就会一直停在你打开它的那一刻
+     （用户实测：面板只显示前 3 轮，而 event_log.md 已经 9 轮 —— 后端接口返回的是全量，
+     所以问题只在「没人再拉一次」）。
+     节流 2.5s：流式输出期间消息区会连续变动，不能每跳一次就打一轮接口。
+     在后台标签页不发请求（与画廊轮询同一取舍）。 */
+  var paneRefreshAt = 0;
+  function refreshVisiblePane(force) {
+    var dock = byId('dock');
+    if (!dock || !dock.classList.contains('on')) return;
+    if (document.hidden) return;
+    var cur = $('#dockTabs .dtab.on');
+    if (!cur || cur.dataset.pane !== 'memory') return;   /* 只有记忆面板需要跟着回合重拉 */
+    var now = Date.now();
+    if (!force && now - paneRefreshAt < 2500) return;
+    paneRefreshAt = now;
+    memoryStatus();
+    memoryRows();   /* 两者拿到数据后各自调 renderMemoryPane() */
   }
 
   function paneWorld() {
@@ -2174,7 +2312,7 @@
   /* 点击左侧大头像看大图（右侧槽已去掉，只剩这一个） */
   on(byId('avL'), 'click', function () {
     var img = byId('avLImg');
-    var u = img && img.getAttribute('src');
+    var u = img && (img.dataset.full || img.getAttribute('src'));
     if (!u) return;
     openViewer(u, cast.cur ? cast.cur.name : '');
   });
@@ -2322,8 +2460,9 @@
      用途：用户对画面不满意（构图/画风/人数不对）时，不用回到数据中心，
      直接在对话框上方点一下即可重画；后台仍是 fire-and-forget，由常驻画廊 watcher 自动换图。 */
   function currentStageCg() {
-    var img = byId('cgImg');
-    var url = img && img.getAttribute('src') ? img.getAttribute('src') : '';
+    /* 用 S.stageUrl（原图）而不是 #cgImg.src —— 后者可能是先顶上来的缩略图。
+       虽然两种 URL 的文件名相同、按名字匹配也能命中，但用原图 URL 更不容易出错。 */
+    var url = S.stageUrl || '';
     var gal = (App.cgGallery || []);
     if (!gal.length) return null;
     /* 优先用"舞台上正在显示的那张"来匹配；匹配不到就用最新一张（生图默认替换最新条目） */
@@ -2614,7 +2753,7 @@
       cur: S.cur,
       seg: seg ? { kind: seg.kind, name: seg.name || '', right: !!seg.right, text: seg.text.slice(0, 120) } : null,
       choices: S.optionsOpen ? extractChoices(block).length : 0,
-      stage: (byId('cgImg') || {}).getAttribute ? (byId('cgImg').getAttribute('src') || '') : '',
+      stage: S.stageUrl || '',
       /* 背景判定的中间量：方便核对「卡面 / CG / 剧本bg」到底谁赢了 */
       bgInfo: (function () {
         var cg = newestCg(), gv = byId('galleryViewport');
@@ -2688,7 +2827,7 @@
             blocks: blocks.length,
             inBlocks: inBlocks.slice(-6),
             newest: n ? String(n.url).split('/').pop() + ' @block' + n.count : null,
-            stage: (byId('cgImg') || {}).getAttribute ? String(byId('cgImg').getAttribute('src') || '').split('/').pop() : '',
+            stage: String(S.stageUrl || '').split('/').pop(),
             storedBg: storedBg(),
             bgStamp: readBgStamp(),
             cardFace: String(cardFace() || '').split('/').pop()
@@ -2849,7 +2988,7 @@
     var pending = null;
     new MutationObserver(function () {
       clearTimeout(pending);
-      pending = setTimeout(function () { syncFromDom(false); }, 120);
+      pending = setTimeout(function () { syncFromDom(false); refreshVisiblePane(false); }, 120);
     }).observe(area, { childList: true, subtree: true, characterData: true });
   }
 
@@ -3008,7 +3147,7 @@
     var titleEl = byId('conversationTitle');
     if (titleEl) new MutationObserver(updateHeader).observe(titleEl, { childList: true, characterData: true, subtree: true });
 
-    document.addEventListener('visibilitychange', function () { if (!document.hidden) { syncFromDom(false); syncTokens(); } });
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) { syncFromDom(false); syncTokens(); refreshVisiblePane(true); } });
     applyUrlState();
     /* 让 app.js 在拿到新的 tokenStats 后能立刻重画顶栏这条（setTokenStats → window.syncTokens） */
     window.syncTokens = syncTokens;

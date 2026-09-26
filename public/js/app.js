@@ -734,7 +734,8 @@ function bindEvents() {
     const img = e.target.closest('.dialogue-avatar img');
     if (!img) return;
     e.preventDefault();
-    showAvatarLightbox(img.src);
+    // 先读 data-full（原图）：框里挂的是缩略图，直接送 img.src 会把小图放大成糊的
+    showAvatarLightbox(img.dataset.full || img.src);
   });
 
   // 悬浮滚动按钮
@@ -1347,6 +1348,41 @@ async function resetSystemPrompt() {
   }
 }
 
+// ============ 缩略图 ============
+// 头像 / 画廊格子一律先取缩略图（服务端 /api/thumbs/* 生成，见 server/utils/thumbnails.js），
+// 原图只在「点开放大 / 切到舞台」时才读。这样 6MB 的头像不会再为了画一个 40px 的框被解码成 16MB 位图。
+const THUMB_AVATAR = 256;    // 头像框
+const THUMB_GALLERY = 384;   // 画廊格子 / 舞台首帧
+
+/**
+ * 原图 URL → 缩略图 URL。
+ * 认不出来的（外链 / data: / blob: / 空）原样返回 —— 调用方不需要写失败分支。
+ * 保留原有的查询串（?t= 这类破缓存参数），再追加 size。
+ */
+function thumbUrl(url, size) {
+  const raw = String(url || '');
+  if (!raw || /^(data:|https?:|blob:|\/\/)/i.test(raw)) return raw;
+  const qi = raw.indexOf('?');
+  const p = qi < 0 ? raw : raw.slice(0, qi);
+  const suffix = (qi < 0 ? '?' : raw.slice(qi) + '&') + 'size=' + (size || THUMB_AVATAR);
+  let out = null;
+  if (p.indexOf('/uploads/characters/') === 0) out = p.replace('/uploads/characters/', '/api/thumbs/characters/');
+  else if (p.indexOf('/uploads/avatars/') === 0) out = p.replace('/uploads/avatars/', '/api/thumbs/avatars/');
+  else if (/^\/api\/saves\/[^/]+\/(avatar|images)\//.test(p)) out = p.replace('/api/saves/', '/api/thumbs/saves/');
+  return out ? out + suffix : raw;
+}
+
+/**
+ * 头像 <img>：src=缩略图，原图记在 data-full。
+ * 点开灯箱时读 data-full（见 bindEvents 里的委托与 showAvatarLightbox 调用点）。
+ */
+function avatarThumbHtml(url, name, cls) {
+  const full = String(url || '');
+  if (!full) return '';
+  const c = cls ? ` class="${cls}"` : '';
+  return `<img src="${escapeHtml(thumbUrl(full, THUMB_AVATAR))}" data-full="${escapeHtml(full)}" alt="${escapeHtml(name)}"${c} loading="lazy" decoding="async">`;
+}
+
 // ============ 竖条头像列表 ============
 
 function renderStripAvatars() {
@@ -1367,11 +1403,11 @@ function renderStripAvatars() {
     const rosterEntry = AppState.characterRoster[char.name];
     if (rosterEntry && rosterEntry.avatar && rosterEntry.avatar !== 'pending' && rosterEntry.avatar !== '') {
       const avatarPath = rosterEntry.avatar.startsWith('/') ? rosterEntry.avatar : '/api/saves/' + saveId + '/avatar/' + encodeURIComponent(char.name);
-      inner = `<img src="${escapeHtml(avatarPath)}" alt="${escapeHtml(char.name)}">`;
+      inner = avatarThumbHtml(avatarPath, char.name);
     }
     // 2. Check char.avatar (角色卡自带头像)
     else if (char.avatar) {
-      inner = `<img src="${escapeHtml(char.avatar)}" alt="${escapeHtml(char.name)}">`;
+      inner = avatarThumbHtml(char.avatar, char.name);
     }
 
     return `
@@ -1424,7 +1460,7 @@ function renderCharacterList() {
     const charConvs = convsByChar[char.id] || [];
     const currentConvId = AppState.currentConversation?.id;
     const avatarHtml = char.avatar
-      ? `<img src="${escapeHtml(char.avatar)}" alt="${escapeHtml(char.name)}" class="character-avatar">`
+      ? avatarThumbHtml(char.avatar, char.name, 'character-avatar')
       : `<div class="character-avatar-placeholder">${escapeHtml(firstCharNoSymbol(char.name))}</div>`;
 
     // Build conversation list items with delete/export buttons
@@ -1936,6 +1972,39 @@ function stripMetaSections(text) {
     }
   }
   return storyParts.join('\n\n').trim();
+}
+
+/**
+ * 从 `### actions` 段里抠出行动选项。
+ *
+ * 为什么需要它：stripMetaSections 会把 `### actions` 段**整段丢弃**，前提假设是
+ * 「该段由 formatted.actions 单独通道承载」。这对每轮 AI 输出成立（服务端管家已经把
+ * `### actions` 解析进 formatted.actions），但**开场白这类 messages.formatted = '{}'
+ * 的消息没有这道解析** —— 于是选项既不在 formatted.actions 里、又被整段丢掉，
+ * 一个按钮也不渲染（用户看到的「开场白没有行动选项按钮」）。
+ *
+ * 返回：干净文案数组（走 normalizeActions，`--1、` 序号——含 `--1、--1、` 双序号——一次剥净）。
+ * 判据与 renderPlainFallback 的末尾扫描完全一致，避免两条通道认出不同的行。
+ */
+function extractActionsSection(text) {
+  if (!text) return [];
+  const out = [];
+  const sections = String(text).split(/\n###\s+/);
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
+    const firstLine = section.split('\n')[0]?.trim() || '';
+    // 首段只有在自带 `###` 前缀时才算标题段（否则它只是正文开头）
+    const isHeader = i > 0 || /^###\s*\S/.test(firstLine);
+    if (!isHeader) continue;
+    const header = firstLine.replace(/^###\s*/, '').toLowerCase();
+    if (!header.startsWith('actions')) continue;
+    const body = section.slice(section.indexOf('\n') + 1);
+    for (const line of body.split('\n')) {
+      const t = line.trim();
+      if (/^(?:\*\*)?-{1,2}\s*\d+[、．.]\s*.+/.test(t) && t.length > 5) out.push(t);
+    }
+  }
+  return normalizeActions(out);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2516,6 +2585,10 @@ function renderAIBlock(formatted, fallbackText, timeStr, isHidden) {
     // 无 segments → 回退渲染 fullText / text / fallbackText
     let rawText = (formatted && (formatted.fullText || formatted.text)) || fallbackText || '';
     rawText = stripThink(rawText);
+    // `### actions` 段会被下面的 stripMetaSections 整段丢弃，所以**先**把它抠出来。
+    // 每轮 AI 输出有服务端管家填的 formatted.actions 兜着；开场白（formatted='{}'）
+    // 没有这一步，只能在这里补救 —— 否则选项被静默吞掉、一个按钮都不渲染。
+    const sectionActions = extractActionsSection(rawText);
     // Strip ### header sections (mood, portrait, actions, status, etc.) from rawText
     // Keep only story/dialogue content
     rawText = stripMetaSections(rawText);
@@ -2534,11 +2607,16 @@ function renderAIBlock(formatted, fallbackText, timeStr, isHidden) {
         parts.push(...renderPlainFallback(rawText));
       }
     }
-    // Also render formatted.actions if available (even without segments)
-    if (formatted && formatted.actions && Array.isArray(formatted.actions) && formatted.actions.length > 0) {
+    // 行动选项：formatted.actions（每轮消息的正式通道）优先；
+    // 开场白等没有它的消息，用上面从 `### actions` 段抠出的兜底通道。
+    // 正文末尾的 `--N、` 行已由 renderPlainFallback 渲染过 —— 有就不再补，避免出两个菜单。
+    const fallbackActions = (formatted && Array.isArray(formatted.actions) && formatted.actions.length > 0)
+      ? formatted.actions
+      : sectionActions;
+    if (fallbackActions.length > 0) {
       // Only add if not already rendered from text parsing
       const existingBtns = parts.some(p => p.includes('choice-option'));
-      if (!existingBtns) parts.push(renderActionButtons(formatted.actions));
+      if (!existingBtns) parts.push(renderActionButtons(fallbackActions));
     }
   }
 
@@ -2693,7 +2771,7 @@ function renderDialogueBlock(seg, side) {
   if (isUser) {
     const userAvatar = getUserAvatarForName(name);
     avatarHtml = userAvatar
-      ? `<img src="${escapeHtml(userAvatar)}" alt="${escapeHtml(name)}">`
+      ? avatarThumbHtml(userAvatar, name)
       : escapeHtml(name.charAt(0));
   } else {
     const result = lookupRosterEntry(name);
@@ -2704,7 +2782,7 @@ function renderDialogueBlock(seg, side) {
       const avatarPath = rosterEntry.avatar.startsWith('/')
         ? rosterEntry.avatar
         : '/api/saves/' + getCurrentSaveId() + '/avatar/' + encodeURIComponent(rosterName);
-      avatarHtml = `<img src="${escapeHtml(avatarPath)}" alt="${escapeHtml(name)}">`;
+      avatarHtml = avatarThumbHtml(avatarPath, name);
     } else {
       avatarHtml = escapeHtml(name.charAt(0));
     }
@@ -2910,7 +2988,7 @@ function formatGalGameText(text) {
     // 用户侧（真实身份或游戏内扮演身份）优先用用户头像
     if (isUserSideName(name)) {
       const av = getUserAvatarForName(name);
-      if (av) return `<img src="${escapeHtml(av)}" alt="${escapeHtml(name)}">`;
+      if (av) return avatarThumbHtml(av, name);
       return escapeHtml(name.charAt(0));
     }
     // 从角色名册查找头像（支持西式姓名模糊匹配）
@@ -2919,11 +2997,11 @@ function formatGalGameText(text) {
     const rosterName = result?.matchName || name;
     if (rosterEntry && rosterEntry.avatar && rosterEntry.avatar !== 'pending' && rosterEntry.avatar !== '') {
       const avatarPath = rosterEntry.avatar.startsWith('/') ? rosterEntry.avatar : '/api/saves/' + getCurrentSaveId() + '/avatar/' + encodeURIComponent(rosterName);
-      return `<img src="${escapeHtml(avatarPath)}" alt="${escapeHtml(name)}">`;
+      return avatarThumbHtml(avatarPath, name);
     }
     const initial = name.charAt(0);
     if (name === defaultName && defaultAvatar) {
-      return `<img src="${escapeHtml(defaultAvatar)}" alt="${escapeHtml(name)}">`;
+      return avatarThumbHtml(defaultAvatar, name);
     }
     return escapeHtml(initial);
   }
@@ -5666,7 +5744,7 @@ function renderGallery() {
       html += `
         <div class="cg-item" data-cg-index="${i}">
           <div class="cg-img-wrap">
-            <img src="${escapeHtml(imgUrl)}" class="cg-image cg-clickable" alt="CG ${i + 1}" title="点击放大"
+            <img src="${escapeHtml(thumbUrl(imgUrl, THUMB_GALLERY))}" data-big="${escapeHtml(imgUrl)}" class="cg-image cg-clickable" alt="CG ${i + 1}" title="点击放大" loading="lazy" decoding="async"
                  onerror="this.style.display='none';this.nextElementSibling.style.display='flex';this.nextElementSibling.textContent='图片生成中...'"
                  onload="this.style.display='block';this.nextElementSibling.style.display='none'">
             <div class="cg-placeholder" style="display:none;width:100%;height:120px;align-items:center;justify-content:center;color:var(--text-muted);font-size:12px;background:var(--bg-input);border-radius:8px;"></div>
@@ -5694,7 +5772,8 @@ function renderGallery() {
   vp.querySelectorAll('.cg-clickable').forEach(img => {
     img.addEventListener('click', (e) => {
       e.preventDefault();
-      showAvatarLightbox(img.src);
+      // 格子里是缩略图，点开要看原图
+      showAvatarLightbox(img.dataset.big || img.src);
     });
   });
   // CG refresh button
@@ -6326,7 +6405,7 @@ async function loadRosterPage() {
       if (!/\.(png|jpe?g|webp|avif|gif|bmp)$/i.test(String(char.avatar))) continue;
       const info = parseRosterFields(char);
       const avatarHtml = char.avatar
-        ? `<img class="roster-card-avatar" src="/api/saves/${saveId}/images/${encodeURIComponent(char.avatar)}" alt="${escapeHtml(name)}" onclick="event.stopPropagation();viewFullSizeAvatar(this.src,'${escapeJs(name)}')">`
+        ? `<img class="roster-card-avatar" src="${escapeHtml(thumbUrl('/api/saves/' + saveId + '/images/' + encodeURIComponent(char.avatar), THUMB_AVATAR))}" data-full="/api/saves/${saveId}/images/${encodeURIComponent(char.avatar)}" alt="${escapeHtml(name)}" loading="lazy" decoding="async" onclick="event.stopPropagation();viewFullSizeAvatar(this.dataset.full||this.src,'${escapeJs(name)}')">`
         : `<div class="roster-card-avatar-placeholder">👤</div>`;
       html += `<div class="roster-card" data-name="${escapeHtml(name)}" onclick="viewRosterChar('${escapeJs(name)}')">
         ${avatarHtml}
@@ -6370,7 +6449,7 @@ async function viewRosterChar(name) {
     const content = DOM.charDetailContent();
     const info = parseRosterFields(char);
     const avatarHtml = char.avatar
-      ? `<img class="char-detail-avatar" src="/api/saves/${saveId}/images/${encodeURIComponent(char.avatar)}" alt="${escapeHtml(name)}" onclick="event.stopPropagation();viewFullSizeAvatar(this.src,'${escapeJs(name)}')">`
+      ? `<img class="char-detail-avatar" src="${escapeHtml(thumbUrl('/api/saves/' + saveId + '/images/' + encodeURIComponent(char.avatar), THUMB_AVATAR))}" data-full="/api/saves/${saveId}/images/${encodeURIComponent(char.avatar)}" alt="${escapeHtml(name)}" loading="lazy" decoding="async" onclick="event.stopPropagation();viewFullSizeAvatar(this.dataset.full||this.src,'${escapeJs(name)}')">`
       : `<div class="char-detail-avatar-placeholder">👤</div>`;
 
     content.innerHTML = `
@@ -7213,12 +7292,15 @@ function startGalleryPoll(intervalMs) {
           AppState.characterRoster = rosterResp.roster;
           await loadCharacterRoster();
           updateRenderedAvatars();
-          // 头像文件是新的：加时间戳强制浏览器重新取图，否则会一直用缓存的旧图
+          // 头像文件是新的：加时间戳强制浏览器重新取图，否则会一直用缓存的旧图。
+          // 框里挂的是缩略图 —— 必须按「缩略图基址 + ?t」重建，直接拿 src 换域名会把
+          // /api/thumbs/... 换成 /api/saves/...（那是原图，等于白缩）。
+          const stamp = Date.now();
           document.querySelectorAll('.dialogue-avatar img').forEach(img => {
-            const src = img.getAttribute('src');
-            if (src && src.includes('/avatar/')) {
-              const base = src.split('?')[0];
-              img.setAttribute('src', base + '?t=' + Date.now());
+            const full = img.dataset.full || '';
+            if (full && full.includes('/avatar/')) {
+              img.dataset.full = full.split('?')[0] + '?t=' + stamp;
+              img.setAttribute('src', thumbUrl(img.dataset.full, THUMB_AVATAR));
             }
           });
           updated = true;
@@ -7358,7 +7440,8 @@ function updateRenderedAvatars() {
     if (isUserSideName(name)) {
       const av = getUserAvatarForName(name);
       if (av) {
-        avatarEl.innerHTML = `<img src="${escapeHtml(av)}?t=${Date.now()}" alt="${escapeHtml(name)}">`;
+        // 走 avatarThumbHtml：src=缩略图、data-full=原图（?t 保留在两者上，换图后都要重取）
+        avatarEl.innerHTML = avatarThumbHtml(av.split('?')[0] + '?t=' + Date.now(), name);
       } else {
         avatarEl.innerHTML = escapeHtml(name.charAt(0));
       }
@@ -7370,7 +7453,7 @@ function updateRenderedAvatars() {
     const rosterName = result?.matchName || name;
     if (rosterEntry && rosterEntry.avatar && rosterEntry.avatar !== 'pending' && rosterEntry.avatar !== '') {
       const avatarPath = '/api/saves/' + getCurrentSaveId() + '/avatar/' + encodeURIComponent(rosterName) + '?t=' + Date.now();
-      avatarEl.innerHTML = `<img src="${escapeHtml(avatarPath)}" alt="${escapeHtml(name)}">`;
+      avatarEl.innerHTML = avatarThumbHtml(avatarPath, name);
     }
   });
 }
@@ -11774,6 +11857,8 @@ function ttsShowForm(id) {
     document.getElementById('ttsProviderModel').value = '';
     document.getElementById('ttsProviderModelCustom').value = '';
     document.getElementById('ttsProviderVoice').value = 'alloy';
+    const _vc = document.getElementById('ttsProviderVoiceCustom');
+    if (_vc) _vc.value = '';
     document.getElementById('ttsProviderSpeed').value = '1.0';
     document.getElementById('ttsProviderLanguage').value = 'zh-CN';
     document.getElementById('ttsProviderInstruction').value = '';
@@ -11841,7 +11926,7 @@ async function ttsEditProvider(id) {
     await ttsLoadModelList(p.model);
     // Fetch voices（按已保存模型返回合法音色）
     await ttsFetchVoices(p.base_url, p.model);
-    document.getElementById('ttsProviderVoice').value = p.voice;
+    ttsSetVoiceValue(p.voice);
     document.getElementById('ttsProviderSpeed').value = p.speed;
     document.getElementById('ttsProviderLanguage').value = p.language || 'zh-CN';
     document.getElementById('ttsProviderInstruction').value = p.instruction || '';
@@ -11880,7 +11965,7 @@ function ttsCollectFormProvider() {
     name: document.getElementById('ttsProviderName').value.trim() || 'test',
     base_url: document.getElementById('ttsProviderUrl').value.trim(),
     model,
-    voice: document.getElementById('ttsProviderVoice').value.trim() || 'alloy',
+    voice: ttsGetVoiceValue(),
     instruction: document.getElementById('ttsProviderInstruction').value.trim(),
     api_format: document.getElementById('ttsApiFormat').value,
     language: document.getElementById('ttsProviderLanguage').value
@@ -11903,7 +11988,7 @@ async function ttsSaveProvider() {
     base_url: document.getElementById('ttsProviderUrl').value.trim(),
     model: (document.getElementById('ttsProviderModelCustom').value.trim()
             || document.getElementById('ttsProviderModel').value.trim()) || 'tts-1',
-    voice: document.getElementById('ttsProviderVoice').value.trim() || 'alloy',
+    voice: ttsGetVoiceValue(),
     speed: parseFloat(document.getElementById('ttsProviderSpeed').value) || 1.0,
     instruction: document.getElementById('ttsProviderInstruction').value.trim(),
     api_format: document.getElementById('ttsApiFormat').value,
@@ -11947,7 +12032,7 @@ async function ttsAddPreset(type) {
   await ttsLoadModelList(p.model);
   // Auto-fetch voices for this provider（按预设模型返回合法音色）
   await ttsFetchVoices(p.base_url, p.model);
-  document.getElementById('ttsProviderVoice').value = p.voice;
+  ttsSetVoiceValue(p.voice);
 }
 
 /** Fetch available models from provider's /v1/models */
@@ -12003,6 +12088,33 @@ async function ttsLoadModelList(defaultModel) {
     sel.value = '';
     if (custom) custom.value = defaultModel;
   }
+}
+
+/**
+ * 把已保存的音色回写到表单。
+ * 下拉里找得到就选中下拉；找不到（用户手输的自定义音色 ID / 属于其它模型的音色）
+ * 就填进「手动音色 ID」输入框，避免一保存就把自定义 ID 冲掉。
+ */
+function ttsSetVoiceValue(voice) {
+  const sel = document.getElementById('ttsProviderVoice');
+  const custom = document.getElementById('ttsProviderVoiceCustom');
+  const val = voice || '';
+  if (custom) custom.value = '';
+  if (!sel) { if (custom) custom.value = val; return; }
+  const known = Array.from(sel.options).some(o => o.value === val);
+  if (val && !known) {
+    if (custom) custom.value = val;
+    sel.value = '';
+  } else {
+    sel.value = val;
+  }
+}
+
+/** 取表单当前生效的音色：手输 ID 优先于下拉。 */
+function ttsGetVoiceValue() {
+  const custom = document.getElementById('ttsProviderVoiceCustom');
+  const sel = document.getElementById('ttsProviderVoice');
+  return ((custom && custom.value.trim()) || (sel && sel.value.trim()) || 'alloy');
 }
 
 /** Fetch voice presets for current base_url */

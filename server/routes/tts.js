@@ -1995,6 +1995,49 @@ function buildTTSRouter(db) {
   return router;
 }
 
+// ============ Volink 官方音色库（本地快照，避免每次开设置面板都去打 API） ============
+// 快照来源：GET https://api.volink.org/v1/tts/voices?page=N&page_size=100 —— 共 559 个官方音色。
+// 关键约束：音色与模型强绑定，voice id 必须配它所属的那个 model，跨模型混用会被服务端
+// 404 "Voice xxx not found." 所以这里必须按 model 分发，不能把所有音色混在一个下拉框里。
+const VOLINK_VOICES_PATH = path.join(__dirname, '..', 'data', 'volink-voices.json');
+let _volinkVoicesCache = null;
+
+function loadVolinkVoices() {
+  if (_volinkVoicesCache) return _volinkVoicesCache;
+  try {
+    const j = JSON.parse(fs.readFileSync(VOLINK_VOICES_PATH, 'utf8'));
+    _volinkVoicesCache = {
+      defaultModel: j.default_model || 'minimax/speech-02-turbo',
+      voices: Array.isArray(j.voices) ? j.voices : []
+    };
+  } catch (e) {
+    console.error('[TTS] Failed to load volink-voices.json:', e.message);
+    _volinkVoicesCache = { defaultModel: 'minimax/speech-02-turbo', voices: [] };
+  }
+  return _volinkVoicesCache;
+}
+
+/**
+ * 按 model 返回该模型可用的 Volink 音色列表。
+ * model 为空或无法匹配任何已知模型时，回落到默认模型（MiniMax speech-02-turbo），
+ * 保证下拉框永远有内容可挑。
+ */
+function getVolinkVoices(model) {
+  const { defaultModel, voices } = loadVolinkVoices();
+  if (!voices.length) return [];
+  const strip = v => ({ id: v.id, name: v.name });
+  const q = String(model || '').trim().toLowerCase();
+  if (!q) return voices.filter(v => v.model === defaultModel).map(strip);
+  // 1) 精确匹配：minimax/speech-02-turbo
+  const exact = voices.filter(v => v.model.toLowerCase() === q);
+  if (exact.length) return exact.map(strip);
+  // 2) 片段匹配：只写 "minimax" / "speech-02-turbo" / "cosyvoice" 也能命中
+  const partial = voices.filter(v => v.model.toLowerCase().includes(q) || q.includes(v.model.toLowerCase()));
+  if (partial.length) return partial.map(strip);
+  // 3) 未知模型（含 "tts-1" 之类的占位值）→ 默认模型
+  return voices.filter(v => v.model === defaultModel).map(strip);
+}
+
 /** Voice presets by provider domain */
 function getVoicePresets(baseUrl, model) {
   const url = (baseUrl || '').toLowerCase();
@@ -2124,42 +2167,9 @@ function getVoicePresets(baseUrl, model) {
       { id: 'zh_male_guanggaojieshuo_uranus_bigtts', name: '广告解说 (男)' },
     ];
   }
-  // Volink CosyVoice2-0.5B voices
+  // Volink：4 个模型共 559 个官方音色（音色与模型绑定，按 model 分发；默认 MiniMax）
   if (url.includes('volink')) {
-    return [
-      // 女声 (19)
-      { id: '68f05ee2fa7d57c78f362dfa', name: '暖心外婆 (女)' },
-      { id: '68f05ee2fa7d57c78f362dfb', name: '魅惑女神 (女)' },
-      { id: '68f05ee2fa7d57c78f362dfc', name: '热销达人 (女)' },
-      { id: '68f05ee2fa7d57c78f362dfd', name: '访谈主持 (女)' },
-      { id: '68f05ee2fa7d57c78f362dfe', name: '宝岛甜心 (女)' },
-      { id: '68f05ee2fa7d57c78f362dff', name: '温柔女神 (女)' },
-      { id: '68f05ee2fa7d57c78f362e00', name: '冰山美人 (女)' },
-      { id: '68f05ee2fa7d57c78f362e01', name: '卡通女孩 (女)' },
-      { id: '68f05ee2fa7d57c78f362e02', name: '甜蜜恋人 (女)' },
-      { id: '68f05ee2fa7d57c78f362e03', name: '魅力女生 (女)' },
-      { id: '68f05ee2fa7d57c78f362e0e', name: '艾娃 (女)' },
-      { id: '68f05ee2fa7d57c78f362e0f', name: '贝拉 (女)' },
-      { id: '68f05ee2fa7d57c78f362e10', name: '莎拉 (女)' },
-      { id: '68f05ee2fa7d57c78f362e11', name: '艾玛 (女)' },
-      { id: '68f05ee2fa7d57c78f362e12', name: '妮可 (女)' },
-      { id: '68f05ee2fa7d57c78f362e13', name: '凯瑟琳 (女)' },
-      { id: '68f05ee2fa7d57c78f362e14', name: '丽莎 (女)' },
-      { id: '68f05ee2fa7d57c78f362e15', name: '米娅 (女)' },
-      { id: '68f05ee2fa7d57c78f362e17', name: '菲奥娜 (女)' },
-      // 男声 (17)
-      { id: '68f05ee2fa7d57c78f362e04', name: '高冷领导 (男)' },
-      { id: '68f05ee2fa7d57c78f362e05', name: '温柔男友 (男)' },
-      { id: '68f05ee2fa7d57c78f362e06', name: '忧郁少年 (男)' },
-      { id: '68f05ee2fa7d57c78f362e07', name: '专业播报 (男)' },
-      { id: '68f05ee2fa7d57c78f362e08', name: '睿智老爹 (男)' },
-      { id: '68f05ee2fa7d57c78f362e09', name: '翩翩公子 (男)' },
-      { id: '68f05ee2fa7d57c78f362e0a', name: '邻家男孩 (男)' },
-      { id: '68f05ee2fa7d57c78f362e0b', name: '儒雅青年 (男)' },
-      { id: '68f05ee2fa7d57c78f362e0c', name: '职场新星 (男)' },
-      { id: '68f05ee2fa7d57c78f362e0d', name: '卖萌男孩 (男)' },
-      { id: '68f05ee2fa7d57c78f362e18', name: '欢乐圣诞老人 (男)' },
-    ];
+    return getVolinkVoices(model);
   }
   // QwenAPI TTS (REST /qwenapi/v1/custom-voice — speaker IDs are English names)
   // Matches both cloud (cnb.run) and local (127.0.0.1:7860 / localhost:7860) Qwen3-TTS
