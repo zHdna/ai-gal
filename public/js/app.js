@@ -607,6 +607,7 @@ function bindEvents() {
     if (e.target.id === 'btnFetchTTSModels') ttsFetchModels();
     if (e.target.id === 'btnFetchTTSVoices') ttsFetchVoices();
     if (e.target.classList && e.target.classList.contains('tts-vm-test')) ttsTestVoice(e.target.dataset.vm);
+    if (e.target.classList && e.target.classList.contains('tts-vk-test')) ttsTestVolinkBucket(e.target.dataset.vk);
   });
   // TTS: 切换 API 格式或填写地址后，若已填 base_url 则自动拉取模型列表填充下拉
   document.addEventListener('change', (e) => {
@@ -10972,7 +10973,7 @@ class TTSBuffer extends EventTarget {
     }
 
     this.tasks = tasks.map((t, i) => ({
-      text: t.text, voice: t.voice, emotion: t.emotion, narrator: !!t.narrator,
+      text: t.text, voice: t.voice, emotion: t.emotion, gender: t.gender, narrator: !!t.narrator,
       audioBlob: null, audioUrl: null, duration: 0,
       status: 'pending', // pending | fetching | ready | error
       error: null, segIdx: i
@@ -11018,6 +11019,7 @@ class TTSBuffer extends EventTarget {
         if (task.voice) body.voice = task.voice;
         if (task.emotion) body.instruction = task.emotion;
         if (task.narrator) body.narrator = true; // 旁白标记：后端据此锁定旁白声线，避免回落女声默认
+        if (task.gender) body.gender = task.gender; // Volink：情绪音色分男女，后端据此选音色
 
         // TTS generation (esp. local large models) can take minutes. Use a uniform,
         // generous timeout so retries aren't cut shorter than the first attempt,
@@ -11870,13 +11872,81 @@ function ttsShowForm(id) {
       const el = document.getElementById('ttsVm_' + key);
       if (el) { el.innerHTML = '<option value="">(默认)</option>'; el.value = ''; }
     });
+    ttsResetVolinkBuckets();
     ttsToggleFormatFields();
   }
+}
+
+/** Volink 情绪档（后端 VOLINK_EMOTION_BUCKETS 的镜像，键名必须一致）。
+ *  Volink 不支持自然语言情绪指令，情绪靠换音色表达，故这里按档位绑定音色。
+ *  每个档位分【女声 _f / 男声 _m】两个下拉；角色性别取自名册，取不到按女声。 */
+const TTS_VOLINK_BUCKETS = ['narrator', 'neutral', 'happy', 'angry', 'sad', 'gentle', 'fear', 'surprise', 'cold', 'nsfw'];
+/** 展开成所有下拉的 DOM key：<bucket>_f / <bucket>_m */
+const TTS_VOLINK_KEYS = TTS_VOLINK_BUCKETS.flatMap(b => [b + '_f', b + '_m']);
+/** 判断当前表单/供应商是否走 Volink 分支（显式 api_format，或 base_url 命中 volink）。 */
+function ttsIsVolinkFormat(fmt, baseUrl) {
+  const f = (fmt !== undefined && fmt !== null) ? fmt : (document.getElementById('ttsApiFormat')?.value || '');
+  if (f === 'volink') return true;
+  const u = (baseUrl !== undefined && baseUrl !== null) ? baseUrl : (document.getElementById('ttsProviderUrl')?.value || '');
+  return /volink/i.test(u || '');
+}
+/** 重置 Volink 情绪档下拉（女/男各一）。 */
+function ttsResetVolinkBuckets() {
+  TTS_VOLINK_KEYS.forEach(k => {
+    const el = document.getElementById('ttsVk_' + k);
+    if (el) { el.innerHTML = '<option value="">(默认)</option>'; el.value = ''; }
+  });
+  const ng = document.getElementById('ttsVkNarratorGender');
+  if (ng) ng.value = 'female';
+}
+/** 用给定音色列表填充 Volink 情绪档下拉，尽量保留当前选择。
+ *  列表已按性别过滤：_f 下拉只给女声，_m 只给男声（音色 genders 字段）。 */
+function ttsFillVolinkBuckets(voices) {
+  const optsFor = (gender) => {
+    const list = (voices || []).filter(v => !v.gender || v.gender === gender);
+    return list.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
+  };
+  const optF = optsFor('female'), optM = optsFor('male');
+  TTS_VOLINK_KEYS.forEach(k => {
+    const el = document.getElementById('ttsVk_' + k);
+    if (!el) return;
+    const saved = el.value;
+    const opts = k.endsWith('_m') ? optM : optF;
+    el.innerHTML = '<option value="">(默认)</option>' + opts;
+    if (saved && el.querySelector(`option[value="${saved}"]`)) el.value = saved;
+  });
+}
+/** 收集 Volink 情绪档选择 → voice_map 的 emo_<bucket>_<f|m> 键。 */
+function ttsCollectVolinkMap() {
+  const vm = {};
+  TTS_VOLINK_KEYS.forEach(k => {
+    const el = document.getElementById('ttsVk_' + k);
+    if (el && el.value) vm['emo_' + k] = el.value;
+  });
+  const ng = document.getElementById('ttsVkNarratorGender');
+  if (ng && ng.value) vm.narrator_gender = ng.value;
+  return vm;
+}
+/** 回填 Volink 情绪档下拉（含旁白性别）。 */
+function ttsSetVolinkMap(vm) {
+  TTS_VOLINK_KEYS.forEach(k => {
+    const el = document.getElementById('ttsVk_' + k);
+    if (el) el.value = (vm && vm['emo_' + k]) || '';
+  });
+  const ng = document.getElementById('ttsVkNarratorGender');
+  if (ng) ng.value = (vm && vm.narrator_gender) || 'female';
 }
 
 function ttsToggleFormatFields() {
   const fmt = document.getElementById('ttsApiFormat').value;
   document.getElementById('ttsLanguageGroup').style.display = (fmt === 'nvidia' || fmt === 'comfyui') ? 'block' : 'none';
+  // Volink：隐藏「角色音色映射（按性别+年龄）」，改用「Volink 情绪音色映射」。
+  // 二者互斥——Volink 的情绪靠换音色表达，性别年龄映射对它没有意义（AI 不再决定音色）。
+  const isVolink = ttsIsVolinkFormat(fmt);
+  const sexSec = document.getElementById('ttsVoiceMapSection');
+  const vkSec = document.getElementById('ttsVolinkMapSection');
+  if (sexSec) sexSec.style.display = isVolink ? 'none' : '';
+  if (vkSec) vkSec.style.display = isVolink ? 'block' : 'none';
   // ComfyUI (Qwen3-TTS VoiceDesign) 没有云端音色列表，标签是静态 12 类，直接填充下拉框
   if (fmt === 'comfyui') ttsPopulateComfyLabels();
   // Update key hint + URL placeholder based on format
@@ -11895,6 +11965,11 @@ function ttsToggleFormatFields() {
     if (keyHint) keyHint.textContent = '(本机 ComfyUI 无需 Key)';
     if (urlInput) urlInput.placeholder = 'http://127.0.0.1:8188';
     if (keyInput) keyInput.placeholder = '(留空)';
+  } else if (fmt === 'volink') {
+    // Volink 专用通道：地址固定为 /v1，Key 为 volink.org 控制台签发的令牌。
+    if (keyHint) keyHint.textContent = '(volink.org 控制台令牌)';
+    if (urlInput) urlInput.placeholder = 'https://api.volink.org/v1';
+    if (keyInput) keyInput.placeholder = 'volink 令牌';
   } else if (fmt === 'bailian') {
     if (keyHint) keyHint.textContent = '(百炼 API Key)';
     if (urlInput) urlInput.placeholder = 'https://dashscope.aliyuncs.com/api/v1';
@@ -11937,6 +12012,9 @@ async function ttsEditProvider(id) {
       const el = document.getElementById('ttsVm_' + key);
       if (el) el.value = vm[key] || '';
     });
+    // Volink 情绪档回填（emo_* 键）
+    ttsSetVolinkMap(vm);
+    ttsToggleFormatFields();
   } catch (e) { console.error('[TTS] Edit:', e); }
 }
 
@@ -11983,6 +12061,10 @@ async function ttsSaveProvider() {
     const el = document.getElementById('ttsVm_' + key);
     if (el && el.value) voiceMap[key] = el.value;
   });
+  // Volink：情绪档映射写入同一 voice_map 的 emo_* 键（与上面 7 个性别年龄键共存不冲突）。
+  // 这样同一个 provider 在两种模式间切换时，各自的配置都不会丢。
+  const _vkMap = ttsCollectVolinkMap();
+  Object.assign(voiceMap, _vkMap);
   const data = {
     name: document.getElementById('ttsProviderName').value.trim(),
     base_url: document.getElementById('ttsProviderUrl').value.trim(),
@@ -12014,7 +12096,7 @@ async function ttsAddPreset(type) {
     siliconflow: { name: '\u786c\u57fa TTS', base_url: 'https://api.siliconflow.cn/v1', model: 'FishAudio/fish-speech-1.5', voice: 'default', api_format: 'openai' },
     nvidia: { name: 'NVIDIA Magpie TTS', base_url: 'https://integrate.api.nvidia.com/v1', model: 'magpie-tts-zeroshot', voice: 'Magpie-Multilingual.ZH-CN.Aria', api_format: 'nvidia', language: 'zh-CN' },
     volcengine: { name: '\u706b\u5c71\u8c46\u5305 TTS (Agent Plan)', base_url: 'https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional', model: 'seed-tts-2.0', voice: 'zh_female_gaolengyujie_uranus_bigtts', api_format: 'volcengine' },
-    volink: { name: 'Volink CosyVoice', base_url: 'https://api.volink.org/v1', model: 'cosyvoice2-0.5b', voice: '68f05ee2fa7d57c78f362dff', api_format: 'openai' },
+    volink: { name: 'Volink CosyVoice', base_url: 'https://api.volink.org/v1', model: 'cosyvoice/CosyVoice2-0.5B', voice: '68f05ee2fa7d57c78f362dff', api_format: 'volink' },
     qwenapi: { name: "Qwen TTS 云平台", format: "qwenapi", base_url: "", model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", voice: "serena", api_format: "qwenapi" },
     qwenapi_local: { name: "Qwen TTS 本机", base_url: "http://127.0.0.1:7860", model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", voice: "serena", api_format: "qwenapi_local" },
     comfyui: { name: "Qwen3-TTS 本机工作流", base_url: "http://127.0.0.1:8188", model: "Qwen3-TTS-12Hz-1.7B-VoiceDesign", voice: "沉稳专业", api_format: "comfyui", language: "zh-CN" },
@@ -12151,6 +12233,8 @@ async function ttsFetchVoices(baseUrl, model) {
           if (savedVal) vmSel.value = savedVal;
         }
       });
+      // Volink 情绪档下拉同步填充（共用一个音色列表）
+      ttsFillVolinkBuckets(voices);
     }
   } catch (e) {
     console.error('[TTS] Fetch voices:', e);
@@ -12359,6 +12443,71 @@ let _ttsVoiceTestAudio = null;
 function _ttsStopVoicePreview() {
   if (_ttsVoiceTestAudio) {
     try { _ttsVoiceTestAudio.pause(); _ttsVoiceTestAudio.onended = null; _ttsVoiceTestAudio = null; } catch (e) { /* noop */ }
+  }
+}
+
+/** 试听 Volink 某个情绪档绑定的音色。
+ *  与 ttsTestVoice 的区别：不传 instruction（Volink 忽略它），直接用所选音色合成。 */
+async function ttsTestVolinkBucket(bucket) {
+  if (!bucket) return;
+  const sel = document.getElementById('ttsVk_' + bucket);
+  if (!sel) return;
+  const voice = sel.value;
+  if (!voice) {
+    showToast('该档位未选择音色（当前使用内置默认）', 'warning', 2000);
+    return;
+  }
+  const providerIdEl = document.getElementById('ttsProviderId');
+  const providerId = (providerIdEl && providerIdEl.value) || 'default';
+  const cacheKey = providerId + '|vk|' + voice;
+  if (_ttsVoiceTestAudio && !_ttsVoiceTestAudio.paused) { _ttsStopVoicePreview(); return; }
+  _ttsStopVoicePreview();
+  const btn = document.querySelector(`.tts-vk-test[data-vk="${bucket}"]`);
+  const origText = btn ? btn.textContent : '';
+  if (btn) { btn.textContent = '...'; btn.disabled = true; }
+  const bgmWasPlaying = (typeof BGM_STATE !== 'undefined') && BGM_STATE.isPlaying;
+  if (bgmWasPlaying && BGM_STATE.audioEl) { BGM_STATE.audioEl.pause(); BGM_STATE.isPlaying = false; }
+  try {
+    let cached = _ttsVoiceCache.get(cacheKey);
+    if (!cached) {
+      if (btn) btn.textContent = '获取';
+      const provider = ttsCollectFormProvider();
+      // 不传 instruction：Volink 会忽略它，且这里就是要听「这个音色本身」。
+      const resp = await fetch('/api/tts/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...provider, voice, text: '你好，这是' + (sel.selectedOptions[0]?.textContent || '该音色') + '的试听样本。' })
+      });
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${errText.substring(0, 100)}`);
+      }
+      const blob = await resp.blob();
+      if (blob.size < 100) throw new Error('音频过小');
+      const blobUrl = URL.createObjectURL(blob);
+      const audio = new Audio(blobUrl);
+      cached = { blobUrl, audio };
+      _ttsVoiceCache.set(cacheKey, cached);
+    }
+    if (btn) btn.textContent = '播放';
+    _ttsVoiceTestAudio = cached.audio;
+    _ttsVoiceTestAudio.currentTime = 0;
+    _ttsVoiceTestAudio.volume = 1.0;
+    _ttsVoiceTestAudio.onended = () => {
+      if (btn) { btn.textContent = origText; btn.disabled = false; }
+      if (bgmWasPlaying && BGM_STATE.enabled && BGM_STATE.audioEl) {
+        setTimeout(() => BGM_STATE.audioEl.play().catch(() => { }), 300);
+      }
+    };
+    _ttsVoiceTestAudio.onerror = () => {
+      if (btn) { btn.textContent = origText; btn.disabled = false; }
+      showToast('试听播放失败', 'error', 2000);
+    };
+    await _ttsVoiceTestAudio.play();
+  } catch (e) {
+    console.error('[TTS] Volink 试听失败:', e);
+    if (btn) { btn.textContent = origText; btn.disabled = false; }
+    showToast('试听失败: ' + e.message, 'error', 3000);
   }
 }
 
@@ -12628,7 +12777,8 @@ function ttsResolveVoiceForChar(name, roster, voiceMap) {
   if (!category) return null; // 名册无可用性别信息
   // 声线：优先用该分类映射的声线；未配置则回落到旁白声线，保持音色稳定
   const voice = voiceMap[category] || voiceMap.narrator || null;
-  return { voice, category };
+  // gender 一并返回：Volink 的情绪音色分男女，需要它才能选对（'male' | 'female'）。
+  return { voice, category, gender: isMale ? 'male' : 'female' };
 }
 
 /** 旁白固定提示词：锁定旁白音色，避免空 instruct 漂移。亦作为名册缺角色时的兜底提示。 */
@@ -12707,6 +12857,9 @@ function ttsHasReadableText(text) {
 
 function ttsBuildTasks(segments, roster, voiceMap, format) {
   const isComfy = (format === 'comfyui');
+  // Volink：情绪靠【换音色】表达（后端 mapEmotionToVolinkBucket），不发自然语言 instruct。
+  // 故这里 emotion 只传 AI 的原始情绪词，voice 留空交给后端按情绪档选音色。
+  const isVolink = ttsIsVolinkFormat(format, null);
   const narrateOn = document.getElementById('ttsNarrateNarration')?.checked;
   const segTypes = segments.map(s => s.type);
   console.log('[TTS] BuildTasks: format=', format, 'narrateOn=', narrateOn, 'segmentTypes=', segTypes, 'segments=', segments.length);
@@ -12717,12 +12870,20 @@ function ttsBuildTasks(segments, roster, voiceMap, format) {
     let voice = null;
     let cleanText = text;
     let emotion = null;
+    let gender = null; // Volink 情绪音色分男女；其余后端忽略此字段
     if (seg.type === 'story') {
       if (!narrateOn) continue;
       cleanText = text.replace(/=== \u72b6\u6001\u680f ===[\s\S]*$/i, '').replace(/^\s*--?\d+[.\u3001\s].*$/gm, '').trim();
       if (!cleanText) continue;
       voice = voiceMap?.narrator || null;
-      if (isComfy) {
+      if (isVolink) {
+        // Volink：旁白音色由 voice_map.emo_narrator_<f|m> 决定（后端按 narrator+gender 解析），
+        // 音色留空；emotion 传情绪词供档位判定，未命中则回落中性档。
+        // 旁白性别取 voiceMap.narrator_gender（用户在设置里指定），缺省女声。
+        voice = null;
+        gender = voiceMap?.narrator_gender === 'male' ? 'male' : 'female';
+        emotion = (seg.mood || '').trim() || '';
+      } else if (isComfy) {
         // ComfyUI：旁白 voice 缺省时后端回落「沉稳大气的旁白男声」；emotion 仅 AI 情绪（无则空）
         emotion = (seg.mood || '').trim() || '';
       } else {
@@ -12736,11 +12897,17 @@ function ttsBuildTasks(segments, roster, voiceMap, format) {
         const resolved = ttsResolveVoiceForChar(charName, roster, voiceMap);
         voice = (resolved && resolved.voice) ? resolved.voice : (voiceMap?.narrator || null);
         const cat = resolved ? resolved.category : null;
+        // Volink 按性别选情绪音色；名册查不到性别时按【女声】兜底（与后端约定一致）。
+        gender = (resolved && resolved.gender) ? resolved.gender : 'female';
         // 语气: 优先 AI 的 seg.mood; 缺失时轻量文本推断兜底, 避免 instruct 退化为中性
         let mood = (seg.mood || '').trim();
         if (!mood) mood = inferEmotionFromText(cleanText);
         const moodPhrase = mood || '';
-        if (isComfy) {
+        if (isVolink) {
+          // Volink：voice 置空 → 后端按情绪档(emo_*)选音色；emotion 仅原始情绪词用作档位判定。
+          voice = null;
+          emotion = moodPhrase || '';
+        } else if (isComfy) {
           // ComfyUI VoiceDesign：voice 已是「类型标签」(如「甜美少女」)，后端据此生成
           // 「一个甜美少女的女声」并拼接情绪；emotion 仅传情绪短语，切勿再拼 VOICE_DESC。
           emotion = moodPhrase || '';
@@ -12770,7 +12937,7 @@ function ttsBuildTasks(segments, roster, voiceMap, format) {
         console.log('[TTS] skip punctuation-only chunk, no TTS request:', JSON.stringify(chunk.slice(0, 40)));
         continue;
       }
-      tasks.push({ text: chunk, voice, emotion, narrator: seg.type === 'story' });
+      tasks.push({ text: chunk, voice, emotion, gender, narrator: seg.type === 'story' });
     }
   }
   return tasks;

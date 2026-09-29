@@ -559,6 +559,41 @@ html[data-theme="light"] .vn-welcome h2 {
   opacity: .7;
 }
 
+/* 对话框【上缘】：重新生成剧情 / 重画 CG ——
+   与桌面版 .dlg-actions / .dlg-actions-left 同一套摆放：28px 高的按钮骑在那条 1px 金线上
+   （top: -14px），不占正文行高，也不再挤占下面的工具行。
+   说话者头像固定只在左下角（.vn-spk-av，top:-76px、高 96px，向下压过金线约 18px），
+   所以这组按钮固定靠右上 —— 与桌面版同构（立绘在左、上缘按钮在右），
+   既不压立绘，也与居中的 .gen-status 互不重叠。
+   z-index 5 > .vn-spk-av(4)：窄屏万一贴到一起也压在头像之上；
+   同时 5 < .gen-status(8)，生成中金色提示条仍在最上层（它 pointer-events:none，不挡点击）。
+   尺寸写死、不跟 --fs 走（与桌面版一致）：这俩是操作键，放大正文字号时不该把上缘挤满。 */
+.vn-dlg-actions {
+  position: absolute;
+  top: -14px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vn-dlg-actions .vn-tool {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 11px;
+  background: var(--deep);   /* 实底：把穿过它的那道金线压住 */
+  border-color: var(--line);
+}
+
+/* 生成中：「故事生成中……」提示条居中占着上缘，窄屏上装不下它 + 这组按钮
+   （实测 390 宽：提示条 113..278，按钮组 216..365，叠 61px）。
+   「重新生成」这会儿本来就不能用（app.js 会回一句「正在生成中，请先点停止」），
+   先让位给提示条；「重画CG」与生成无关，留在角上继续可用。 */
+body.is-generating #vnBtnRegen {
+  display: none;
+}
+
 .vn-dlg-stage {
   flex: 1 1 auto;
   min-height: 0;
@@ -604,10 +639,12 @@ html[data-theme="light"] .vn-welcome h2 {
   border-radius: 99px;
 }
 
-/* 说话者头像：仅对白段出现，左右交错，点按看大图 */
+/* 说话者头像：仅对白段出现，点按看大图。
+   与桌面版一致 —— 固定只有左下角这一个槽位（右侧槽 + 左右交替已去掉）。 */
 .vn-spk-av {
   position: absolute;
   top: calc(-76px * var(--av-scale));
+  left: 4px;
   z-index: 4;
   width: calc(96px * var(--av-scale));
   height: calc(96px * var(--av-scale));
@@ -641,22 +678,6 @@ html[data-theme="light"] .vn-welcome h2 {
   pointer-events: auto;
 }
 
-.vn-dlg.by-left .vn-spk-av.left {
-  left: 4px;
-}
-
-.vn-dlg.by-left .vn-spk-av.right {
-  display: none;
-}
-
-.vn-dlg.by-right .vn-spk-av.left {
-  display: none;
-}
-
-.vn-dlg.by-right .vn-spk-av.right {
-  right: 4px;
-}
-
 .vn-spk-av:active {
   transform: scale(.95);
 }
@@ -668,15 +689,6 @@ html[data-theme="light"] .vn-welcome h2 {
   gap: 9px;
   margin-bottom: 7px;
   padding-left: clamp(78px, 19.4vw, 102px);
-}
-
-.vn-plate-row.right {
-  flex-direction: row-reverse;
-}
-
-.vn-plate-row.right .vn-aff {
-  margin-left: 0;
-  margin-right: auto;
 }
 
 .vn-plate {
@@ -2474,6 +2486,122 @@ html[data-theme="light"] .vn-toast {
   font-weight: 700;
 }
 
+/* 设置弹窗的「分类导航」（AI 与供应商 / 图像生成 / 外观与界面 / 记忆表格）——
+   结构在 2026-09-29 手工同步自 index.html。桌面那份样式写在 desktop/vn.css 的
+   html:not(.legacy) 段里，移动端**不加载**那个文件：不补这一段，四个 pane 会同时铺开
+   （连 .settings-pane:not(.on){display:none} 也一起丢），变成一堵墙。
+   移动端把桌面左侧竖栏改成「顶部横向滚动的胶囊 + 下面正常纵向表单」。 */
+.settings-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.settings-nav {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--deep);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.settings-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.settings-nav-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, .04);
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.settings-nav-btn .sn-ic {
+  font-size: 13px;
+}
+
+/* 窄屏只留主标题：small 那句说明会把胶囊撑爆 */
+.settings-nav-btn .sn-tx small {
+  display: none;
+}
+
+.settings-nav-btn.on {
+  color: #04121a;
+  background: linear-gradient(135deg, var(--cyan), #86f2e9);
+  border-color: transparent;
+  font-weight: 700;
+}
+
+.settings-panes {
+  padding: 12px 14px 16px;
+}
+
+/* 只显示当前这一类 —— 与桌面同语义（这条丢了就等于所有设置同时铺开） */
+.settings-pane:not(.on) {
+  display: none;
+}
+
+.settings-pane > .settings-section:first-child {
+  padding-top: 0;
+}
+
+.settings-pane .btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* 角色编辑弹窗 · 世界书「注入间隔」行（与 index.html 同款标记）。
+   桌面的样式写在 desktop/vn.css 的 html:not(.legacy) 段里，移动端不加载那个文件，
+   所以这里按移动端令牌补一份，避免出现一排没有排版的裸控件。 */
+.wb-cooldown-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.wb-cooldown-row > label {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.wb-cooldown-row input[type="number"] {
+  width: 64px;
+  padding: 6px 8px;
+  text-align: center;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--bg-input);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.wb-cooldown-hint {
+  flex: 1 1 100%;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-mut);
+}
+
 .provider-item,
 .theme-preset-item,
 .tts-provider-item {
@@ -2507,6 +2635,14 @@ html[data-theme="light"] .vn-toast {
   color: var(--text);
   font-size: 12.5px;
   box-shadow: 0 14px 40px rgba(0, 0, 0, .6);
+}
+
+/* 浅色主题必须换底：上面的 background 是写死的深色，而 --text 在浅色主题里是深色
+   —— 不换就是实打实的「深色底 + 深色字」，字完全认不出来。
+   （外壳自己的轻提示 .vn-toast 早有同款浅色覆盖，见上文，这里只是补齐 app.js 的 toast。） */
+html[data-theme="light"] .toast-container .toast {
+  background: rgba(255, 255, 255, .98);
+  border-color: var(--gold-dim);
 }
 
 /* ===================== 14. 滚动与交互细节 ===================== */

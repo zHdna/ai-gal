@@ -297,15 +297,29 @@
         </div>
 
         <!-- 唯一主对话框：GAL 式逐段演出（对白 / 旁白轮流，永不并存） -->
-        <div class="vn-dlg by-left" id="vnDlg">
+        <div class="vn-dlg" id="vnDlg">
           <!-- 生成中提示：骑在【对话框上缘】= 对话框与 CG 的交界金线上（样式见 vn.css 的 .gen-status）。
                挂在这里而不是指令条内部：.vn-cmd 带 backdrop-filter → 自成层叠上下文，
                它内部的 z-index 出不来，而 .vn-dlg 的 z-index 会把它整个盖住（旧版就是这样被压住的）。
                app.js 的 setGeneratingUI() 按 .gen-status 选择器统一显隐，
                所以这里只要有这个元素即可 —— 与桌面版共用同一份状态，不另记一份。 -->
           <div class="gen-status" id="vnGenStatus" hidden>故事生成中……</div>
-          <span class="vn-spk-av left" id="vnAvLeft"></span>
-          <span class="vn-spk-av right" id="vnAvRight"></span>
+
+          <!-- 对话框【上缘】：重新生成剧情 / 重画 CG —— 与桌面版 .dlg-actions / .dlg-actions-left
+               同一套摆放（按钮骑在顶边金线上，不占正文行高，也不再挤下面的工具行）。
+               头像固定只在左下角，所以这组按钮就固定靠右上，互不遮挡（见 vn.css 的 .vn-dlg-actions）。
+               重新生成（与桌面版同一套后端链路）：
+                 ① 本轮剧情 —— 删掉本轮 AI 正文 + 管家处理结果（状态/选项/记忆/CG 判定）+ 本轮 CG，
+                    再按上一条用户发言重跑；用户自己的发言保留。走 app.js 的 regenerateMessage()。
+                 ② 当前 CG —— 把这张 CG 的原始生图指令重发一次，旧图被覆盖。走 /api/images/regenerate。 -->
+          <span class="vn-dlg-actions">
+            <button class="vn-tool" id="vnBtnRegen" title="重新生成本轮剧情">↻ 重生成</button>
+            <button class="vn-tool" id="vnBtnRegenCg" title="重新生成当前 CG">↻ 重画CG</button>
+          </span>
+
+          <!-- 说话者头像：与桌面版一致，固定只留左侧一个槽位（右侧槽已去掉）。
+               原来按说话者交替左右（.by-left/.by-right + 两个槽），观感是「两张脸来回跳」。 -->
+          <span class="vn-spk-av" id="vnAvLeft"></span>
 
           <div class="vn-dlg-stage" id="vnDlgStage">
             <!-- 对白段 -->
@@ -329,12 +343,6 @@
           <div class="vn-dlg-tools">
             <button class="vn-tool" id="vnBtnHistory">▾ 回顾</button>
             <button class="vn-tool" id="vnBtnTTS">🔊 朗读</button>
-            <!-- 重新生成（与桌面版同一套后端链路）：
-                 ① 本轮剧情 —— 删掉本轮 AI 正文 + 管家处理结果（状态/选项/记忆/CG 判定）+ 本轮 CG，
-                    再按上一条用户发言重跑；用户自己的发言保留。走 app.js 的 regenerateMessage()。
-                 ② 当前 CG —— 把这张 CG 的原始生图指令重发一次，旧图被覆盖。走 /api/images/regenerate。 -->
-            <button class="vn-tool" id="vnBtnRegen" title="重新生成本轮剧情">↻ 重生成</button>
-            <button class="vn-tool" id="vnBtnRegenCg" title="重新生成当前 CG">↻ 重画CG</button>
             <span class="vn-seg-info">
               <span class="vn-seg-dots" id="vnSegDots"></span>
               <span class="vn-seg-badge" id="vnSegBadge">0 / 0</span>
@@ -527,23 +535,13 @@
         <span class="mode-icon mode-icon-dark">🌙</span>
         <span class="mode-icon mode-icon-light">☀️</span>
       </button>
-      <div class="theme-preset-wrap">
-        <span class="tp-label">🎨</span>
-        <select class="theme-preset-select" id="themePresetSelect" title="切换主题方案">
-          <option value="default">默认深色</option>
-          <option value="ios">☁️ iOS</option>
-          <option value="parchment">📜 羊皮卷</option>
-          <option value="pink">🌸 粉红</option>
-        </select>
-      </div>
       <button class="ws-toggle-btn" id="btnWorldState" title="世界状态 (MVU)">
         <span>🌐</span>
       </button>
     </div>
   </nav>
 
-  
-<div class="system-menu-bar" id="systemMenuBar">
+  <div class="system-menu-bar" id="systemMenuBar">
     <button class="sys-menu-btn" id="btnGameSettings" title="用户">
       <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
         stroke-linecap="round" stroke-linejoin="round">
@@ -623,8 +621,7 @@
     </div>
   </div>
 
-  
-<div class="main-layout" data-component="MainLayout">
+  <div class="main-layout" data-component="MainLayout">
 
     <!-- Left Sidebar -->
     <aside class="left-sidebar" id="leftSidebar" data-component="CharacterSidebar">
@@ -719,6 +716,8 @@
 
         <div class="input-area">
           <textarea id="messageInput" placeholder="输入消息... (Ctrl+Enter 发送)" rows="1" autofocus></textarea>
+          <!-- 生成中提示（?legacy=1 旧界面专用；VN 外壳里那份在 .dialog 内） -->
+          <div class="gen-status" id="genStatusLegacy" hidden>故事生成中……</div>
           <div class="input-actions">
             <button class="btn btn-sm" id="btnResetPhonePos" title="复位悬浮按钮和手机界面">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -811,6 +810,10 @@
           <div class="gallery-atmosphere" id="galleryAtmosphere"></div>
         </div>
       </div>
+        </div>
+      </div>
+
+  <!-- 消息编辑弹窗：搬出隐藏区，保持可用 -->
     </aside>
 
     <!-- Modal: Edit Message -->
@@ -831,8 +834,7 @@
             <button class="btn btn-sm" id="btnEditSave"
               style="background:var(--color-accent-500);color:#fff">保存</button>
           </div>
-        </div>
-      </div>
+
     </div>
 
     <!-- Phone Popup Trigger Button -->
@@ -925,12 +927,11 @@
     </div>
   </div>
 
-  
-    <div id="statusContent"></div>
+
+      <div id="statusContent"></div>
     <div id="debugTabContent"></div>
     <div id="tokenCounter" hidden></div>
   </div>
-
 <!-- Modal: Game Settings -->
   <div class="modal hidden" id="gameSettingsModal" data-component="GameSettingsModal">
     <div class="modal-overlay" id="gameSettingsOverlay"></div>
@@ -940,66 +941,53 @@
         <button class="modal-close" id="gameSettingsClose">&times;</button>
       </div>
       <div class="modal-body">
-        <section class="settings-section">
-          <h4>用户设定</h4>
-          <div class="user-avatar-upload">
-            <div class="user-avatar-preview" id="userAvatarPreview"></div>
-            <input type="file" id="userAvatarFile" accept="image/*" style="display:none">
-            <button class="btn btn-sm" id="btnUploadAvatar">上传头像</button>
+        <div class="settings-shell">
+          <!-- 用户弹窗：只剩身份（提示词编辑功能已失效，入口已移除） -->
+          <nav class="settings-nav" id="userSettingsNav">
+            <button class="settings-nav-btn on" data-pane="identity"><span class="sn-ic">🙋</span><span class="sn-tx"><b>身份</b><small>头像 · 姓名 · 扮演身份</small></span></button>
+          </nav>
+          <div class="settings-panes">
+            <section class="settings-pane on" data-pane="identity">
+              <section class="settings-section">
+                <h4>用户设定</h4>
+                <div class="user-avatar-upload">
+                  <div class="user-avatar-preview" id="userAvatarPreview"></div>
+                  <input type="file" id="userAvatarFile" accept="image/*" style="display:none">
+                  <button class="btn btn-sm" id="btnUploadAvatar">上传头像</button>
+                </div>
+                <div class="form-group">
+                  <label for="userName">姓名</label>
+                  <input type="text" id="userName" placeholder="你的名字（用于替换 {{user}}）">
+                </div>
+                <div class="form-group">
+                  <label for="userIntro">简要介绍</label>
+                  <textarea id="userIntro" rows="2" placeholder="介绍你自己的背景..."></textarea>
+                </div>
+                <div class="form-group persona-box">
+                  <label for="personaName">游戏内身份（扮演角色名）</label>
+                  <input type="text" id="personaName" placeholder="如：勇者亚瑟（留空表示不扮演）">
+                  <p class="form-hint">
+                    复杂游戏中主角扮演其它角色时，填写该角色名，对话将以该身份头像显示，且不会被误生成头像。
+                  </p>
+                  <div class="user-avatar-upload persona-avatar-row">
+                    <div class="user-avatar-preview" id="personaAvatarPreview"></div>
+                    <input type="file" id="personaAvatarFile" accept="image/*" style="display:none">
+                    <button class="btn btn-sm" id="btnUploadPersonaAvatar">上传扮演角色头像</button>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label>切换用户</label>
+                  <select id="userSwitcher" class="setting-select"></select>
+                </div>
+                <div class="btn-row">
+                  <button class="btn btn-sm btn-primary" id="btnSaveUser">保存</button>
+                  <button class="btn btn-sm" id="btnNewUser">新建用户</button>
+                  <button class="btn btn-sm btn-danger" id="btnDeleteUser">删除</button>
+                </div>
+              </section>
+            </section>
           </div>
-          <div class="form-group">
-            <label for="userName">姓名</label>
-            <input type="text" id="userName" placeholder="你的名字（用于替换 {{user}}）">
-          </div>
-          <div class="form-group">
-            <label for="userIntro">简要介绍</label>
-            <textarea id="userIntro" rows="2" placeholder="介绍你自己的背景..."></textarea>
-          </div>
-          <div class="form-group persona-box" style="margin-top:10px;border-top:1px dashed var(--border-color);padding-top:10px">
-            <label for="personaName">游戏内身份（扮演角色名）</label>
-            <input type="text" id="personaName" placeholder="如：勇者亚瑟（留空表示不扮演）">
-            <p class="form-hint" style="font-size:11px;color:var(--text-muted);margin:4px 0 0">
-              复杂游戏中主角扮演其它角色时，填写该角色名，对话将以该身份头像显示，且不会被误生成头像。
-            </p>
-            <div class="user-avatar-upload" style="margin-top:8px">
-              <div class="user-avatar-preview" id="personaAvatarPreview" style="width:64px;height:64px;border-radius:10px"></div>
-              <input type="file" id="personaAvatarFile" accept="image/*" style="display:none">
-              <button class="btn btn-sm" id="btnUploadPersonaAvatar">上传扮演角色头像</button>
-            </div>
-          </div>
-          <div class="form-group">
-            <label>切换用户</label>
-            <select id="userSwitcher" class="setting-select"></select>
-          </div>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button class="btn btn-sm" id="btnSaveUser">保存</button>
-            <button class="btn btn-sm" id="btnNewUser">新建用户</button>
-            <button class="btn btn-sm" id="btnDeleteUser" style="color:#DC143C">删除</button>
-          </div>
-        </section>
-        <section class="settings-section">
-          <h4>主 AI 提示词</h4>
-          <div class="form-group">
-            <label>全局系统提示词（仅负责叙事。格式和属性整理由管家AI完成）</label>
-            <textarea id="systemPromptEditor" rows="10" placeholder="点击【读取当前】加载..."
-              style="font-family:Consolas,monospace;font-size:12px;line-height:1.4"></textarea>
-          </div>
-          <div style="display:flex;gap:6px;margin-top:6px">
-            <button class="btn btn-sm" id="btnLoadSystemPrompt">读取当前</button>
-            <button class="btn btn-sm btn-primary" id="btnSaveSystemPrompt">保存</button>
-            <button class="btn btn-sm" id="btnResetSystemPrompt"
-              style="color:var(--color-danger);border-color:var(--color-danger)">重置默认</button>
-          </div>
-        </section>
-        <section class="settings-section">
-          <h4>管家 AI 提示词</h4>
-          <div class="form-group">
-            <label>管家AI负责：分析氛围(BGM)、提取角色属性、生成行动选项、记忆摘要、触发生图</label>
-            <textarea id="memoryAgentPromptEditor" rows="8" placeholder="管家AI的后处理提示词..."
-              style="font-family:Consolas,monospace;font-size:12px;line-height:1.4"></textarea>
-          </div>
-          <button class="btn btn-sm" id="btnSaveMemoryAgentPrompt">保存</button>
-        </section>
+        </div>
       </div>
     </div>
   </div>
@@ -1013,7 +1001,18 @@
         <button class="modal-close" id="settingsModalClose">×</button>
       </div>
       <div class="modal-body">
+        <div class="settings-shell">
+          <!-- 分类导航：把原来堆成一列的一大堆设置按功能分组（纯前端分组，表单 id 全部不变） -->
+          <nav class="settings-nav" id="settingsNav">
+            <button class="settings-nav-btn on" data-pane="ai"><span class="sn-ic">🔌</span><span class="sn-tx"><b>AI 与供应商</b><small>主 / 管家 / 画家 · 接口</small></span></button>
+            <button class="settings-nav-btn" data-pane="image"><span class="sn-ic">🎨</span><span class="sn-tx"><b>图像生成</b><small>画风 · 供应商 · 参数</small></span></button>
+            <button class="settings-nav-btn" data-pane="look"><span class="sn-ic">🎛</span><span class="sn-tx"><b>外观与界面</b><small>主题 · 移动端</small></span></button>
+            <button class="settings-nav-btn" data-pane="memory"><span class="sn-ic">🧠</span><span class="sn-tx"><b>记忆表格</b><small>注入间隔 · 忽略提示</small></span></button>
+          </nav>
+          <div class="settings-panes">
+        <section class="settings-pane on" data-pane="ai">
         <section class="settings-section">
+          <h4>AI 分工 · 谁用哪个模型</h4>
           <div class="settings-tabs">
             <button class="settings-tab active" data-tab="mainAI" onclick="switchSettingsTab('mainAI')">主 AI</button>
             <button class="settings-tab" data-tab="butlerAI" onclick="switchSettingsTab('butlerAI')">管家 AI</button>
@@ -1111,62 +1110,85 @@
           <div id="providerList"></div>
           <button class="btn btn-sm" id="btnAddProvider">添加供应商</button>
         </section>
-        <section class="settings-section">
-          <h4>主题</h4>
-          <div id="themeSettings"></div>
-          <div style="display:flex;gap:8px">
-            <button class="btn btn-sm" id="btnResetTheme">重置为默认</button>
-            <button class="btn btn-sm" id="btnSetDefaultTheme">设为默认</button>
-            <button class="btn btn-sm" id="btnExportTheme">导出主题</button>
-            <button class="btn btn-sm" id="btnImportTheme">导入主题</button>
-          </div>
-          <input type="file" id="themeFileInput" accept=".json" style="display:none">
         </section>
-        <section class="settings-section">
-          <h4>移动端界面</h4>
-          <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">
-            手机 / 平板访问时会自动进入移动端（GAL 视觉小说）界面。这里可以手动切换，或恢复自动跳转。
-          </p>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-sm" onclick="switchToMobile()">切到移动端界面</button>
-            <button class="btn btn-sm" onclick="restoreMobileFrontend()">恢复移动端自动跳转</button>
-          </div>
+
+        <!-- ============ 图像生成 ============ -->
+        <section class="settings-pane" data-pane="image">
+          <section class="settings-section">
+            <h4>图像生成</h4>
+            <div id="imageSettings"></div>
+          </section>
         </section>
-        <section class="settings-section">
-          <h4>世界书</h4>
-          <div class="form-group">
-            <label for="worldbookCooldown">触发间隔（轮数）</label>
-            <div style="display:flex;align-items:center;gap:8px">
-              <input type="number" id="worldbookCooldown" min="1" max="20" value="4"
-                style="width:60px;text-align:center">
-              <span style="color:var(--text-muted);font-size:12px">同一世界书条目在 N 轮对话内不重复注入</span>
+
+        <!-- ============ 外观与界面 ============ -->
+        <section class="settings-pane" data-pane="look">
+          <section class="settings-section">
+            <h4>主题</h4>
+            <div id="themeSettings"></div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-sm" id="btnResetTheme">重置为默认</button>
+              <button class="btn btn-sm" id="btnSetDefaultTheme">设为默认</button>
+              <button class="btn btn-sm" id="btnExportTheme">导出主题</button>
+              <button class="btn btn-sm" id="btnImportTheme">导入主题</button>
             </div>
-          </div>
+            <input type="file" id="themeFileInput" accept=".json" style="display:none">
+          </section>
+          <section class="settings-section">
+            <h4>移动端界面</h4>
+            <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">
+              手机 / 平板访问时会自动进入移动端（GAL 视觉小说）界面。这里可以手动切换，或恢复自动跳转。
+            </p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-sm" onclick="switchToMobile()">切到移动端界面</button>
+              <button class="btn btn-sm" onclick="restoreMobileFrontend()">恢复移动端自动跳转</button>
+            </div>
+          </section>
         </section>
-        <section class="settings-section">
-          <h4>记忆表格</h4>
-          <button class="btn btn-sm" id="btnViewEventLog">查看记忆表格</button>
-          <div id="eventLogPreview" style="display:none;margin-top:8px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-              <span id="eventLogCountdown" style="color:var(--text-accent);font-size:12px"></span>
-              <div style="display:flex;gap:4px">
-                <button class="btn btn-sm" id="btnEditEventLog">编辑</button>
-                <button class="btn btn-sm" id="btnSaveEventLog" style="display:none">保存</button>
-                <button class="btn btn-sm" id="btnCancelEditEventLog" style="display:none">取消</button>
+
+        <!-- 记忆表格：注入与忽略设置 -->
+        <section class="settings-pane" data-pane="memory">
+          <section class="settings-section">
+            <h4>记忆表格注入</h4>
+            <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;line-height:1.6">
+              每轮对话的摘要都会写入存档的 <code>event_log.md</code>，但<b>不会</b>进入上下文。
+              只有每到设定轮次时，系统才把<b>完整</b>记忆表格注入一次上下文（注入后永久保留在该轮）。
+            </p>
+            <div class="form-group">
+              <label>注入间隔（每 N 轮注入一次）</label>
+              <input type="number" id="memInjectInterval" class="setting-input" min="1" max="200" step="1" placeholder="20">
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
+                默认 20，即第 20、40、60… 轮各注入一次。
               </div>
             </div>
-            <div id="eventLogContent"
-              style="background:var(--bg-input);border:1px solid var(--glass-border);border-radius:8px;padding:10px;max-height:200px;overflow-y:auto;font-size:11px;font-family:var(--font-mono);white-space:pre-wrap;color:var(--text-primary)">
+          </section>
+
+          <section class="settings-section">
+            <h4>忽略对话提示</h4>
+            <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;line-height:1.6">
+              每到第 M 轮（M 必须是注入间隔 N 的整数倍），询问是否忽略更早的对话、只保留记忆表格。
+              选择忽略后<b>不会删除任何消息</b>，仅不再把旧对话送进上下文，可随时撤销。
+            </p>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="memDropPromptEnabled"> 启用「忽略之前的对话」提示
+              </label>
             </div>
-            <textarea id="eventLogEditor"
-              style="display:none;width:100%;background:var(--bg-input);border:1px solid var(--glass-border);border-radius:8px;padding:10px;font-size:11px;font-family:var(--font-mono);color:var(--text-primary);min-height:150px"
-              rows="8"></textarea>
+            <div class="form-group">
+              <label>提示轮次（M）</label>
+              <select id="memDropThreshold" class="setting-select"></select>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
+                选项随注入间隔联动，只能是 N 的整数倍。
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h4>当前状态</h4>
+            <div id="memSettingsStatus" style="font-size:12px;color:var(--text-muted);line-height:1.7"></div>
+          </section>
+        </section>
           </div>
-        </section>
-        <section class="settings-section">
-          <h4>图像生成</h4>
-          <div id="imageSettings"></div>
-        </section>
+        </div>
       </div>
     </div>
   </div>
@@ -1185,6 +1207,7 @@
           <select id="chatPresetSelect" class="setting-select"></select>
           <div style="display:flex;gap:6px;margin-top:8px">
             <button class="btn btn-sm" id="btnImportSTPreset">导入 ST 预设</button>
+            <button class="btn btn-sm" id="btnExportSTPreset" title="导出为标准 SillyTavern 聊天补全预设（含当前 API 供应商，不含 API Key）">导出 ST 预设</button>
             <button class="btn btn-sm" id="btnDefaultChatPreset">设为默认</button>
             <button class="btn btn-sm btn-danger" id="btnDeleteChatPreset">删除</button>
           </div>
@@ -1285,6 +1308,14 @@
                 <button type="button" class="btn btn-xs" id="btnAddWBEntry" title="新增条目">+ 新增</button>
               </div>
             </div>
+            <!-- 注入轮次（原在系统设置里，但服务端读的是「角色卡的 book.cooldown」，
+                 系统设置那个框没人读 —— 移到这儿，app.js 本来就在找 #wbCooldown） -->
+            <div class="wb-cooldown-row">
+              <label for="wbCooldown">注入间隔（轮）</label>
+              <input type="number" id="wbCooldown" min="1" max="20" value="4"
+                onchange="var n=parseInt(this.value,10); if(isNaN(n)) n=4; AppState._worldBookCooldown = Math.min(20, Math.max(1, n)); this.value = AppState._worldBookCooldown;">
+              <span class="wb-cooldown-hint">同一世界书条目在 N 轮对话内不重复注入（每张角色卡单独设置）</span>
+            </div>
             <div class="wb-entries" id="wbEntriesList"></div>
           </div>
           <div class="form-group">
@@ -1361,8 +1392,8 @@
             <label for="providerContextWindow">上下文窗口 (tokens)</label>
             <input type="number" id="providerContextWindow" min="0" max="10000000" step="1024" placeholder="0 = 自动探测 / 未知">
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
-              「稳定度」= 当前上下文占用 ÷ 这个上限。本地 llama.cpp / Ollama / KoboldCpp 会自动探测；
-              云端模型请填服务商文档里的上下文长度（如 32768），留 0 则显示「上限未设置」。
+              顶栏「稳 定」条 = 当前上下文占用 ÷ 这个上限。本地 llama.cpp / Ollama / KoboldCpp 会自动探测；
+              云端模型请填服务商文档里的上下文长度（如 32768 / 131072），留 0 则在界面上显示「上限未设置」。
             </div>
           </div>
         </form>
@@ -1442,6 +1473,7 @@
               <option value="qwenapi_local">Qwen3-TTS 本机 (/qwenapi/v1/custom-voice)</option>
               <option value="comfyui">本机 ComfyUI (Qwen3-TTS 工作流)</option>
               <option value="bailian">阿里云百炼 TTS (DashScope)</option>
+              <option value="volink">Volink 专用通道 (情绪→音色映射, 无 instruct)</option>
             </select>
           </div>
           <div class="form-group">
@@ -1497,6 +1529,136 @@
             <label>全局情绪指导 <span style="font-size:10px;color:var(--text-muted)">(StepAudio 2.5 专用, 最多200字)</span></label>
             <input type="text" id="ttsProviderInstruction" class="setting-input" placeholder="如: 语气温柔，语速偏慢 / 留空则不传">
           </div>
+          <!-- Volink 情绪音色映射（仅 Volink 后端显示） -->
+          <details id="ttsVolinkMapSection" style="margin-top:8px;display:none">
+            <summary style="cursor:pointer;font-size:12px;font-weight:600">Volink 情绪音色映射（按情绪 + 男女）</summary>
+            <div style="margin-top:6px;font-size:10px;color:var(--text-muted);line-height:1.5">
+              Volink 不支持自然语言情绪指令（服务端会忽略该字段），情绪改由<b>切换音色</b>表达。<br>
+              每行左为<b>女声</b>、右为<b>男声</b>；角色性别取自名册，名册无性别时按女声。<br>
+              留空即使用内置默认音色（仅 minimax 模型提供）。点「刷新音色」拉取列表。
+            </div>
+            <div id="ttsVolinkMapContainer" style="margin-top:6px">
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">旁白</label>
+            <select id="ttsVk_narrator_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="旁白女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_narrator_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="旁白男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="narrator_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="narrator_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group">
+            <label style="font-size:11px">旁白使用性别</label>
+            <select id="ttsVkNarratorGender" class="setting-select" style="width:auto;font-size:11px">
+              <option value="female" selected>女声</option>
+              <option value="male">男声</option>
+            </select>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">中性（默认）</label>
+            <select id="ttsVk_neutral_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_neutral_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="neutral_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="neutral_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">喜悦 / 激动</label>
+            <select id="ttsVk_happy_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_happy_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="happy_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="happy_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">愤怒 / 吼叫</label>
+            <select id="ttsVk_angry_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_angry_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="angry_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="angry_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">悲伤 / 哭泣</label>
+            <select id="ttsVk_sad_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_sad_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="sad_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="sad_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">温柔 / 轻声</label>
+            <select id="ttsVk_gentle_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_gentle_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="gentle_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="gentle_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">恐惧 / 惊慌</label>
+            <select id="ttsVk_fear_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_fear_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="fear_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="fear_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">惊讶 / 疑惑</label>
+            <select id="ttsVk_surprise_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_surprise_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="surprise_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="surprise_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">冷漠 / 嘲讽</label>
+            <select id="ttsVk_cold_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_cold_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="cold_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="cold_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">NSFW 情欲 / 挑逗</label>
+            <select id="ttsVk_nsfw_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_nsfw_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="nsfw_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="nsfw_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+            </div>
+          </details>
+          <div id="ttsVoiceMapSection">
+          <!-- Character Voice Mapping (per-provider) -->
           <!-- Character Voice Mapping (per-provider) -->
           <details style="margin-top:8px">
             <summary style="cursor:pointer;font-size:12px;font-weight:600">角色音色映射（按性别+年龄）</summary>
@@ -1560,6 +1722,7 @@
               </div>
             </div>
           </details>
+          </div><!-- /#ttsVoiceMapSection -->
           <div class="form-group">
             <label style="display:flex;align-items:center;gap:8px">
               <input type="checkbox" id="ttsProviderDefault"> 设为默认
@@ -1580,7 +1743,7 @@
             <button class="btn btn-sm" onclick="ttsAddPreset('siliconflow')">硅基流动</button>
             <button class="btn btn-sm" onclick="ttsAddPreset('nvidia')">NVIDIA Magpie</button>
             <button class="btn btn-sm" onclick="ttsAddPreset('volcengine')">火山豆包</button>
-            <button class="btn btn-sm" onclick="ttsAddPreset('volink')">Volink</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('volink')">Volink 专用通道</button>
             <button class="btn btn-sm" onclick="ttsAddPreset('qwenapi')">Qwen TTS 云平台</button>
             <button class="btn btn-sm" onclick="ttsAddPreset('qwenapi_local')">Qwen TTS 本机</button>
             <button class="btn btn-sm" onclick="ttsAddPreset('comfyui')">Qwen3-TTS 本机工作流</button>
@@ -1601,9 +1764,6 @@
       </div>
     </div>
   </div>
-
-
-  
 
   <input type="file" id="characterFileInput" accept=".json,.png" style="display:none">
 

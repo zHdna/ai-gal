@@ -1298,7 +1298,7 @@ module.exports = (db) => {
     }
 
     try {
-      const { conv, character, provider, apiMessages, replacedContent, apiContent, tokenStats, cumulativeTotal } = await prepareChatContext(conversation_id, content, provider_id);
+      const { conv, character, provider, apiMessages, replacedContent, apiContent, wbInjected, tokenStats, cumulativeTotal } = await prepareChatContext(conversation_id, content, provider_id);
 
       // Apply preset parameters (temperature, top_p, etc.) from main AI preset
       const presetProvider = applyPresetToProvider(provider, 'main_ai_preset_id');
@@ -1342,7 +1342,7 @@ module.exports = (db) => {
       }
 
       // Parse and store (clean narrative already stripped of variable blocks)
-      const result = await storeAndProcessResponse(conversation_id, replacedContent, response, conv, provider, false, apiContent);
+      const result = await storeAndProcessResponse(conversation_id, replacedContent, response, conv, provider, false, apiContent, wbInjected);
       if (wsMerged) result.worldState = wsMerged;
 
       // Update cumulative token total and attach stats
@@ -1610,7 +1610,7 @@ module.exports = (db) => {
     }
 
     try {
-      const { conv, character, provider, apiMessages, replacedContent, apiContent, tokenStats, cumulativeTotal } = await prepareChatContext(
+      const { conv, character, provider, apiMessages, replacedContent, apiContent, wbInjected, tokenStats, cumulativeTotal } = await prepareChatContext(
         conversation_id, content, provider_id,
         regenerate ? { dropTrailingUserMsg: true } : {}
       );
@@ -1639,9 +1639,9 @@ module.exports = (db) => {
           removed_cgs: removedTurn.removedCgs || 0
         })}\n\n`);
       } else {
-        // Store user message first — save api_content for cache-friendly prefix matching
+        // Store user message first — api_content（纯输入）+ wb_injected（世界书冷却台账）
         const userMsgId = uuidv4();
-        const userFormatted = apiContent ? JSON.stringify({ api_content: apiContent }) : '{}';
+        const userFormatted = formatUserMessage(apiContent, wbInjected);
         db.prepare(`
           INSERT INTO messages (id, conversation_id, role, content, formatted)
           VALUES (?, ?, 'user', ?, ?)
@@ -1774,7 +1774,7 @@ module.exports = (db) => {
             }
           }
 
-          let result = await storeAndProcessResponse(conversation_id, replacedContent, fullText, conv, provider, true, apiContent);
+          let result = await storeAndProcessResponse(conversation_id, replacedContent, fullText, conv, provider, true, apiContent, wbInjected);
 
           // Run butler AI to fix and enrich output
           console.log('[Butler] Starting butler invocation...');
@@ -3159,7 +3159,7 @@ module.exports = (db) => {
     const replacedContent = replaceVariables(content, userProfile, character);
 
     // 8. Build API messages (inject memory context at end of user message)
-    const { messages: apiMessages, apiContent } = buildApiMessages(systemPrompt, messages, replacedContent, conv, character);
+    const { messages: apiMessages, apiContent, wbInjected } = buildApiMessages(systemPrompt, messages, replacedContent, conv, character);
 
     // 9. Calculate token stats
     const tokenStats = calculateTokenStats(apiMessages);
@@ -3167,7 +3167,7 @@ module.exports = (db) => {
     // 10. Load cumulative total from save folder
     const cumulative = updateCumulativeTokens(conversation_id);
 
-    return { conv, character, provider, apiMessages, replacedContent, apiContent, userProfile, tokenStats, cumulativeTotal: cumulative.cumulativeTotal };
+    return { conv, character, provider, apiMessages, replacedContent, apiContent, wbInjected, userProfile, tokenStats, cumulativeTotal: cumulative.cumulativeTotal };
   }
 
   /**
@@ -3180,8 +3180,25 @@ module.exports = (db) => {
     return text.replace(/\{\{user\}\}/gi, userName).replace(/\{\{char\}\}/gi, charName);
   }
 
+  /**
+   * Build the `formatted` JSON stored on a user message.
+   *
+   * · `api_content` = the PURE user input (what we actually send). Keeping it pure means the
+   *   next turn's history read is byte-identical to this turn's send → the prompt prefix stays
+   *   cacheable. Dynamic injections deliberately live outside history (see buildApiMessages).
+   * · `wb_injected` = separate bookkeeping for the world-book cooldown: which entries were
+   *   injected this turn. Without it the cooldown scan has nothing to look at, because the
+   *   【参考资料：】 block itself is never persisted (2026-09-29 修).
+   */
+  function formatUserMessage(apiContent, wbInjected) {
+    const o = {};
+    if (apiContent) o.api_content = apiContent;
+    if (Array.isArray(wbInjected) && wbInjected.length) o.wb_injected = wbInjected;
+    return Object.keys(o).length ? JSON.stringify(o) : '{}';
+  }
+
   // --- Shared: Store and process response ---
-  async function storeAndProcessResponse(conversation_id, userContent, rawResponse, conv, provider, skipUserMsg = false, apiContent = null) {
+  async function storeAndProcessResponse(conversation_id, userContent, rawResponse, conv, provider, skipUserMsg = false, apiContent = null, wbInjected = null) {
     // Parse AI response
     const { cleanText, formatted } = parseAIResponse(rawResponse);
     console.log('[Chat] rawResponse length:', rawResponse.length, 'cleanText length:', cleanText.length);
@@ -3194,8 +3211,8 @@ module.exports = (db) => {
     // Store user message (if not already stored by stream handler)
     if (!skipUserMsg) {
       const userMsgId = uuidv4();
-      // Save api_content (content with dynamic injections) in formatted field for cache-friendly prefix matching
-      const userFormatted = apiContent ? JSON.stringify({ api_content: apiContent }) : '{}';
+      // api_content（纯输入，供前缀缓存对拍）+ wb_injected（世界书冷却台账）
+      const userFormatted = formatUserMessage(apiContent, wbInjected);
       db.prepare(`
         INSERT INTO messages (id, conversation_id, role, content, formatted)
         VALUES (?, ?, 'user', ?, ?)
@@ -3731,6 +3748,11 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
     //    history and ballooning the whole prompt. ===
     const isChatRequest = newContent && newContent.trim().length > 0;
     const dynParts = [];
+    // 本轮真正注入了哪些世界书条目。会随返回值一路传到「写 user 消息」处，存进
+    // formatted.wb_injected —— 【参考资料：】正文本身刻意不落库（api_content 必须保持
+    // 纯输入，前缀才字节稳定），但「哪些条目用过」必须有记录，
+    // 否则 4 轮冷却没有任何可扫描的依据（2026-09-29 修）。
+    let wbInjected = [];
 
     // === Context composition note (only once the player chose to ignore earlier dialogue) ===
     // After a memory trim the model can no longer see rounds 1..trimBefore-1, so it must be
@@ -3907,7 +3929,12 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
             const scanMsgs = recent.filter(m => m.role === 'user' || m.role === 'assistant').slice(-8);
             const storyText = (scanMsgs.map(m => m.content || '').join('\n') + '\n' + (newContent || '')).toLowerCase();
 
-            // Scan recent user messages for already-injected references to avoid duplication
+            // Scan recent user messages for already-injected references to avoid duplication.
+            // Two sources, because the injected block itself is never persisted:
+            //   ① formatted.wb_injected —— the authoritative record (written since 2026-09-29).
+            //      Every turn used to write only {api_content: <pure input>}, so this scan found
+            //      nothing and the cooldown never blocked anything.
+            //   ② legacy 【参考资料：】 text parse —— for rows written before that change.
             const recentUserMsgs = recent.filter(m => m.role === 'user').slice(-cooldown);
             const injectedEntryComments = new Set();
             const injectedEntryContents = new Set();
@@ -3917,6 +3944,13 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
                 try {
                   const fmt = typeof um.formatted === 'string' ? JSON.parse(um.formatted) : um.formatted;
                   if (fmt && fmt.api_content) umContent = fmt.api_content;
+                  if (fmt && Array.isArray(fmt.wb_injected)) {
+                    for (const rec of fmt.wb_injected) {
+                      if (!rec) continue;
+                      if (rec.c) injectedEntryComments.add(rec.c);
+                      if (rec.p) injectedEntryContents.add(rec.p);
+                    }
+                  }
                 } catch (e) { /* fall through */ }
               }
               const refMatch = umContent.match(/【参考资料：([\s\S]*?)】/);
@@ -3987,6 +4021,11 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
                 return `${idx + 1}、${name}${content}${punct}`;
               });
               const refText = `【参考资料：${refItems.join('')}】`;
+              // 冷却记录：comment 优先、否则内容前 15 字 —— 与下面的重复判定同一口径
+              wbInjected = matchedEntries.map(e => ({
+                c: e.comment || '',
+                p: (e.content || '').slice(0, 15),
+              }));
               dynParts.push(refText);
               console.log('[WorldBook] Injected reference entries:', matchedEntries.length,
                 '- entries:', matchedEntries.map(e => e.comment || e.content?.slice(0, 20)).join(', '));
@@ -4076,7 +4115,7 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
     // history read (api_content) == this turn's send → prefix stays byte-stable.
     messages.push({ role: 'user', content: newContent });
 
-    return { messages, apiContent: newContent };
+    return { messages, apiContent: newContent, wbInjected };
   }
 
   /**

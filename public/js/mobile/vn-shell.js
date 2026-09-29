@@ -209,6 +209,41 @@
     document.dispatchEvent(new CustomEvent('vn:page', { detail: name }));
   }
 
+  /* ---------------- 设置弹窗的分类导航 ----------------
+     AI 与供应商 / 图像生成 / 外观与界面 / 记忆表格。
+     这段逻辑原先只写在桌面外壳（js/desktop/vn-shell.js 的 initSettingsNav）；移动端没有，
+     所以 2026-09-29 把设置弹窗结构手工同步过来之后，导航栏在移动端只是"画上去"的、点了没反应。
+     与桌面同语义：只切 .on，显示/隐藏交给 vn.css 的 .settings-pane:not(.on){display:none}。 */
+  function initSettingsNav() {
+    var entries = [];
+    ['gameSettingsModal', 'settingsModal'].forEach(function (id) {
+      var m = document.getElementById(id);
+      if (!m) return;
+      var nav = m.querySelector('.settings-nav');
+      var panes = Array.prototype.slice.call(m.querySelectorAll('.settings-pane'));
+      if (!nav || !panes.length) return;
+      entries.push({ nav: nav, panes: panes });
+    });
+    if (!entries.length) return;
+    function showPane(name, e) {
+      var hit = '';
+      e.panes.forEach(function (p) { if (name && p.dataset.pane === name) hit = name; });
+      if (!hit) hit = e.panes[0].dataset.pane;
+      e.panes.forEach(function (p) { p.classList.toggle('on', p.dataset.pane === hit); });
+      Array.prototype.slice.call(e.nav.querySelectorAll('.settings-nav-btn')).forEach(function (b) {
+        b.classList.toggle('on', b.dataset.pane === hit);
+      });
+    }
+    entries.forEach(function (e) {
+      e.nav.addEventListener('click', function (ev) {
+        var b = ev.target && ev.target.closest ? ev.target.closest('.settings-nav-btn') : null;
+        if (b && b.dataset.pane) showPane(b.dataset.pane, e);
+      });
+      var on0 = e.nav.querySelector('.settings-nav-btn.on') || e.nav.querySelector('.settings-nav-btn');
+      showPane(on0 && on0.dataset.pane, e);
+    });
+  }
+
   /* ---------------- 抽屉 ---------------- */
   function openDrawer(on) {
     var d = $('#vnDrawer'), s = $('#vnScrim');
@@ -830,6 +865,7 @@
     }, 1200);
 
     if (window.VN && VN.pages && VN.pages.init) VN.pages.init();
+    initSettingsNav();
     showPage('chat');
 
     // 恢复上次使用的存档（同一存档继续玩），并刷新身份卡

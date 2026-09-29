@@ -389,8 +389,9 @@
 
       <!-- 左下：当前说话者大头像（说话时点亮，旁白时半透明）——不挂姓名/身份标签。
            原来左右各一个槽位靠 dialog-wrapper-left/right 交替点亮，观感是「两张脸来回跳」，
-           现固定只留左侧一个。 -->
-      <div class="av-slot left on" id="avL" title="点击查看大图">
+           现固定只留左侧一个：只有一个槽 + 一个 #avLImg，位置由 .av-slot 在 .bottom 里的
+           布局固定；侧别类名（旧的 .left / .right）已无意义 —— .left 从来就没有对应规则。 -->
+      <div class="av-slot on" id="avL" title="点击查看大图">
         <img id="avLImg" data-empty="1" alt="示例角色丙">
       </div>
 
@@ -1932,6 +1933,7 @@ confidence = 0.88</pre>
               <option value="qwenapi_local">Qwen3-TTS 本机 (/qwenapi/v1/custom-voice)</option>
               <option value="comfyui">本机 ComfyUI (Qwen3-TTS 工作流)</option>
               <option value="bailian">阿里云百炼 TTS (DashScope)</option>
+              <option value="volink">Volink 专用通道 (情绪→音色映射, 无 instruct)</option>
             </select>
           </div>
           <div class="form-group">
@@ -1987,6 +1989,136 @@ confidence = 0.88</pre>
             <label>全局情绪指导 <span style="font-size:10px;color:var(--text-muted)">(StepAudio 2.5 专用, 最多200字)</span></label>
             <input type="text" id="ttsProviderInstruction" class="setting-input" placeholder="如: 语气温柔，语速偏慢 / 留空则不传">
           </div>
+          <!-- Volink 情绪音色映射（仅 Volink 后端显示） -->
+          <details id="ttsVolinkMapSection" style="margin-top:8px;display:none">
+            <summary style="cursor:pointer;font-size:12px;font-weight:600">Volink 情绪音色映射（按情绪 + 男女）</summary>
+            <div style="margin-top:6px;font-size:10px;color:var(--text-muted);line-height:1.5">
+              Volink 不支持自然语言情绪指令（服务端会忽略该字段），情绪改由<b>切换音色</b>表达。<br>
+              每行左为<b>女声</b>、右为<b>男声</b>；角色性别取自名册，名册无性别时按女声。<br>
+              留空即使用内置默认音色（仅 minimax 模型提供）。点「刷新音色」拉取列表。
+            </div>
+            <div id="ttsVolinkMapContainer" style="margin-top:6px">
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">旁白</label>
+            <select id="ttsVk_narrator_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="旁白女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_narrator_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="旁白男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="narrator_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="narrator_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group">
+            <label style="font-size:11px">旁白使用性别</label>
+            <select id="ttsVkNarratorGender" class="setting-select" style="width:auto;font-size:11px">
+              <option value="female" selected>女声</option>
+              <option value="male">男声</option>
+            </select>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">中性（默认）</label>
+            <select id="ttsVk_neutral_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_neutral_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="neutral_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="neutral_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">喜悦 / 激动</label>
+            <select id="ttsVk_happy_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_happy_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="happy_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="happy_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">愤怒 / 吼叫</label>
+            <select id="ttsVk_angry_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_angry_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="angry_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="angry_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">悲伤 / 哭泣</label>
+            <select id="ttsVk_sad_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_sad_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="sad_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="sad_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">温柔 / 轻声</label>
+            <select id="ttsVk_gentle_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_gentle_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="gentle_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="gentle_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">恐惧 / 惊慌</label>
+            <select id="ttsVk_fear_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_fear_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="fear_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="fear_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">惊讶 / 疑惑</label>
+            <select id="ttsVk_surprise_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_surprise_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="surprise_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="surprise_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">冷漠 / 嘲讽</label>
+            <select id="ttsVk_cold_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_cold_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="cold_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="cold_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+          <div class="form-group" style="display:flex;gap:6px;align-items:center">
+            <label style="width:104px;margin:0;font-size:11px">NSFW 情欲 / 挑逗</label>
+            <select id="ttsVk_nsfw_f" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="女声">
+              <option value="">(默认女声)</option>
+            </select>
+            <select id="ttsVk_nsfw_m" class="setting-select tts-vk-select" style="flex:1;font-size:11px" title="男声">
+              <option value="">(默认男声)</option>
+            </select>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="nsfw_f" style="font-size:10px;padding:1px 6px">♀</button>
+            <button type="button" class="btn btn-sm tts-vk-test" data-vk="nsfw_m" style="font-size:10px;padding:1px 6px">♂</button>
+          </div>
+            </div>
+          </details>
+          <div id="ttsVoiceMapSection">
+          <!-- Character Voice Mapping (per-provider) -->
           <!-- Character Voice Mapping (per-provider) -->
           <details style="margin-top:8px">
             <summary style="cursor:pointer;font-size:12px;font-weight:600">角色音色映射（按性别+年龄）</summary>
@@ -2050,6 +2182,7 @@ confidence = 0.88</pre>
               </div>
             </div>
           </details>
+          </div><!-- /#ttsVoiceMapSection -->
           <div class="form-group">
             <label style="display:flex;align-items:center;gap:8px">
               <input type="checkbox" id="ttsProviderDefault"> 设为默认
@@ -2070,7 +2203,7 @@ confidence = 0.88</pre>
             <button class="btn btn-sm" onclick="ttsAddPreset('siliconflow')">硅基流动</button>
             <button class="btn btn-sm" onclick="ttsAddPreset('nvidia')">NVIDIA Magpie</button>
             <button class="btn btn-sm" onclick="ttsAddPreset('volcengine')">火山豆包</button>
-            <button class="btn btn-sm" onclick="ttsAddPreset('volink')">Volink</button>
+            <button class="btn btn-sm" onclick="ttsAddPreset('volink')">Volink 专用通道</button>
             <button class="btn btn-sm" onclick="ttsAddPreset('qwenapi')">Qwen TTS 云平台</button>
             <button class="btn btn-sm" onclick="ttsAddPreset('qwenapi_local')">Qwen TTS 本机</button>
             <button class="btn btn-sm" onclick="ttsAddPreset('comfyui')">Qwen3-TTS 本机工作流</button>

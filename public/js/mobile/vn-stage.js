@@ -17,7 +17,7 @@
 
   /* ---------------- 演出状态 ---------------- */
   var S = {
-    segments: [],   // [{type:'line'|'narr', text, speaker, avatar, side, name}]
+    segments: [],   // [{type:'line'|'narr', text, speaker, avatar, name}]
     idx: 0,
     lastBlockId: null,
     lastConvId: null,   // 用于识别「切换了存档」→ 从第 1 段重读
@@ -28,7 +28,7 @@
   };
   VN.stage = S;
 
-  var dlgEl, stageEl, avatarL, avatarR, plateRow, spkName, spkRomaji, dlgText, dlgNarr,
+  var dlgEl, stageEl, avatarL, spkName, spkRomaji, dlgText, dlgNarr,
     narrHint, segBadge, segDots, choicesEl, locEl, castEl, artImg, bgEl;
 
   /* ---------------- 工具 ---------------- */
@@ -42,32 +42,6 @@
     var up = window.AppState && window.AppState.userProfile;
     if (!up) return '我';
     return (up.persona_name || up.name || '我');
-  }
-
-  function hashSide(name) {
-    // 同一说话者尽量固定在同一侧（同一次抽取内保持一致）
-    var h = 0;
-    for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 997;
-    return h % 2 === 0 ? 'left' : 'right';
-  }
-
-  /**
-   * 决定每段的左右侧别：以「说话者」为单位交替。
-   * 设计目标：两人对话时头像自动左右交错（同一人始终同一侧，换人即换边）。
-   */
-  function assignSides(segs) {
-    var map = {};   // speaker -> 'left' | 'right'
-    var next = 'left';
-    segs.forEach(function (seg) {
-      if (seg.type !== 'line') return;
-      var key = seg.speaker || '角色';
-      if (!map[key]) {
-        map[key] = next;
-        next = (next === 'left') ? 'right' : 'left';
-      }
-      seg.side = map[key];
-    });
-    return segs;
   }
 
   /**
@@ -158,7 +132,6 @@
     var av = resolveAvatar(cur.speaker);
     if (!av) return;
     setAvatarUrl(avatarL, av, cur.speaker);
-    setAvatarUrl(avatarR, av, cur.speaker);
   }
 
   /** 当前存档 id（优先对话的 save_id） */
@@ -227,7 +200,7 @@
       var ut = textOf(ua) || textOf($('.user-action', block)) || textOf(block);
       // 去掉轮次/时间等噪声，只留正文
       ut = ut.replace(/^#\d+\s*/, '').replace(/▷\s*/, '').replace(/\s*\d{1,2}:\d{2}\s*$/, '').trim();
-      if (ut) out.push({ type: 'line', text: ut, speaker: playerName(), side: 'right' });
+      if (ut) out.push({ type: 'line', text: ut, speaker: playerName() });
       return out;
     }
     var nodes = $$('.narration-text, .dialog-wrapper, .scene-content, .html-message', block);
@@ -243,16 +216,13 @@
         var name = nameEl ? textOf(nameEl).replace(/[:：]\s*$/, '') : '';
         var txt = textOf(bodyEl);
         if (!txt) return;
-        // 侧别：app.js 的 dialog-wrapper-right 优先；否则按说话者名字确定（同一角色固定一侧，
-        // 这样两人对话时头像会自动左右交错，与设计稿一致）
-        var isRight = el.classList.contains('dialog-wrapper-right');
-        var side = el.classList.contains('dialog-wrapper-left') ? 'left'
-          : (isRight ? 'right' : hashSide(name || '角色'));
+        // 不再区分左右侧别：头像固定只有左下角一个槽位（与桌面版一致）。
+        // app.js 仍会给气泡加 dialog-wrapper-left/right，那是气泡排版（ai-gal-redesign.css），
+        // 与头像槽无关，这里忽略。
         out.push({
           type: 'line',
           text: txt,
-          speaker: name || (($('.dialogue-avatar', el) || {}).textContent || '角色').trim(),
-          side: side
+          speaker: name || (($('.dialogue-avatar', el) || {}).textContent || '角色').trim()
         });
         return;
       }
@@ -260,7 +230,7 @@
       var t2 = textOf(el);
       if (t2) out.push({ type: 'narr', text: t2 });
     });
-    return assignSides(out);
+    return out;
   }
 
   /** 抽取行动选项（app.js 的 .choice-menu）
@@ -366,12 +336,8 @@
 
     if (seg.type === 'line') {
       dlgEl.classList.remove('is-narr');
-      var side = seg.side === 'right' ? 'right' : 'left';
-      dlgEl.classList.toggle('by-left', side === 'left');
-      dlgEl.classList.toggle('by-right', side === 'right');
-      plateRow.classList.toggle('right', side === 'right');
-      avatarL.classList.toggle('on', side === 'left');
-      avatarR.classList.toggle('on', side === 'right');
+      // 单槽位：有对白就点亮这唯一的左侧头像（不再按说话者左右交替）
+      avatarL.classList.add('on');
 
       spkName.textContent = seg.speaker || '角色';
       var romajiEl = $('#vnSpkRomaji');
@@ -384,7 +350,6 @@
 
       var av = resolveAvatar(seg.speaker);
       setAvatarUrl(avatarL, av, seg.speaker);
-      setAvatarUrl(avatarR, av, seg.speaker);
 
       // 名册可能还没加载 / 头像还没生成完（对白头像依赖它）：
       // 只要头像没解析出来、且名册里它仍是「未落地」状态，就重拉一次名册再补画。
@@ -398,7 +363,6 @@
       dlgNarr.textContent = seg.text || '';
       dlgNarr.scrollTop = 0;
       avatarL.classList.remove('on');
-      avatarR.classList.remove('on');
     }
     setTimeout(updateNarrHint, 30);
     // 演到最后一段才把行动选项浮到画面中央；往回翻或中间段一律收起
@@ -828,7 +792,6 @@
       openViewer(url, el.dataset.name, '轻点任意处关闭');
     }
     if (avatarL) avatarL.addEventListener('click', function () { openAvatarBox(avatarL); });
-    if (avatarR) avatarR.addEventListener('click', function () { openAvatarBox(avatarR); });
 
     // 隐藏 UI → 全屏看最新 CG（保持原比例，未铺满处用底色）；点任意处 / Esc 恢复界面
     var btnHide = $('#vnBtnHideUI');
@@ -1007,8 +970,6 @@
     dlgEl = $('#vnDlg');
     stageEl = $('#vnStage');
     avatarL = $('#vnAvLeft');
-    avatarR = $('#vnAvRight');
-    plateRow = $('#vnPlateRow');
     spkName = $('#vnSpkName');
     dlgText = $('#vnDlgText');
     dlgNarr = $('#vnDlgNarr');

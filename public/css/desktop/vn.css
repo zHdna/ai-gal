@@ -3,7 +3,6 @@
     /* ===================== 1. 设计令牌 ===================== */
     .app {
       --bg: #070B14;
-      /* 主背景色：填充舞台留白，不使用任何背景图 */
       --bg-2: #0C1322;
       --void: #070B14;
       --panel: rgba(13, 20, 38, .66);
@@ -35,9 +34,7 @@
       --fs: 1;
       /* 阅读字号倍率（0.85 – 1.5，见「字号」设置）：只作用于正文，不放大 UI 骨架 */
       --av: clamp(176px, 15.2vw, 296px);
-      /* 主背景色：填充舞台留白，不使用任何背景图 */
       --col: 1160px;
-      /* 主背景色：填充舞台留白，不使用任何背景图 */
     }
 
     html[data-theme="light"] .app {
@@ -687,7 +684,6 @@
       place-items: center;
     }
 
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app .stage::before {
       content: "";
       position: absolute;
@@ -706,7 +702,6 @@
       animation: cgIn .9s cubic-bezier(.22, 1, .36, 1) both;
     }
 
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app .art-frame::after {
       display: none;
     }
@@ -974,7 +969,7 @@
       overflow-y: auto;
       display: flex;
       flex-direction: column;
-      justify-content: center;    /* 主背景色：填充舞台留白，不使用任何背景图 */
+      justify-content: center;
       gap: 10px;
       padding: 2px;
       pointer-events: none;       /* 只有按钮本身吃点击，空白处仍然点得到画面 */
@@ -1086,7 +1081,6 @@
     }
 
     /* ===================== 4. 舞台（单图 + 背景色填充） ===================== */
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app .bottom {
       position: absolute;
       left: 0;
@@ -1112,7 +1106,6 @@
       pointer-events: none;
     }
 
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app .av-slot {
       position: relative;
       width: var(--av);
@@ -1135,28 +1128,17 @@
       -webkit-user-drag: none;
     }
 
-    .app .av-slot .tag {
-      display: none;
-    }
-
-    .app .av-slot .side {
-      display: none;
-    }
-
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app.no-cast .av-slot {
       opacity: 0;
       visibility: hidden;
       pointer-events: none;
     }
 
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app.narr .av-slot {
       opacity: .2;
       filter: grayscale(.75) brightness(.7);
     }
 
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app .av-slot.no-art::before {
       content: attr(data-initial);
       position: absolute;
@@ -1169,7 +1151,7 @@
       letter-spacing: .06em;
     }
 
-    /* 正在说话的一侧：点亮 + 金色描边（不做位移，保证两侧底边对齐；不加投影） */
+    /* 正在说话：点亮 + 金色描边（只有一个左侧槽位，不做位移；不加投影） */
     .app .av-slot.on {
       opacity: 1;
       filter: none;
@@ -1180,7 +1162,7 @@
     .app .mid {
       display: flex;
       flex-direction: column;
-      gap: 0;                     /* 主背景色：填充舞台留白，不使用任何背景图 */
+      gap: 0;
       min-width: 0;
       width: 100%;
       max-width: var(--col);
@@ -1467,7 +1449,6 @@
       transform: translate(-50%, 0);
     }
 
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app .hud .tip::after, .app .fab.tip::after {
       top: calc(100% + 8px);
       bottom: auto;
@@ -1568,7 +1549,6 @@
       color: var(--rose);
     }
 
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app .body {
       position: relative;
       flex: 1 1 auto;
@@ -1600,7 +1580,6 @@
       }
     }
 
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app .dlg-narr {
       display: none;
       height: 100%;
@@ -1751,7 +1730,7 @@
       gap: 10px;
       padding: 6px 8px 6px 32px;
       border-radius: 0 0 16px 16px;
-      border-top: none;           /* 主背景色：填充舞台留白，不使用任何背景图 */
+      border-top: none;
       background: var(--panel-2);
       border: 1px solid var(--line);
       backdrop-filter: var(--glass);
@@ -1895,7 +1874,6 @@
       pointer-events: none;
     }
 
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     .app .fab {
       position: absolute;
       right: 20px;
@@ -3786,7 +3764,6 @@
       }
     }
 
-    /* 主背景色：填充舞台留白，不使用任何背景图 */
     @media (min-width:2200px){
       .app {
         --col: 1320px;
@@ -3921,6 +3898,15 @@ html:not(.legacy) body::after {
   right: 20px !important;
   bottom: 96px !important;
   max-height: min(60vh, calc(100vh - 140px)) !important;
+}
+
+/* --- 3.1 右上角 toast（app.js 的 showToast）必须压在弹窗之上 ---
+       上面把 .modal / .slide-panel 抬到 400、TTS 待播列表 420，而 ai-gal-redesign.css
+       只给 .toast-container 写了 300 —— 于是「设置」等弹窗一开，右上角提示就掉到弹窗
+       及其遮罩底下：轻则被 .modal-content 压住，重则只剩一层被深色遮罩压过的深底深字。
+       toast 是「操作结果」反馈，任何面板开着都必须看得见，所以给它最高层。 */
+.toast-container {
+  z-index: 500 !important;
 }
 
 /* --- 4. 外壳内的滚动条统一（旧样式里的滚动条规则只作用于旧容器） --- */
@@ -4217,19 +4203,6 @@ html:not(.legacy) body::after {
 
 .app .av-slot.no-art {
   background: linear-gradient(180deg, var(--panel-3), rgba(0, 0, 0, .25));
-}
-
-.app .av-slot.no-art::after {
-  content: attr(data-name);
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 46px;
-  text-align: center;
-  font-family: var(--font-serif);
-  font-size: 44px;
-  color: var(--text-mut);
-  opacity: .5;
 }
 
 /* app.js 的调试卡片搬进控制台面板：去掉旧面板外壳，保留它的排版 */
@@ -5313,6 +5286,40 @@ html:not(.legacy) .status-popup-body {
   color: var(--text) !important;
   font-family: var(--font-ui);
   font-size: 11.5px;
+}
+
+/* --- 14.11b 右上角 toast 本体（showToast 的 .toast-container > .toast）---
+       设计系统里 .toast 用的是旧令牌（background: var(--bg-card) / color: var(--text-primary)），
+       而旧的浅色覆盖挂在 html:not([data-theme]) 上，vn-shell 又会永远设 data-theme，
+       于是这两条令牌在明/暗两种主题下都停在「深色预设」：浅色主题里它是一块深底，
+       而它又常被弹窗遮罩压住 —— 用户看到的就是「深色底、认不出的字」。
+       这里接回外壳令牌（--panel-3 / --text / --line-2），明暗两边都跟着主题走。 */
+html:not(.legacy) .toast-container .toast {
+  border-radius: 14px !important;
+  border: 1px solid var(--line-2) !important;
+  background: var(--panel-3) !important;
+  color: var(--text) !important;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  letter-spacing: .02em;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .5) !important;
+}
+
+/* app.js 发的是连字符类名（toast-success / toast-error / toast-warning），
+   而设计系统只写了 .toast.success —— 两种都接上，状态色才真的生效 */
+html:not(.legacy) .toast-container .toast.success,
+html:not(.legacy) .toast-container .toast.toast-success {
+  border-color: var(--cyan) !important;
+}
+
+html:not(.legacy) .toast-container .toast.error,
+html:not(.legacy) .toast-container .toast.toast-error {
+  border-color: var(--rose) !important;
+}
+
+html:not(.legacy) .toast-container .toast.warning,
+html:not(.legacy) .toast-container .toast.toast-warning {
+  border-color: var(--gold) !important;
 }
 
 /* --- 14.12 app.js 动态渲染的弹窗内组件（供应商列表 / 徽章 / 小圆键 / 空态） ---

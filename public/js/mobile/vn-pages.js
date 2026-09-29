@@ -421,25 +421,36 @@
       paint(entries);
       return;
     }
+    /* 数据源与桌面「数据中心 → 记忆表格」面板**同一个接口**：
+       GET /api/saves/:id/memory（读存档的 event_log.md）。
+       2026-09-29 修：这里以前读 conv.memory / conv.memory_table，而会话对象根本没有这两个
+       字段 —— 移动端也没有任何路径会去调 app.js 的 loadMemoryPage()（那是旧数据中心面板的
+       加载器，只有 window._memoryEntries 才有值），于是存档里明明有整张记忆表、这一页
+       却永远显示「还没有记忆条目」。 */
+    var sid = currentSave();
     var c = currentConv();
-    if (!c) { box.innerHTML = '<div class="vn-empty">请先开始对话。</div>'; return; }
-    // 同时取存档记忆表与三色灯状态
+    if (!sid) { box.innerHTML = '<div class="vn-empty">还没有记忆条目。</div>'; return; }
     Promise.all([
-      api('/conversations/' + encodeURIComponent(c.id)),
-      window._memoryStatus ? Promise.resolve(null)
+      api('/saves/' + encodeURIComponent(sid) + '/memory'),
+      (window._memoryStatus || !c) ? Promise.resolve(null)
         : api('/memory-agent/memory-status?conversation_id=' + encodeURIComponent(c.id)).catch(function () { return null; }),
     ]).then(function (rs) {
-      var conv = rs[0];
+      var resp = rs[0];
       var st = rs[1];
       if (st) {
         var by = {};
         (st.entries || []).forEach(function (e) { by[e.round] = e.status; });
         window._memoryStatus = { byRound: by, injectedAt: st.injectedAt || 0, round: st.round || 0 };
       }
-      var mem = (conv && (conv.memory || conv.memory_table)) || null;
-      if (!mem) { box.innerHTML = '<div class="vn-empty">还没有记忆条目。</div>'; return; }
-      try { paint(typeof mem === 'string' ? JSON.parse(mem) : mem); }
-      catch (e) { paint({ memory: mem }); }
+      var memory = (resp && resp.memory) || [];
+      var arr = Array.isArray(memory)
+        ? memory
+        : Object.keys(memory).map(function (k) { return { key: k, value: memory[k] }; });
+      if (!arr.length) {
+        box.innerHTML = '<div class="vn-empty">还没有记忆条目。<br>管家 AI 会在对话若干轮后自动整理。</div>';
+        return;
+      }
+      paint(arr);
     }).catch(function () {
       box.innerHTML = '<div class="vn-empty">读取记忆失败。</div>';
     });

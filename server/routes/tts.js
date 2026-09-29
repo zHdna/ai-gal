@@ -206,6 +206,135 @@ function mapEmotionToTag(phrase) {
   return '';
 }
 
+// ============ Volink 情绪档映射（换音色表达情绪） ============
+// 实测结论（2026，volkey.txt）：Volink 的 /v1/audio/speech 会【静默忽略】instructions 字段——
+// 带/不带、甚至传数字都返回 200，且长指令不会被念出。反证：speed 传非数字会 400 "Invalid speed."，
+// 说明网关确实做字段校验，instructions 根本不在它的 schema 里。
+// 故 Volink 的情绪只能靠【换音色】表达：把 AI 情绪短语归并到若干「情绪档」，
+// 每个档位在设置里绑定一个该模型下的合法音色 id。
+//
+// 档位刻意保持较少：Volink 音色与模型强绑定，档位太多会让用户配置负担过重。
+// NSFW 档（情欲/挑逗/呻吟等）单独成档——这类语气与常规情绪差异最大，混进其它档会失真。
+const VOLINK_EMOTION_BUCKETS = [
+  'neutral',   // 中性：无情绪标注或未命中
+  'happy',     // 喜悦：开心/激动/兴奋/欢快
+  'angry',     // 愤怒：生气/恼怒/怒吼
+  'sad',       // 悲伤：难过/伤心/哭/绝望
+  'gentle',    // 温柔：轻柔/安抚/温柔/关切
+  'fear',      // 恐惧：害怕/惊恐/慌张/颤抖
+  'surprise',  // 惊讶：吃惊/诧异/疑惑/好奇
+  'cold',      // 冷漠：冷淡/轻蔑/嘲讽/不屑
+  'nsfw',      // NSFW：情欲/挑逗/喘息/呻吟/娇媚
+];
+
+/** 中文情绪词 → Volink 情绪档。顺序即优先级：越靠前越先匹配（NSFW 与具体情绪优先于泛化词）。 */
+const VOLINK_EMOTION_MAP = [
+  // —— NSFW（优先：避免「娇喘」被「喘」以外的中性词抢先，也避免与 gentle 混淆）——
+  ['nsfw', ['情欲', '发情', '挑逗', '撩拨', '媚惑', '妩媚', '娇媚', '娇喘', '喘息', '呻吟', '娇吟',
+            '春情', '淫', '骚', '呻吟着', '浪叫', '高潮', '沉迷地', '暧昧', '色气', '艳媚', '勾引',
+            '动情', '敏感', '酥软', '湿', '硬', '勃起', '爱抚', '亲吻', '舌吻', '缠绵', '旖旎']],
+  // —— 恐惧 ——
+  ['fear', ['恐惧', '害怕', '惊恐', '畏惧', '慌张', '焦急', '着急', '颤抖', '战栗', '发抖', '惊慌',
+            '惶惑', '不安地', '毛骨悚然']],
+  // —— 愤怒 ——
+  ['angry', ['愤怒', '生气', '恼怒', '怒吼', '咆哮', '嘶吼', '吼道', '怒斥', '暴怒', '发火']],
+  // —— 悲伤/哭泣 ——
+  ['sad', ['悲伤', '难过', '伤心', '哀伤', '绝望', '抽泣', '呜咽', '哭', '啜泣', '哽咽', '泪',
+           '低沉地叹息', '叹息', '失落', '凄']],
+  // —— 喜悦 ——
+  ['happy', ['激动', '兴奋', '喜悦', '欢快', '开心', '欣喜', '高兴', '雀跃', '欢欣', '愉快', '笑意']],
+  // —— 温柔 ——
+  ['gentle', ['温柔', '轻柔', '柔声', '安抚', '轻声', '低声', '小声', '呢喃', '低语', '耳语',
+              '关切', '宠溺', '甜腻', '缱绻', '恬静']],
+  // —— 惊讶/疑惑 ——
+  ['surprise', ['惊讶', '吃惊', '惊异', '诧异', '疑惑', '好奇', '疑惑地问道', '惊愕', '震惊']],
+  // —— 冷漠/嘲讽 ——
+  ['cold', ['冷漠', '冷淡', '漠然', '轻蔑', '鄙夷', '不屑', '嘲讽', '讽刺', '讥讽', '冷笑',
+            '嗤笑', '讥笑', '平静地', '慵懒']],
+  // —— 坚定/认真（归到 neutral 之外的单列，语气与中性明显不同，但不必单独成档，归 cold 的克制感 ——
+  ['neutral', ['坚定', '毅然', '决然', '严肃', '正经', '自然平稳', '语气朗读', '绘声绘色']],
+];
+
+/**
+ * 从情绪短语解析出 Volink 情绪档。返回 bucket 名（未命中 → 'neutral'）。
+ * 匹配规则：按 VOLINK_EMOTION_MAP 顺序，短语中出现任一关键词即命中该档。
+ * 注意：前端在非 Volink 模式下会把「音色描述 + 情绪」拼成 instruct（如
+ * 「用清亮甜美的年轻女声，愤怒地吼道」），此函数对整串做 includes 匹配依然有效。
+ */
+function mapEmotionToVolinkBucket(phrase) {
+  if (!phrase) return 'neutral';
+  const p = String(phrase);
+  for (const [bucket, keys] of VOLINK_EMOTION_MAP) {
+    for (const k of keys) {
+      if (p.includes(k)) return bucket;
+    }
+  }
+  return 'neutral';
+}
+
+/** 解析 Volink 该用哪个音色。优先级：
+ *    1) 用户为该情绪档/旁白 + 性别【显式配置】的音色（voice_map.emo_<bucket>_<f|m>）
+ *    2) 兼容旧的、不分性别的配置（voice_map.emo_<bucket>）
+ *    3) minimax 模型的内置默认（VOLINK_DEFAULT_VOICES / VOLINK_DEFAULT_NARRATOR）
+ *    4) null —— 交调用方回落到 provider.voice
+ *  gender: 'male' | 'female'；取不到性别时调用方应传 'female'（默认女声）。
+ *  model 用于判定是否套用内置默认（音色跨模型会 404，故仅默认模型有内置值）。 */
+function resolveVolinkVoice(bucket, voiceMap, isNarrator, gender, model) {
+  const vm = voiceMap || {};
+  const g = (gender === 'male') ? 'male' : 'female';
+  const keyBase = isNarrator ? 'emo_narrator' : ('emo_' + (bucket || 'neutral'));
+  // 1) 分性别配置
+  if (vm[keyBase + '_' + (g === 'male' ? 'm' : 'f')]) return vm[keyBase + '_' + (g === 'male' ? 'm' : 'f')];
+  // 2) 兼容旧的不分性别配置
+  if (vm[keyBase]) return vm[keyBase];
+  // 3) 内置默认
+  return getVolinkDefaultVoice(model, bucket, g, isNarrator);
+}
+
+// ============ Volink 内置默认情绪音色（仅 minimax/speech-02-turbo） ============
+// 数据来源：GET https://api.volink.org/v1/tts/voices 官方音色表（559 条，creator=official）。
+// 官方【没有】情绪标签字段，故选型依据两条：
+//   ① 官方音色名的语义（如 Sharp Queen→愤怒、Sultry Diana→情欲、Soft Recitation→悲伤）；
+//   ② 对官方 demo 音频做客观声学分析交叉验证（基频 F0 / 响度 / 语速代理，共 559 条），
+//      详见选型说明：愤怒=名实相符且 F0 低于群体中位（不飘）、情欲=低响度+高 F0 表现力、
+//      悲伤=低响度、surprise 排除童声（F0>350 的近童声不用）。
+//      修正记录：fear 女原选 Sweet Junior Girl(372Hz 童声) → 改 Delicate Reciter(213Hz)；
+//                surprise 女原选 Playful Spirit(381Hz 童声) → 改 Bright as Flowers(254Hz)。
+// 音色与模型强绑定，跨模型会 404 "Voice xxx not found."，故这套默认值【仅对 minimax 生效】；
+// 其它模型不带默认值，由用户自选（下拉里选任意音色即可）。
+const VOLINK_DEFAULT_MODEL = 'minimax/speech-02-turbo';
+const VOLINK_DEFAULT_VOICES = {
+  neutral:  { female: '689334e84d3396ad1d28eec1', male: '689334e84d3396ad1d28eebc' }, // Graceful Woman / Elite Professional
+  happy:    { female: '68b82a0d2df9703e9df185be', male: '689334e84d3396ad1d28eebb' }, // Sunny Energy / Fresh Young Voice
+  angry:    { female: '68b82a0d2df9703e9df185b7', male: '689334e84d3396ad1d28eebd' }, // Sharp Queen / Commanding Youth
+  sad:      { female: '68b82a0d2df9703e9df185b6', male: '68b82a0d2df9703e9df185bd' }, // Soft Recitation / Life Is But a Dream
+  gentle:   { female: '689334e84d3396ad1d28eede', male: '68b82a0d2df9703e9df185c7' }, // Gentle Claire / Soft Gentleman
+  fear:     { female: '68b82a0d2df9703e9df185b5', male: '689334e84d3396ad1d28eecc' }, // Delicate Reciter / Jake Intellectual
+  surprise: { female: '68b82a0d2df9703e9df185c1', male: '689334e84d3396ad1d28eed1' }, // Bright as Flowers / Smart Tommy
+  cold:     { female: '68b82a0d2df9703e9df185b8', male: '689334e84d3396ad1d28eed8' }, // Aloof Goddess / Cool Senior
+  nsfw:     { female: '689334e84d3396ad1d28eedc', male: '689334e84d3396ad1d28eed5' }, // Sultry Diana / Clingy Kevin
+};
+const VOLINK_DEFAULT_NARRATOR = {
+  female: '689334e84d3396ad1d28eec8', // Narrator Isabella
+  male:   '689334e84d3396ad1d28eec5', // Narrator Benjamin
+};
+
+/** 取某模型 + 情绪档 + 性别的内置默认音色；非默认模型或查不到 → null。 */
+function getVolinkDefaultVoice(model, bucket, gender, isNarrator) {
+  // 仅对默认模型提供内置默认值（音色跨模型会 404）
+  if (String(model || '').trim() !== VOLINK_DEFAULT_MODEL) return null;
+  const g = (gender === 'male') ? 'male' : 'female'; // 取不到性别一律按女声
+  if (isNarrator) return VOLINK_DEFAULT_NARRATOR[g] || null;
+  const row = VOLINK_DEFAULT_VOICES[bucket || 'neutral'] || VOLINK_DEFAULT_VOICES.neutral;
+  return row[g] || null;
+}
+
+/** 是否走 Volink 分支：显式 api_format，或 base_url 命中 volink（兼容旧配置）。 */
+function isVolinkProvider(baseUrl, apiFormat) {
+  if (apiFormat === 'volink') return true;
+  return /volink/i.test(baseUrl || '');
+}
+
 /** 把本地语言代码映射到百炼 language_type（留空则让模型自动检测） */
 function mapBailianLang(lang) {
   const l = (lang || 'zh-CN').toLowerCase();
@@ -407,6 +536,15 @@ function buildTTSRouter(db) {
     if (!base_url) return res.status(400).json({ error: 'base_url required' });
     try {
       const baseUrl = base_url.replace(/\/+$/, '');
+
+      // Volink：标准 /v1/models 只列 LLM 文本模型（deepseek/qwen/claude…），TTS 模型不在其中；
+      // /tts/models 也不存在（404）。唯一可靠来源是 tts/voices 里的 model 字段，
+      // 故直接用本地快照的 4 个模型（与 559 音色一一绑定：音色不能跨模型用）。
+      if (req.body.api_format === 'volink' || /volink/i.test(baseUrl)) {
+        const { voices } = loadVolinkVoices();
+        const models = [...new Set(voices.map(v => v.model))].sort();
+        return res.json(models.length ? models : ['minimax/speech-02-turbo']);
+      }
 
       // Qwen3-TTS (local or cloud) — fetch from /qwenapi/v1/models
       // Response format: { models: [{ name, type }, ...] }
@@ -714,7 +852,28 @@ function buildTTSRouter(db) {
   async function processTTSJob(job) {
     let provider = resolveProviderById(job.providerId) || resolveProvider();
     if (!provider) throw new Error('No TTS provider configured');
-    if (job.body.voice) provider = { ...provider, voice: job.body.voice };
+    // job.body.voice 只在「前端显式点名音色」或「旁白映射」时非空，即最高优先级。
+    const explicitVoice = job.body.voice || null;
+    if (explicitVoice) provider = { ...provider, voice: explicitVoice };
+    // Volink：队列路径同样要做情绪→音色（缓存键在 /speak 已按最终音色算好，
+    // 这里必须得出【同一个】音色，否则会写出与缓存键不符的音频）。
+    if (isVolinkProvider(provider.base_url, provider.api_format)) {
+      let _vm = {};
+      try {
+        _vm = typeof provider.voice_map === 'string'
+          ? JSON.parse(provider.voice_map || '{}') : (provider.voice_map || {});
+      } catch (e) { _vm = {}; }
+      const bucket = mapEmotionToVolinkBucket(job.body.instruction);
+      // 与 /speak 保持同一优先级：显式 voice（已在 descriptor 中固化）> 情绪档 > 默认。
+      // 注意 descriptor.body.voice 存的是 /speak 已解析好的最终音色，故这里通常直接沿用。
+      if (!explicitVoice) {
+        const mapped = resolveVolinkVoice(bucket, _vm, !!job.body.narrator, job.body.gender, provider.model);
+        if (mapped) provider = { ...provider, voice: mapped };
+      }
+      console.log('[TTS Queue][Volink] bucket=' + bucket
+        + ' gender=' + (job.body.gender || '(none->female)')
+        + ' explicit=' + !!explicitVoice + ' -> voice=' + JSON.stringify(provider.voice));
+    }
     const safeText = clampTTS(job.body.text, provider.api_format);
     const result = await callSpeechAPI(provider, safeText, job.body.instruction);
     if (!fs.existsSync(TTS_CACHE_DIR)) fs.mkdirSync(TTS_CACHE_DIR, { recursive: true });
@@ -1045,6 +1204,10 @@ function buildTTSRouter(db) {
 
   function callSpeechAPI(provider, text, instruction) {
     const format = provider.api_format || 'openai';
+    // Volink 必须【早于】openai 判断：它是 OpenAI 兼容外形但不支持 instructions，
+    // 情绪改由声线表达（provider.voice 已在 /speak 中按情绪档解析）。
+    // isVolinkProvider 同时覆盖 api_format=volink 与旧配置（api_format=openai + base_url 含 volink）。
+    if (isVolinkProvider(provider.base_url, provider.api_format)) return callVolinkTTS(provider, text, instruction);
     if (format === 'nvidia') return callNvidiaTTS(provider, text, instruction);
     if (format === 'volcengine') return callVolcengineTTS(provider, text, instruction);
     if (format === 'qwenapi') return callQwenAPITTS(provider, text, instruction);
@@ -1445,7 +1608,10 @@ function buildTTSRouter(db) {
    */
   function callVolcengineTTS(provider, text, instruction) {
     return new Promise((resolve, reject) => {
-      const apiKey = provider.api_key ? decrypt(provider.api_key) : '';
+      // _rawKey：/test 表单直传的是明文 key，勿再解密（与其它 handler 约定一致）。
+      const apiKey = provider.api_key
+        ? (provider._rawKey ? provider.api_key : decrypt(provider.api_key))
+        : '';
       const resourceId = provider.model || 'seed-tts-2.0';
       const baseUrl = (provider.base_url || 'https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional').replace(/\/+$/, '');
 
@@ -1544,7 +1710,11 @@ function buildTTSRouter(db) {
   /** OpenAI-compatible: POST /v1/audio/speech (JSON body) */
   function callOpenAITTS(provider, text, segmentInstruction) {
     return new Promise((resolve, reject) => {
-      const apiKey = provider.api_key ? decrypt(provider.api_key) : '';
+      // _rawKey：/test 的表单直传路径带的是【明文】key，不能再 AES 解密（否则必然鉴权失败）。
+      // 与 callVolinkTTS / callBailianTTS 保持一致的约定。
+      const apiKey = provider.api_key
+        ? (provider._rawKey ? provider.api_key : decrypt(provider.api_key))
+        : '';
       const baseUrl = (provider.base_url || '').replace(/\/+$/, '');
       let fullPath;
       if (baseUrl.endsWith('/audio/speech') || baseUrl.endsWith('/tts/speech')) fullPath = baseUrl;
@@ -1625,10 +1795,87 @@ function buildTTSRouter(db) {
     });
   }
 
+  /** Volink: POST /v1/audio/speech（OpenAI 兼容外形，但不支持 instructions）
+   *  与 callOpenAITTS 的差异：
+   *  1) 【不发 instructions】实测 Volink 静默忽略该字段（传数字也 200，长指令不被念出）。
+   *     情绪改由调用方预先解析成 voice（见 resolveVolinkVoice）。
+   *  2) speed 收敛到 [0.6, 1.2]（Volink CosyVoice 后端限制），422 时去 speed 重试。
+   *  3) response_format 固定 mp3。
+   */
+  function callVolinkTTS(provider, text, segmentInstruction) {
+    return new Promise((resolve, reject) => {
+      // _rawKey：来自表单直传的明文 key（见 /test 的 fromForm 路径），勿再 AES 解密。
+      const apiKey = provider.api_key
+        ? (provider._rawKey ? provider.api_key : decrypt(provider.api_key))
+        : '';
+      // 提前给出可读错误：否则会发出一个不带 Authorization 的请求，被服务端以
+      // 401 Unauthenticated 打回，用户看不懂是「没配 Key」还是「Key 错了」。
+      if (!apiKey) {
+        return reject(Object.assign(
+          new Error('未提供 Volink API Key：请在设置里填写并保存（volink.org 控制台令牌）'),
+          { status: 401, code: 'NO_API_KEY' }));
+      }
+      const baseUrl = (provider.base_url || 'https://api.volink.org/v1').replace(/\/+$/, '');
+      let fullPath;
+      if (baseUrl.endsWith('/audio/speech')) fullPath = baseUrl;
+      else if (baseUrl.endsWith('/v1') || baseUrl.endsWith('/v2')) fullPath = baseUrl + '/audio/speech';
+      else fullPath = baseUrl + '/v1/audio/speech';
+      const url = new URL(fullPath);
+      const transport = url.protocol === 'https:' ? https : http;
+
+      // 声线已由 /speak 或 processTTSJob 按情绪档解析好；这里直接用 provider.voice。
+      const reqBody = {
+        model: provider.model || 'cosyvoice/CosyVoice2-0.5B',
+        voice: provider.voice || '',
+        input: text,
+        speed: parseFloat(provider.speed) || 1.0,
+        response_format: 'mp3'
+      };
+      const s = parseFloat(provider.speed);
+      if (!isNaN(s)) reqBody.speed = Math.min(1.2, Math.max(0.6, s));
+
+      const doRequest = (bodyStr) => new Promise((res, rej) => {
+        const headers = {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(bodyStr),
+          'Connection': 'close'
+        };
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+        const req = transport.request({
+          hostname: url.hostname, port: url.port || (url.protocol === 'https:' ? 443 : 80),
+          path: url.pathname, method: 'POST', headers, timeout: 120000, agent: false
+        }, (r) => {
+          const chunks = [];
+          r.on('data', c => chunks.push(c));
+          r.on('end', () => {
+            const buf = Buffer.concat(chunks);
+            if (r.statusCode === 200) res({ audio: buf, contentType: r.headers['content-type'] || 'audio/mpeg' });
+            else rej(Object.assign(new Error(`Volink TTS ${r.statusCode}: ${buf.toString().substring(0, 200)}`), { status: r.statusCode }));
+          });
+        });
+        req.on('error', rej);
+        req.on('timeout', () => { req.destroy(); rej(new Error('Volink TTS timeout')); });
+        req.write(bodyStr);
+        req.end();
+      });
+
+      doRequest(JSON.stringify(reqBody)).catch((e) => {
+        if (e.status === 422 && reqBody.speed !== 1.0) {
+          reqBody.speed = 1.0;
+          return doRequest(JSON.stringify(reqBody));
+        }
+        throw e;
+      }).then(resolve, reject);
+    });
+  }
+
   /** NVIDIA NIM: POST /v1/audio/synthesize (multipart/form-data) */
   function callNvidiaTTS(provider, text, instruction) {
     return new Promise((resolve, reject) => {
-      const apiKey = provider.api_key ? decrypt(provider.api_key) : '';
+      // _rawKey：/test 表单直传的是明文 key，勿再解密（与其它 handler 约定一致）。
+      const apiKey = provider.api_key
+        ? (provider._rawKey ? provider.api_key : decrypt(provider.api_key))
+        : '';
       const baseUrl = (provider.base_url || '').replace(/\/+$/, '');
       let fullPath;
       if (baseUrl.endsWith('/audio/synthesize')) fullPath = baseUrl;
@@ -1685,7 +1932,7 @@ function buildTTSRouter(db) {
   //  Cache miss -> 入队，立即返回 202 { queued:true, cacheFile, position, pending }
   //                队列 worker 在并发上限内合成并写入缓存文件，前端用 /cache-file 轮询等待
   router.post('/speak', async (req, res) => {
-    const { text, voice, instruction, cache_game, cache_turn, cache_seg, narrator } = req.body;
+    const { text, voice, instruction, cache_game, cache_turn, cache_seg, narrator, gender } = req.body;
     if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
     // 纯标点/符号段落（如分隔线 ---、……）不发请求：无可朗读文字，合成无意义且浪费配额
     const strippedText = text.replace(/\s+/g, '');
@@ -1706,6 +1953,32 @@ function buildTTSRouter(db) {
           ? JSON.parse(provider.voice_map || '{}') : (provider.voice_map || {});
         effectiveVoice = (vm && vm.narrator) ? vm.narrator : null;
       } catch (e) { /* ignore parse error, fall through */ }
+    }
+    // ===== Volink 专属：情绪 → 音色 =====
+    // Volink 不支持自然语言情绪指令（instructions 被静默忽略，已实测）。
+    // 故这里把 AI 情绪短语解析成「情绪档」，再用该档绑定的音色覆盖声线。
+    // 优先级：前端显式传的 voice（直接点名角色音色）> 情绪档映射 > 旁白映射 > provider 默认音色。
+    // 说明：非 Volink 后端此段完全跳过，行为不变。
+    let volinkBucket = null;
+    if (isVolinkProvider(provider.base_url, provider.api_format)) {
+      let _vm = {};
+      try {
+        _vm = typeof provider.voice_map === 'string'
+          ? JSON.parse(provider.voice_map || '{}') : (provider.voice_map || {});
+      } catch (e) { _vm = {}; }
+      volinkBucket = mapEmotionToVolinkBucket(instruction);
+      // ⚠️ 优先级：前端【显式点名】的 voice 最高——前端在 Volink 模式下固定不传 voice
+      // （voice=null），所以一旦非空，就说明调用方明确指定了声线，此时情绪档不应覆盖它。
+      const explicitReqVoice = !!voice;
+      if (!explicitReqVoice) {
+        // gender 由前端按角色名册解析后传入（取不到性别时前端传 'female'）。
+        const mapped = resolveVolinkVoice(volinkBucket, _vm, !!narrator, gender, provider.model);
+        if (mapped) effectiveVoice = mapped;
+      }
+      console.log('[TTS][speak][Volink] bucket=' + volinkBucket
+        + ' gender=' + (gender || '(none->female)')
+        + ' instr=' + JSON.stringify((instruction || '').slice(0, 40))
+        + ' -> voice=' + JSON.stringify(effectiveVoice || provider.voice));
     }
     // Override voice if provided (multi-character TTS)
     if (effectiveVoice) provider = { ...provider, voice: effectiveVoice };
@@ -1769,6 +2042,10 @@ function buildTTSRouter(db) {
         text: safeText,
         voice: effectiveVoice || null,
         instruction: instruction || null,
+        // narrator/gender 必须随任务持久化：队列 worker 需要它们才能与 /speak 解析出
+        // 完全相同的音色（否则写出与缓存键不符的音频）。
+        narrator: !!narrator,
+        gender: gender || null,
         cache_game, cache_turn, cache_seg
       },
       status: 'pending',
@@ -1886,11 +2163,30 @@ function buildTTSRouter(db) {
     let fromForm = !!(body && body.api_format && body.base_url);
     let provider = fromForm ? body : resolveProvider();
     if (!provider) return res.status(503).json({ error: 'No TTS provider' });
-    // 表单没填 key、但带供应商 id → 回落到数据库已保存（加密）的 key，避免编辑已保存
-    // 供应商时因表单 key 输入框为空而报「No API-key provided」。
-    if (fromForm && !body.api_key && body.id) {
-      const saved = resolveProviderById(body.id);
-      if (saved && saved.api_key) { provider = { ...provider, api_key: saved.api_key }; fromForm = false; }
+    // 表单没填 key → 回落到数据库已保存（加密）的 key。
+    // ⚠️ 原先只在【同时带了 id】时才回落，导致：编辑已保存的 provider 时若 id 丢失、
+    // 或在未带 id 的情况下测试，_rawKey 会被置为 true 而 api_key 为空字符串，
+    // 于是既不解密、也没有 key 可用 → 请求不带 Authorization 头 → 服务端 401。
+    // 现改为：只要表单没给 key，就一律尝试用已保存的 key（有 id 按 id 取，无 id 取默认/唯一供应商）。
+    if (fromForm && !body.api_key) {
+      let saved = null;
+      if (body.id) saved = resolveProviderById(body.id);
+      if (!saved) {
+        // 无 id：用默认供应商；仍无则用唯一一个供应商（避免多供应商时误用）
+        try {
+          const def = db.prepare('SELECT * FROM tts_providers WHERE is_default = 1').get();
+          if (def) saved = def;
+          else {
+            const all = db.prepare('SELECT * FROM tts_providers LIMIT 2').all();
+            if (all && all.length === 1) saved = all[0];
+          }
+        } catch (e) { saved = null; }
+      }
+      if (saved && saved.api_key) {
+        // 用已保存的【加密】key 覆盖，并关掉 _rawKey，让下游走 decrypt()。
+        provider = { ...provider, api_key: saved.api_key };
+        fromForm = false;
+      }
     }
     try {
       // Allow caller to override voice/text for voice-map preview testing
@@ -2025,7 +2321,8 @@ function loadVolinkVoices() {
 function getVolinkVoices(model) {
   const { defaultModel, voices } = loadVolinkVoices();
   if (!voices.length) return [];
-  const strip = v => ({ id: v.id, name: v.name });
+  // gender 一并下发：前端情绪面板按男女分列，需要它来过滤下拉内容。
+  const strip = v => ({ id: v.id, name: v.name, gender: v.gender || '' });
   const q = String(model || '').trim().toLowerCase();
   if (!q) return voices.filter(v => v.model === defaultModel).map(strip);
   // 1) 精确匹配：minimax/speech-02-turbo

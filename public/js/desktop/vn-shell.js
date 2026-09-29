@@ -110,10 +110,12 @@
         var bodyEl = $('.dialogue-text', node) || $('.speaker-dialogue', node) || $('.dialogue-bubble', node);
         var text = bodyEl ? bodyEl.textContent.trim() : '';
         if (!text) return;
+        /* 不再记 side/right：头像固定只有一个左侧槽位（右侧槽已去掉）。
+           app.js 仍会按说话人给气泡加 dialog-wrapper-left/right —— 那是气泡排版，
+           由 ai-gal-redesign.css 负责，与头像槽无关，这里不读。 */
         out.push({
           kind: 'dialog',
           name: (nameEl ? nameEl.textContent : '').replace(/[:：]\s*$/, '').trim(),
-          right: node.classList.contains('dialog-wrapper-right'),
           text: text
         });
       } else {
@@ -209,12 +211,12 @@
     return '';
   }
 
-  /* 头像：固定只有左侧一个槽位（右侧槽已去掉），显示「当前说话人」。 */
-  function setAvatar(side, name, url, active) {
-    var slot = byId('av' + side);
-    var img = byId('av' + side + 'Img');
-    var nm = byId('av' + side + 'Name');          /* 设计稿已去掉姓名标签，这里兼容旧 DOM */
-    if (nm) nm.textContent = name || '';
+  /* 头像：固定只有左侧一个槽位（右侧槽已去掉），显示「当前说话人」。
+     槽位与图片就是 index.html 里写死的 #avL / #avLImg —— 不再按侧别拼 id，
+     那套 'av'+side 的写法（含早就没有对应 DOM 的 av*Name 兼容分支）已删。 */
+  function setAvatar(name, url, active) {
+    var slot = byId('avL');
+    var img = byId('avLImg');
     if (slot) slot.dataset.initial = (name || '').trim().charAt(0) || '?';
     if (img) {
       if (url) {
@@ -269,7 +271,7 @@
     var name = isDialog ? (activeSeg.name || '') : '';
     if (isDialog && name) cast.cur = { name: name, url: speakerAvatar(name) };
     var c = cast.cur;
-    setAvatar('L', c ? c.name : '', c ? c.url : '', isDialog);
+    setAvatar(c ? c.name : '', c ? c.url : '', isDialog);
     /* 还没人说过话（新存档 / 纯旁白开头）：头像框先不上台，别留一个「?」 */
     app.classList.toggle('no-cast', !c);
     /* 旁白段：头像半透明 */
@@ -322,7 +324,7 @@
       txt(byId('spkName'), '—');
       setRomaji('');
       resetCast();
-      setAvatar('L', '', '', false);
+      setAvatar('', '', false);
       var aff0 = $('.aff', byId('dialog'));
       if (aff0) aff0.style.display = 'none';
       renderChoices([]);
@@ -2751,7 +2753,7 @@
       blockRole: block ? block.className : null,
       segCount: S.segs.length,
       cur: S.cur,
-      seg: seg ? { kind: seg.kind, name: seg.name || '', right: !!seg.right, text: seg.text.slice(0, 120) } : null,
+      seg: seg ? { kind: seg.kind, name: seg.name || '', text: seg.text.slice(0, 120) } : null,
       choices: S.optionsOpen ? extractChoices(block).length : 0,
       stage: S.stageUrl || '',
       /* 背景判定的中间量：方便核对「卡面 / CG / 剧本bg」到底谁赢了 */
