@@ -18,6 +18,9 @@ const MAX_DATA_URL_BYTES = 5 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 
 const IMAGES_DIR = require('../paths').GENERATED_IMAGES_DIR;
+// 缩略图预热：头像落盘后顺手做掉缩略图，
+// 避免前端首次请求现解码 1~2MB 的 PNG（那会同步阻塞事件循环）。
+const thumbnails = require('../utils/thumbnails');
 fs.mkdirSync(IMAGES_DIR, { recursive: true });
 
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
@@ -1483,6 +1486,15 @@ function updateRoster(savePath, character_name, filename) {
     }
     fs.writeFileSync(rosterPath, JSON.stringify(roster, null, 2), 'utf-8');
     console.log('[ImageGen] Updated roster for:', character_name, 'avatar:', filename);
+    // 头像刚落盘 → 顺手预热缩略图。前端紧接着就会请求它；预热后是纯缓存命中，
+    // 不再现解码 1~2MB 的 PNG（那会同步阻塞事件循环，多张并发时导致浏览器超时 → 默认头像）。
+    try {
+      const imgDir = path.resolve(savePath, 'images');
+      const avatarFile = path.resolve(imgDir, String(filename || ''));
+      if (avatarFile.startsWith(imgDir + path.sep) && fs.existsSync(avatarFile)) {
+        thumbnails.warmOne(avatarFile);
+      }
+    } catch (e) { /* 预热失败不影响功能 */ }
   } catch (e) { console.error('[ImageGen] updateRoster error:', e.message); }
 }
 

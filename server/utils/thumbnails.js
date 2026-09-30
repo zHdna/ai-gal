@@ -463,6 +463,33 @@ function warmCache(dirs, onDone) {
   return { total, cancel: () => { cancelled = true; } };
 }
 
+
+/**
+ * 预热**单个**文件的缩略图（2026-09-30）。
+ *
+ * 场景：头像刚生成落盘 → 前端马上就会请求它。如果不预热，那张请求要现解码
+ * 1~2MB 的 PNG（实测 40~75ms，且同步阻塞事件循环）；一轮生成多张时就会排队到
+ * 浏览器超时 → 显示默认头像。
+ *
+ * 这里在**写盘之后**顺手把缩略图做掉：反正刚做完 IO，多这几十毫秒不影响用户；
+ * 下次前端请求就是**纯缓存命中**，零计算、零阻塞。
+ *
+ * 用 setImmediate 让出一次事件循环，避免紧接着的 SSE 响应被这张图卡住。
+ * 失败一律静默（预热是优化，不是功能）。
+ *
+ * @param {string} filePath 目标文件绝对路径
+ * @param {number[]} [sizes] 要预热的尺寸，默认与后台预热一致
+ */
+function warmOne(filePath, sizes) {
+  if (!filePath) return;
+  const list = Array.isArray(sizes) && sizes.length ? sizes : WARM_SIZES;
+  setImmediate(function () {
+    for (const size of list) {
+      try { ensureThumbnail(filePath, size); } catch { /* 预热失败无所谓 */ }
+    }
+  });
+}
+
 module.exports = {
   decodePNG,
   encodePNG,
@@ -473,5 +500,6 @@ module.exports = {
   cacheNameFor,
   thumbsDir,
   warmCache,
+  warmOne,
   WARM_SIZES,
 };

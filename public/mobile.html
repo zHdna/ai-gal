@@ -759,23 +759,6 @@
       </div>
     </div>
 
-    <!-- MVU 世界状态抽屉 (Tier 3 闭环) -->
-    <div class="world-state-drawer hidden" id="worldStateDrawer">
-      <div class="world-state-drawer-header">
-        <h4>🌐 世界状态 (MVU)</h4>
-        <button class="modal-close" id="btnCloseWorldStateDrawer">&times;</button>
-      </div>
-      <div class="world-state-toolbar">
-        <button class="btn btn-xs ws-act" data-ws-action="seed" title="从开场白重新播种初始变量">↺ 重新读取初始变量</button>
-        <button class="btn btn-xs ws-act" data-ws-action="reprocess" title="按全部消息重放所有补丁">⟳ 重新处理变量</button>
-        <button class="btn btn-xs ws-act" data-ws-action="clear" title="清空楼层变量">🗑 清除楼层变量</button>
-        <button class="btn btn-xs ws-act" data-ws-action="add" title="手动新增变量">＋ 新增</button>
-      </div>
-      <div class="world-state-body" id="worldStateBody">
-        <div class="ws-empty">当前角色不是 engine 卡，无 MVU 世界状态。</div>
-      </div>
-    </div>
-
     <!-- Right Info Panel -->
     <aside class="info-panel" id="infoPanel" data-component="InfoPanel">
       <div class="multimedia-bar" id="multimediaBar">
@@ -847,7 +830,6 @@
     </button>
 
     <!-- MVU World State Floating Button (engine / MVU cards only; draggable, opens the right drawer) -->
-    <button class="ws-float-btn hidden" id="btnWorldStateFloat" title="世界状态 (MVU)">
       <span style="font-size:22px;line-height:1;">📊</span>
     </button>
 
@@ -1769,7 +1751,7 @@
 
   <script src="js/api.js?v=20260923c"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20260924a"></script>
+  <script src="js/app.js?v=20260930b"></script>
   <script src="js/mobile/vn-shell.js?v=20260923e"></script>
   <script src="js/mobile/vn-pages.js?v=20260923c"></script>
   <script src="js/mobile/vn-stage.js?v=20260923c"></script>

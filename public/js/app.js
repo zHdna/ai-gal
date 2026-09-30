@@ -508,19 +508,11 @@ function bindEvents() {
   const themeModeToggleBtn = document.getElementById('themeModeToggle');
   if (themeModeToggleBtn) themeModeToggleBtn.addEventListener('click', toggleThemeMode);
 
-  // MVU 世界状态抽屉（Tier 3 闭环）
+  // MVU 世界状态：抽屉已于 2026-09-30 退役，改由【数据中心 → 世界状态】承载。
+  // 这个按钮（顶栏/侧栏那个球）现在只负责“打开数据中心并切到世界状态页”。
   const btnWorldState = document.getElementById('btnWorldState');
   if (btnWorldState) btnWorldState.addEventListener('click', () => {
-    const d = document.getElementById('worldStateDrawer');
-    if (d) d.classList.toggle('hidden');
-    if (d && !d.classList.contains('hidden')) renderWorldStatePanel();
-    const fb = document.getElementById('btnWorldStateFloat');
-    if (fb) fb.classList.toggle('active', d && !d.classList.contains('hidden'));
-  });
-  const btnCloseWS = document.getElementById('btnCloseWorldStateDrawer');
-  if (btnCloseWS) btnCloseWS.addEventListener('click', () => {
-    const d = document.getElementById('worldStateDrawer');
-    if (d) d.classList.add('hidden');
+    openDataCenterPane('world');
   });
   // 操作按钮（事件委托）
   const wsBody = document.getElementById('worldStateBody');
@@ -1374,6 +1366,108 @@ function thumbUrl(url, size) {
 }
 
 /**
+ * ── 头像图片加载重试（2026-09-30）────────────────────────────────────────────
+ *
+ * 背景：一轮生成多张图时，缩略图是**同步阻塞**生成的（server/utils/thumbnails.js，
+ * 单张 40~75ms 且串行排队），浏览器对头像 <img> 的请求会等到超时，于是显示首字母占位。
+ * 更糟的是：名册里那张头像是「真实值」，常驻 watcher 只认「空 → 有」的转变，
+ * 所以它**永远不会重试一张加载失败但名册已就绪的图** → 默认头像一直不恢复。
+ *
+ * 这里补上缺失的那一环：加载失败/超时 → 有限次重试。
+ *
+ * ⚠️ 资源约束（用户明确要求「避免大量请求导致卡顿」）：
+ *   · 全局**单例**调度器：所有失败头像进同一个队列，由**一个**定时器驱动，
+ *     而不是每张图各起一个 setTimeout（那才是卡顿来源）；
+ *   · 同 URL 去重，队列上限 20，超出丢最早的；
+ *   · 每张最多 3 次，退避 2s / 4s / 8s，到点放弃；
+ *   · 页面在后台时不重试（切回前台继续），与常驻 watcher 行为一致。
+ */
+
+const AVATAR_RETRY_DELAYS = [2000, 4000, 8000];   // 3 次
+const AVATAR_RETRY_MAX_QUEUE = 20;
+const _avatarRetryQueue = new Map();              // src(基址) -> { tries, el }
+let _avatarRetryTimer = null;
+
+/** 把一张加载失败的头像 <img> 登记进重试队列（同 URL 只登记一次）。 */
+function scheduleAvatarRetry(img, baseSrc) {
+  if (!img || !baseSrc) return;
+  const key = String(baseSrc).split('?')[0];
+  if (!key) return;
+  if (_avatarRetryQueue.has(key)) return;         // 同图去重
+  if (_avatarRetryQueue.size >= AVATAR_RETRY_MAX_QUEUE) {
+    // 队列满：丢掉最早的，保证新失败的有机会（避免病态堆积）
+    const firstKey = _avatarRetryQueue.keys().next().value;
+    _avatarRetryQueue.delete(firstKey);
+  }
+  _avatarRetryQueue.set(key, { tries: 0, el: img, base: key });
+  kickAvatarRetry();
+}
+
+/** 启动（或复用）那个唯一的重试定时器。 */
+function kickAvatarRetry() {
+  if (_avatarRetryTimer) return;                  // 已有定时器 → 不叠加
+  if (!_avatarRetryQueue.size) return;
+  const delay = AVATAR_RETRY_DELAYS[0];
+  _avatarRetryTimer = setTimeout(flushAvatarRetries, delay);
+}
+
+/** 一轮重试：把队列里每张图重新指一次（带递增参数破缓存）。 */
+async function flushAvatarRetries() {
+  _avatarRetryTimer = null;
+  if (!_avatarRetryQueue.size) return;
+  if (document.hidden) {                          // 后台不折腾，切回前台再说
+    _avatarRetryTimer = setTimeout(flushAvatarRetries, 4000);
+    return;
+  }
+
+  const entries = Array.from(_avatarRetryQueue.entries());
+  let nextDelay = null;
+
+  for (const [key, item] of entries) {
+    const el = item.el;
+    if (!el || !el.isConnected) { _avatarRetryQueue.delete(key); continue; }
+    item.tries += 1;
+    if (item.tries > AVATAR_RETRY_DELAYS.length) { _avatarRetryQueue.delete(key); continue; }
+    // 换 src 触发重新请求；加 r=N 破掉那次的失败缓存，路径不变。
+    const url = item.base + (item.base.indexOf('?') >= 0 ? '&' : '?') + 'r=' + item.tries;
+    el.setAttribute('src', thumbUrl(url, THUMB_AVATAR));
+    if (item.tries < AVATAR_RETRY_DELAYS.length) nextDelay = AVATAR_RETRY_DELAYS[item.tries];
+  }
+
+  // 还有没到上限的 → 按下一档退避继续（仍然是同一个定时器）
+  if (nextDelay !== null && _avatarRetryQueue.size) {
+    _avatarRetryTimer = setTimeout(flushAvatarRetries, nextDelay);
+  }
+}
+
+/** 某张头像终于加载成功 → 从重试队列摘掉。 */
+function clearAvatarRetry(img) {
+  if (!img) return;
+  const full = img.dataset && img.dataset.full ? String(img.dataset.full).split('?')[0] : '';
+  if (full && _avatarRetryQueue.has(full)) _avatarRetryQueue.delete(full);
+}
+
+/**
+ * 给头像 <img> 挂上「失败即登记重试」的行为。
+ * 用内联 onerror/onload 而不是 addEventListener：avatars 是 innerHTML 批量生成的，
+ * 逐个绑定反而更慢、且要在每处渲染后重绑。
+ */
+function avatarImgHandlers() {
+  return ' onerror="window.__aigalAvatarError && window.__aigalAvatarError(this)"' +
+    ' onload="window.__aigalAvatarOk && window.__aigalAvatarOk(this)"';
+}
+
+window.__aigalAvatarError = function (img) {
+  try {
+    // 记录基址：dataset.full 是原图，重试时要按缩略图基址重建（见 thumbUrl）
+    const full = img.dataset && img.dataset.full ? img.dataset.full : '';
+    if (full) scheduleAvatarRetry(img, full);
+  } catch (e) { /* 重试机制绝不能影响渲染 */ }
+};
+window.__aigalAvatarOk = function (img) {
+  try { clearAvatarRetry(img); } catch (e) { /* ignore */ }
+};
+/**
  * 头像 <img>：src=缩略图，原图记在 data-full。
  * 点开灯箱时读 data-full（见 bindEvents 里的委托与 showAvatarLightbox 调用点）。
  */
@@ -1381,7 +1475,7 @@ function avatarThumbHtml(url, name, cls) {
   const full = String(url || '');
   if (!full) return '';
   const c = cls ? ` class="${cls}"` : '';
-  return `<img src="${escapeHtml(thumbUrl(full, THUMB_AVATAR))}" data-full="${escapeHtml(full)}" alt="${escapeHtml(name)}"${c} loading="lazy" decoding="async">`;
+  return `<img src="${escapeHtml(thumbUrl(full, THUMB_AVATAR))}" data-full="${escapeHtml(full)}" alt="${escapeHtml(name)}"${c} loading="lazy" decoding="async"${avatarImgHandlers()}>`;
 }
 
 // ============ 竖条头像列表 ============
@@ -3260,8 +3354,10 @@ function renderGameMarkup(raw) {
   // 防御：纯叙事文本（不含任何引擎标记）直接走通用叙事渲染，绝不被当 XML 解析
   if (!isGameMarkupText(raw)) return formatNarrationText(raw);
 
-  // 1) 抽取引擎元信息块 <update>...</update>（含 update_analysis / json_patch）与
-  //    <UpdateVariables>...</UpdateVariables>（Tavern Helper 变量更新），最后单独渲染
+  // 1) 抽取引擎元信息块 <update>...</update>（含 update_analysis / json_patch）、
+  //    <UpdateVariables>...</UpdateVariables>（Tavern Helper / SAM 方言）与
+    //    <UpdateVariable>...</UpdateVariable>（**原生 MVU 标准标签**，此前前端完全不认识 → 会当正文显示），
+  //    最后单独渲染（默认折叠），绝不进入叙事流。
   const updateBlocks = [];
   const uvBlocks = [];
   let body = raw.replace(/<update>([\s\S]*?)<\/update>/g, (m) => {
@@ -3272,6 +3368,14 @@ function renderGameMarkup(raw) {
     uvBlocks.push(m);
     return '';
   });
+  body = body.replace(/<UpdateVariable>([\s\S]*?)<\/UpdateVariable>/gi, (m) => {
+    uvBlocks.push(m);
+    return '';
+  });
+  // 孤立开标签（模型漏写闭合）→ 连同其后内容一起摘掉，避免漏进正文
+  body = body.replace(/<(UpdateVariable|UpdateVariables|json_patch|JSONPatch|SAMCheckpoint)>[\s\S]*$/i, '');
+  // 代码围栏包着命令的残留（如 ```xml 空洞）
+  body = body.replace(/^[ \t]*```[a-zA-Z]*[ \t]*$/gm, '');
 
   // 2) 取 <content> 包裹内的正文（兼容无 <content> 直接 <now_plot> 的情况）
   const contentMatch = body.match(/<content>([\s\S]*?)<\/content>/);
@@ -3281,9 +3385,16 @@ function renderGameMarkup(raw) {
   let html = renderGameNarrative(narrative);
 
   // 4) 渲染引擎元信息（状态更新 / 世界状态补丁 / UpdateVariables），默认折叠
+  // 变量块只在【旧式卡】上折叠展示（便于核对）。
+  // 对 MVU 卡，变量属于「数据」而非「剧情」：已由后端执行并写入存档，
+  // 统一在【数据中心 → 世界状态】查看，主对话框不再出现任何变量原文。
   if (updateBlocks.length || uvBlocks.length) {
-    html += updateBlocks.map(renderGameUpdate).join('');
-    html += uvBlocks.map(renderGameUpdateVariables).join('');
+    const hints = (typeof getCharUIHintsFromState === 'function') ? getCharUIHintsFromState() : null;
+    const showInChat = !(hints && hints.hasMVU);
+    if (showInChat) {
+      html += updateBlocks.map(renderGameUpdate).join('');
+      html += uvBlocks.map(renderGameUpdateVariables).join('');
+    }
   }
 
   return html;
@@ -3676,11 +3787,18 @@ async function setWorldVarByPath(path, value) {
   } catch (e) { showToastSafe('设置变量失败: ' + e.message, 'error'); }
 }
 
-/** 渲染积木式 MVU 状态面板：选项卡 + 语义组件 + 空字段 + 变更标记 */
+/**
+ * 渲染积木式 MVU 状态面板：选项卡 + 语义组件 + 空字段 + 变更标记。
+ *
+ * 2026-09-30：抽屉已退役，本函数改为渲染进【数据中心 → 世界状态】那个 pane。
+ * 变量属于数据而非剧情，统一在这里看（主对话框不再出现任何变量原文）。
+ */
 function renderWorldStatePanel() {
-  const body = document.getElementById('worldStateBody');
+  // 新家：数据中心 pane（.pane[data-pane=world]）；旧抽屉若还在则兼容渲染。
+  const pane = document.querySelector('.pane[data-pane="world"]');
+  const legacyBody = document.getElementById('worldStateBody');
+  const body = pane || legacyBody;
   if (!body) return;
-  updateWorldStateFloatVisibility();
   const ws = AppState.worldState;
   const isEngine = AppState.currentCharacter && AppState.currentCharacter.markup_mode === 'game-xml';
   const ui = getCharUIHintsFromState();
@@ -3710,8 +3828,13 @@ function renderWorldStatePanel() {
   // Add empty sections from schema
   injectEmptySections(tabs, ws, mvuMeta);
 
+  // ── 顶部两块速览：本轮变更 + 被拒绝的操作（2026-09-30 新增）──
+  // 变更来自 diffWorldState(上一轮快照, 当前)；被拒操作由后端 processMvuUpdate 收集并下发。
+  let html = renderMvuDeltaSummary(changes);
+  html += renderMvuRejectedOps();
+
   // Render tabs
-  let html = '<div class="mvu-tabs">';
+  html += '<div class="mvu-tabs">';
   tabs.forEach((tab, i) => {
     html += '<button class="mvu-tab' + (i === 0 ? ' active' : '') + '" data-mvu-tab="' + escapeHtml(tab.id) + '">' +
       escapeHtml(tab.icon) + ' ' + escapeHtml(tab.label) +
@@ -3899,6 +4022,11 @@ function getMvuMetaFromState() {
 function classifyWorldStateGroups(ws, mvuMeta) {
   const tabs = [];
   const assigned = new Set();
+  // 内部保留键（__recent 等）不是玩家变量：一开始就标记为已分配，
+  // 后续所有分类循环都会 continue 跳过它们（只需在这里拦一次）。
+  for (const k of Object.keys(ws)) { if (/^__/.test(k)) assigned.add(k); }
+  // 内部保留键（如 __recent 变更记录）不是玩家变量，先从候选里剔除；
+  // 它们只是实现细节，混进面板会让用户以为卡片多了一个字段。
 
   // 1. Characters tab: keys whose data is Array of objects with "name" or whose meta role = character_list
   const charSections = [];
@@ -4143,6 +4271,59 @@ function countAssetItems(sections) {
 }
 
 /** Render a single section within a tab */
+/**
+ * 本轮变更速览：把 diffWorldState() 的结果渲染成「路径 旧值 → 新值」。
+ * 只有前后两次快照都存在时才有内容（首次渲染不显示，避免误报）。
+ */
+function renderMvuDeltaSummary(changes) {
+  const keys = Object.keys(changes || {});
+  if (!keys.length) return '';
+  const prev = AppState._prevWorldState || {};
+  const cur = AppState.worldState || {};
+  const rows = keys
+    .filter(p => !isMvuDeltaNoise(p))
+    // 只显示真正变了的（避免 "62 → 62" 这种噪声）
+    .filter(p => JSON.stringify(getByPath(prev, p)) !== JSON.stringify(getByPath(cur, p)))
+    .slice(0, 30)
+    .map(p => {
+      const oldV = getByPath(prev, p);
+      const newV = getByPath(cur, p);
+      const dot = p.replace(/^\//, '').replace(/\//g, '.');
+      const kind = (changes[p] === 'deleted') ? 'del' : 'chg';
+      return '<div class="mvu-row"><span class="n">' + escapeHtml(dot) +
+        '</span><span class="ty">' + kind + '</span><span class="val">' +
+        escapeHtml(shortVal(oldV)) + ' → ' + escapeHtml(shortVal(newV)) + '</span></div>';
+    }).join('');
+  if (!rows) return '';
+  return '<div class="card mvu-delta"><h5>本轮变更<span>' + keys.length + ' 处</span></h5>' + rows + '</div>';
+}
+
+/** 过滤掉 __recent 之类的内部键（实现细节，不是玩家变量）。 */
+function isMvuDeltaNoise(path) {
+  return /(^|\/)__/.test(String(path || ''));
+}
+
+/** 值太长时截断；VWD（[值, 描述]）只显示值本身。 */
+function shortVal(v) {
+  if (v === undefined) return '(无)';
+  if (Array.isArray(v) && v.length === 2 && typeof v[1] === 'string') return shortVal(v[0]);
+  const s = (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v);
+  return s.length > 40 ? s.slice(0, 40) + '…' : s;
+}
+
+/**
+ * 被拒绝的操作：后端 processMvuUpdate 逐条收集（路径不存在 / 数组不可扩展 / 键必需…），
+ * 随本轮结果下发。用户据此就能看出「为什么这次没生效」。
+ */
+function renderMvuRejectedOps() {
+  const list = AppState.mvuRejected || [];
+  if (!list.length) return '';
+  const rows = list.slice(0, 20).map(it =>
+    '<div class="mvu-row"><span class="n">' + escapeHtml(String(it.command || '').slice(0, 60)) +
+    '</span><span class="ty">拒绝</span><span class="val">' + escapeHtml(String(it.message || '')) + '</span></div>'
+  ).join('');
+  return '<div class="card mvu-rejected"><h5>被拒绝的操作<span>' + list.length + ' 条</span></h5>' + rows + '</div>';
+}
 function renderMvuSection(section, ws, changes) {
   const { key, data, meta, parentKey, empty } = section;
   // Skip hidden variables

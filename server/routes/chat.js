@@ -33,23 +33,26 @@ const { resolveContextWindow } = require('../utils/contextWindow');
 const { cleanupEventLog } = require('../utils/turnCleanup');
 
 /**
- * Strip MVU variable blocks from narrative text. The processing module
- * (applyWorldStateFromText) owns these blocks exclusively — they must never
- * reach the butler AI or the main chat window.
+ * Strip MVU variable blocks from narrative text. Variable blocks are DATA, not story:
+ * they must never reach the butler AI or the main chat window.
  *
- * Stripped tags (case-insensitive):
- *   <UpdateVariables>          — Tavern Helper SQL dialect (plural)
- *   <UpdateVariable>           — standard MVU Game Maker (singular)
- *   <json_patch> / <JSONPatch> — RFC 6902 patch array
- *   <variable_update_call_format> — SAM-style custom
- *   <SAMCheckpoint>            — SAM v6 full-state snapshot (stripped after apply)
- *   <UpdateAnalysis>           — reasoning sub-block inside <UpdateVariable>
- *   <combat_log>               — D20 check result log (MVU)
- *   <location>                 — MVU location tag
+ * Two layers, because the model does not always obey the wrapping rules:
+ *
+ *   1. Paired tags (the documented forms) — case-insensitive.
+ *   2. FALLBACK for the shapes models actually emit when they forget the wrapper:
+ *        · a stray opening tag with no closing tag
+ *        · a fenced code block around the commands
+ *        · BARE commands (`_.set(...)` etc.) written straight into the prose
+ *      Bare commands are removed by reusing the MVU core@s own extractCommands(),
+ *      which already handles paren pairing, quotes, the mandatory semicolon and the
+ *      `//reason` comment. We therefore delete each command@s exact full_match instead
+ *      of guessing with another regex (which could eat legitimate prose).
  */
 function stripVariableBlocks(text) {
   if (!text || typeof text !== 'string') return text;
-  return text
+
+  // ── Layer 1: paired tags (and lone opening tags, which swallow the rest) ──
+  let out = text
     .replace(/<UpdateVariables>[\s\S]*?<\/UpdateVariables>/gi, '')
     .replace(/<UpdateVariable>[\s\S]*?<\/UpdateVariable>/gi, '')
     .replace(/<json_patch>[\s\S]*?<\/json_patch>/gi, '')
@@ -58,10 +61,29 @@ function stripVariableBlocks(text) {
     .replace(/<SAMCheckpoint>[\s\S]*?<\/SAMCheckpoint>/gi, '')
     .replace(/<UpdateAnalysis>[\s\S]*?<\/UpdateAnalysis>/gi, '')
     .replace(/<combat_log>[\s\S]*?<\/combat_log>/gi, '')
-    .replace(/<location>[\s\S]*?<\/location>/gi, '')
-    .replace(/\n{3,}/g, '\n\n') // collapse blank lines left behind
+    .replace(/<location>[\s\S]*?<\/location>/gi, '');
+  // Lone opening tag with no closer: drop from the tag to the end of its block.
+  out = out.replace(/<UpdateVariable>|<UpdateVariables>|<json_patch>|<JSONPatch>|<SAMCheckpoint>|<variable_update_call_format>[\s\S]*$/i, '');
+
+  // ── Layer 2: bare commands the model wrote without any wrapper ──
+  try {
+    const { extractCommands } = require('../mvu/extract');
+    const cmds = extractCommands(out);
+    for (const c of cmds) {
+      if (c && c.full_match) out = out.split(c.full_match).join('');
+    }
+  } catch (e) {
+    // The MVU core is only loaded for MVU cards; a non-MVU card simply has nothing to strip.
+  }
+
+  // ── Layer 3: leftover fences and blank-line tidy-up ──
+  out = out
+    .replace(/^[ \t]*```[a-zA-Z]*[ \t]*$/gm, '')   // stray fence lines
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
+  return out;
 }
+
 
 /**
  * Apply world-state updates found in text, using a <SAMCheckpoint> snapshot as
@@ -75,8 +97,116 @@ function applyWorldStateWithCheckpoint(curWS, text) {
   return applyWorldStateFromText(base, text);
 }
 
+/**
+ * ── MVU 兼容引擎接入（2026-09-30，见 docs/AI-GAL-MVU-COMPAT-PLAN.md）──────────
+ *
+ * 门禁（用户要求）：**非 MVU 卡后台完全不加载 MVU 模块**。
+ *   · 引擎只在真的需要时 require（lazy），非 MVU 卡永远进不来；
+ *   · 卡类型由 server/mvu/engine.js 判定（只看卡本身，不看消息正文）；
+ *   · 非 MVU 卡走原有 <json_patch>/<UpdateVariables> 老路径，**行为一行不变**。
+ *
+ * 存储（决策 D1）：完整逐层快照写进**游戏存档文件夹** saves/gameNNNN/<saveId>/mvu/。
+ */
+let mvuEngineModule = null;
+function getMvuEngineLazy() {
+  if (!mvuEngineModule) mvuEngineModule = require('../mvu/engine');
+  return mvuEngineModule;
+}
+
+/**
+ * 取本会话的存档行（惰性，只对 MVU 卡发生）。
+ *
+ * 注意：本文件是 `module.exports = (db) => {…}` 工厂，`db` 是**参数**而非模块级变量，
+ * 所以顶层的辅助函数必须显式接收它（否则是未定义自由变量 → 被 catch 吞成 null）。
+ */
+function getSaveForConversation(db, conversation_id) {
+  try {
+    return db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 正文处理（G12）：补 <StatusPlaceHolderImpl/> 触发状态栏正则；删掉 <status_current_variable>。
+ * 与 stripVariableBlocks 配合使用（后者负责删命令块）。
+ */
+function shapeMvuNarrative(text) {
+  let out = String(text || '');
+  out = out.replace(/<(status_current_variable)>(?:(?!<\1>)[\s\S])*<\/\1?>/gi, '');
+  return out;
+}
+
+/**
+ * MVU 原生链路：优先按卡自带方言（<UpdateVariable> + _.xxx / <json_patch>）执行命令，
+ * 结果既写存档目录（完整逐层快照），也镜像进 conversations.world_state（前端兼容）。
+ *
+ * @returns {{statData:object, changed:boolean}|null} null = 未启用 MVU（调用方保持老行为）
+ */
+function processMvuUpdate(params) {
+  const { character, conv, conversation_id, savePath, messageId, swipeId, text, curWS, openingText } = params;
+  let engine;
+  try {
+    engine = getMvuEngineLazy().getEngine(character, conv);
+  } catch (e) {
+    console.warn('[MVU] engine load failed:', e && e.message);
+    return null;
+  }
+  if (!engine) return null;
+
+  const { core, store } = engine;
+  try {
+    // 1) 取本层基线：存档目录的最新快照 → 否则按卡初始化（[InitVar] + 开场白 <initvar>）
+    let base = null;
+    if (savePath) {
+      const rounds = store.listRounds(savePath);
+      const prev = core.getLastValidSnapshot(
+        rounds.map(function (r) { return { messageId: r.messageId, swipeId: r.swipeId, variables: r.variables }; }),
+        messageId
+      );
+      if (prev) base = prev.variables;
+    }
+    if (!base) {
+      // 首次：用 DB 镜像当种子（老存档平滑），再跑一遍卡的 [InitVar] 初始化
+      const seed = curWS && Object.keys(curWS).length ? curWS : undefined;
+      try {
+        base = getMvuEngineLazy().createInitialStateForCard(engine, character, openingText, seed);
+      } catch (e) {
+        console.warn('[MVU] init state failed, fallback to seed:', e && e.message);
+        base = core.makeInitialState(seed || {});
+      }
+    }
+
+    // 2) 执行本轮命令
+    const result = core.updateVariablesFromMessage(base, text);
+    if (result.errors && result.errors.length) {
+      console.warn('[MVU] 本轮被拒绝的操作', result.errors.length, '条：',
+        result.errors.slice(0, 3).map(function (e) { return e.message; }).join(' | '));
+    }
+
+    // 3) 落存档目录（逐层快照 + 最新态）
+    if (savePath) {
+      store.writeRound(savePath, messageId, swipeId || 0, result.variables);
+      store.writeState(savePath, result.variables);
+    }
+
+    const statData = result.variables.stat_data || {};
+    console.log('[MVU] applied, changed =', result.isUpdated,
+      '| commands =', (result.commands || []).length,
+      '| keys =', Object.keys(statData).slice(0, 6).join(','));
+    return { statData: statData, changed: result.isUpdated };
+  } catch (e) {
+    console.error('[MVU] apply failed:', e && e.message);
+    return null;
+  }
+}
+
 // Unified detector: any world-state variable block (incl. SAM v6 checkpoint).
-const VAR_BLOCK_RE = /<UpdateVariables>|<UpdateVariable>|<json_patch>|<JSONPatch>|<variable_update_call_format>|<SAMCheckpoint>/i;
+//
+// 注意最后一项：原生 MVU 卡**经常不写包裹标签**，直接把 `_.set(...)` 写在正文里。
+// 旧版只看标签 → 这种回复完全不进处理分支（既不执行、也不剥离），实测就是这样泄漏的。
+// 前缀 `_\\.` 极不可能出现在正常中文叙事里，且要求后跟 `(`，误判风险可忽略。
+const VAR_BLOCK_RE = /<UpdateVariables>|<UpdateVariable>|<json_patch>|<JSONPatch>|<variable_update_call_format>|<SAMCheckpoint>|_\.(set|add|assign|remove|insert|unset|delete|move)\s*\(/i;
 
 // ══════════════════════════════════════════════════════════════════════════
 // 世界状态变量 → 注入模型上下文（2026-09-21 新增）
@@ -1327,18 +1457,33 @@ module.exports = (db) => {
           const wsRow = db.prepare('SELECT world_state FROM conversations WHERE id = ?').get(conversation_id);
           let curWS = {};
           try { curWS = wsRow && wsRow.world_state ? JSON.parse(wsRow.world_state) : {}; } catch { curWS = {}; }
-          wsMerged = applyWorldStateWithCheckpoint(curWS, response);
+          // MVU 卡走兼容引擎（存档目录逐层快照）；非 MVU 卡 processMvuUpdate 返回 null，走下面老路径
+          const mvuSave = getSaveForConversation(db, conversation_id);
+          const mvuOut = processMvuUpdate({
+            character, conv, conversation_id,
+            savePath: mvuSave && mvuSave.save_path ? mvuSave.save_path : null,
+            messageId: countRounds(conversation_id),
+            swipeId: 0,
+            text: response,
+            curWS,
+            openingText: character && character.first_message,
+          });
+          if (mvuOut) {
+            wsMerged = mvuOut.statData;
+          } else {
+            wsMerged = applyWorldStateWithCheckpoint(curWS, response);
+          }
           // 记录本轮的变更路径（→ world_state.__recent），供下一轮注入时把"刚变过的"排在前面
           const rec = recordRecentWorldPaths(curWS, wsMerged, countRounds(conversation_id));
           db.prepare("UPDATE conversations SET world_state = ?, updated_at = datetime('now') WHERE id = ?")
             .run(JSON.stringify(wsMerged), conversation_id);
-          console.log('[WorldState] intercepted (non-stream), keys:', Object.keys(wsMerged),
+          console.log('[WorldState] intercepted (non-stream, ', mvuOut ? 'MVU' : 'legacy', '), keys:', Object.keys(wsMerged),
             '| 本轮变更路径', rec.changed.length, rec.changed.slice(0, 6).join(','));
         } catch (wsErr) {
           console.error('[WorldState] backend apply error:', wsErr.message);
           wsMerged = null;
         }
-        response = stripVariableBlocks(response);
+        response = shapeMvuNarrative(stripVariableBlocks(response));
       }
 
       // Parse and store (clean narrative already stripped of variable blocks)
@@ -1774,7 +1919,46 @@ module.exports = (db) => {
             }
           }
 
+          // 变量块必须在【落库之前】处理并剥离：下面 store 落的是干净叙事，
+          // 否则裸命令会原样写进消息正文（实测泄漏就是这么发生的）。
+          // ── MVU 世界状态：在交给管家AI之前拦截变量块，处理模块独占变量 ──
+          // 主AI原始输出里的 <UpdateVariables>/<json_patch> 由 applyWorldStateFromText 直接处理；
+          // 先应用状态、再从叙事文本剥离，管家AI只接收干净的剧情文本（变量绝不进入主窗口）。
+          let mvuWorldState = null;   // 本轮合并后的 world_state（storage 之后回填给 result）
+          if (VAR_BLOCK_RE.test(fullText)) {
+            try {
+              const wsRow = db.prepare('SELECT world_state FROM conversations WHERE id = ?').get(conversation_id);
+              let curWS = {};
+              try { curWS = wsRow && wsRow.world_state ? JSON.parse(wsRow.world_state) : {}; } catch { curWS = {}; }
+              // MVU 卡走兼容引擎（存档目录逐层快照）；非 MVU 卡 processMvuUpdate 返回 null，走老路径
+              const mvuSaveS = getSaveForConversation(db, conversation_id);
+              const mvuOutS = processMvuUpdate({
+                character, conv, conversation_id,
+                savePath: mvuSaveS && mvuSaveS.save_path ? mvuSaveS.save_path : null,
+                messageId: countRounds(conversation_id),
+                swipeId: 0,
+                text: fullText,
+                curWS,
+                openingText: character && character.first_message,
+              });
+              const mergedWS = mvuOutS ? mvuOutS.statData : applyWorldStateWithCheckpoint(curWS, fullText);
+              // 记录本轮变更路径（→ __recent）：下一轮注入时把"刚变过的"排在前面
+              const recWs = recordRecentWorldPaths(curWS, mergedWS, countRounds(conversation_id));
+              db.prepare("UPDATE conversations SET world_state = ?, updated_at = datetime('now') WHERE id = ?")
+                .run(JSON.stringify(mergedWS), conversation_id);
+              mvuWorldState = mergedWS;
+              console.log('[WorldState] intercepted pre-butler (', mvuOutS ? 'MVU' : 'legacy', '), keys:', Object.keys(mergedWS),
+                '| 本轮变更路径', recWs.changed.length, recWs.changed.slice(0, 6).join(','));
+            } catch (wsErr) {
+              console.error('[WorldState] backend apply error:', wsErr.message);
+            }
+            // 剥离变量块：管家AI不参与变量处理，主窗口也不再出现变量（即使上方 apply 异常也照剥）
+            fullText = shapeMvuNarrative(stripVariableBlocks(fullText));
+            console.log('[WorldState] variable blocks stripped pre-butler; narrative len:', fullText.length);
+          }
+
           let result = await storeAndProcessResponse(conversation_id, replacedContent, fullText, conv, provider, true, apiContent, wbInjected);
+          if (mvuWorldState) result.worldState = mvuWorldState;
 
           // Run butler AI to fix and enrich output
           console.log('[Butler] Starting butler invocation...');
@@ -1801,29 +1985,6 @@ module.exports = (db) => {
           if (!butlerProvider) butlerProvider = provider;
           console.log('[Butler] Provider:', butlerProvider?.name || 'fallback-main', 'model:', butlerProvider?.model, 'base_url:', butlerProvider?.base_url);
 
-          // ── MVU 世界状态：在交给管家AI之前拦截变量块，处理模块独占变量 ──
-          // 主AI原始输出里的 <UpdateVariables>/<json_patch> 由 applyWorldStateFromText 直接处理；
-          // 先应用状态、再从叙事文本剥离，管家AI只接收干净的剧情文本（变量绝不进入主窗口）。
-          if (VAR_BLOCK_RE.test(fullText)) {
-            try {
-              const wsRow = db.prepare('SELECT world_state FROM conversations WHERE id = ?').get(conversation_id);
-              let curWS = {};
-              try { curWS = wsRow && wsRow.world_state ? JSON.parse(wsRow.world_state) : {}; } catch { curWS = {}; }
-              const mergedWS = applyWorldStateWithCheckpoint(curWS, fullText);
-              // 记录本轮变更路径（→ __recent）：下一轮注入时把"刚变过的"排在前面
-              const recWs = recordRecentWorldPaths(curWS, mergedWS, countRounds(conversation_id));
-              db.prepare("UPDATE conversations SET world_state = ?, updated_at = datetime('now') WHERE id = ?")
-                .run(JSON.stringify(mergedWS), conversation_id);
-              result.worldState = mergedWS;
-              console.log('[WorldState] intercepted pre-butler, keys:', Object.keys(mergedWS),
-                '| 本轮变更路径', recWs.changed.length, recWs.changed.slice(0, 6).join(','));
-            } catch (wsErr) {
-              console.error('[WorldState] backend apply error:', wsErr.message);
-            }
-            // 剥离变量块：管家AI不参与变量处理，主窗口也不再出现变量（即使上方 apply 异常也照剥）
-            fullText = stripVariableBlocks(fullText);
-            console.log('[WorldState] variable blocks stripped pre-butler; narrative len:', fullText.length);
-          }
 
           try {
             butlerResult = await callButlerAI(butlerProvider, fullText, character, (rt) => { butlerThinking += rt; }, conversation_id);
@@ -3498,7 +3659,10 @@ ${genMode === 'natural'
 ${ui.requiresStatus ? '### status\n（末尾输出{{user}}状态，属性名: 属性值）\n' : ''}
 
     // === MVU 变量同步模块（可选 — 仅当本卡被识别为 MVU 卡时激活，平时不激活）===
+    // 派别感知（G10）：原生 MVU 卡只补说明、绝不要求改用 <json_patch>；非 MVU 卡根本不进来。
     if (ui.hasMVU) {
+      // detectMvuFaction() 内部已读 character 的 system_prompt / character_book / mvu_meta，
+      // 无需再传正文片段。
       const mvuModule = buildMvuPromptModule(character);
       if (mvuModule) parts.push(mvuModule);
     }

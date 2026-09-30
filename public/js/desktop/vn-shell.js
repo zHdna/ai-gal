@@ -1062,6 +1062,10 @@
   }
   function toggleDock() { dock && dock.classList.contains('on') ? closeDock() : openDock(); }
 
+  /* app.js 的「世界状态」按钮通过它打开数据中心并切页（抽屉已退役）。 */
+  window.openDataCenterPane = function (pane) { openDock(pane || 'world'); };
+
+
   $$('#dockTabs .dtab').forEach(function (t) {
     on(t, 'click', function () {
       $$('#dockTabs .dtab').forEach(function (x) { x.classList.toggle('on', x === t); });
@@ -1775,51 +1779,16 @@
   function paneWorld() {
     var el = $('.pane[data-pane="world"]');
     if (!el) return;
+    /* 强渲染统一交给 app.js 的 renderWorldStatePanel()（分类 tabs + 本轮变更 + 被拒操作），
+       它现在直接渲染进这个 pane。抽屉退役后这里不再自己拼 HTML。 */
+    if (typeof renderWorldStatePanel === 'function') {
+      try { renderWorldStatePanel(); return; } catch (e) { /* 回落到下面的扁平渲染 */ }
+    }
     var rows = flatRows(App.worldState || {}, '', [], 0);
-    var acts = '<div class="ws-acts">' +
-      '<button class="tool" data-ws="seed">↺ 重读初始值</button>' +
-      '<button class="tool" data-ws="reprocess">⟳ 重新处理</button>' +
-      '<button class="tool" data-ws="clear">🗑 清除</button>' +
-      '<button class="tool" data-ws="add">＋ 新增</button></div>';
-    el.innerHTML = '<div class="card"><h5>MVU 世界状态<span>engine 卡</span></h5>' + acts +
-      (rows.length
-        ? rows.map(function (r) {
-          return '<div class="mvu-row"><span class="n">' + escapeHtml(r.path) + '</span><span class="ty">' + r.type + '</span><span class="val">' + escapeHtml(r.value) + '</span></div>';
-        }).join('')
-        : '<div class="empty-state">世界状态为空（可让 AI 生成或点「重读初始值」播种）</div>') +
-      '</div>';
-    $$('.ws-acts .tool[data-ws]', el).forEach(function (b) {
-      on(b, 'click', function () {
-        var act = b.dataset.ws;
-        var fns = { seed: 'seedWorldStateFromGreeting', reprocess: 'reprocessWorldState', clear: 'clearWorldState' };
-        /* 「新增」要走 prompt，和 app.js 保持一致 */
-        if (act === 'add') {
-          var path = prompt('变量路径（RFC6902 风格，如 /contact/新角色/affection）：', '/contact/新角色');
-          if (!path) return;
-          var raw = prompt('值（字符串；数字可直接写）：', '');
-          if (raw === null) return;
-          if (typeof window.setWorldVarByPath === 'function') {
-            try { window.setWorldVarByPath(path, raw); toast('已写入 ' + path); setTimeout(paneWorld, 900); }
-            catch (e) { toast('写入失败：' + e.message); }
-          } else toast('该操作当前不可用');
-          return;
-        }
-        var fn = fns[act] && window[fns[act]];
-        if (typeof fn === 'function') {
-          try {
-            var r = fn();
-            toast('已执行：' + b.textContent.trim());
-            if (r && typeof r.then === 'function') r.then(function () { setTimeout(paneWorld, 900); }, function () { setTimeout(paneWorld, 900); });
-            else setTimeout(paneWorld, 900);
-            return;
-          } catch (e) { toast('执行失败：' + e.message); }
-        }
-        /* 兜底：点旧面板上的同名按钮（老代码走的是抽屉里的静态按钮） */
-        var target = document.querySelector('.ws-act[data-ws-action="' + act + '"]');
-        if (target) { target.click(); toast('已触发：' + b.textContent.trim()); setTimeout(paneWorld, 900); }
-        else toast('该操作当前不可用');
-      });
-    });
+    el.innerHTML = '<div class="card"><h5>MVU 世界状态</h5>' +
+      (rows.length ? rows.map(function (r) {
+        return '<div class="mvu-row"><span class="n">' + escapeHtml(r.path) + '</span><span class="ty">' + r.type + '</span><span class="val">' + escapeHtml(r.value) + '</span></div>';
+      }).join('') : '<div class="empty-state">世界状态为空</div>') + '</div>';
   }
   function showPane(name) {
     $$('#dockTabs .dtab').forEach(function (x) { x.classList.toggle('on', x.dataset.pane === name); });
