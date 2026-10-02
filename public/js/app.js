@@ -4897,7 +4897,7 @@ function renderRollDebugEntry(roll, timeStr, roundNum) {
 
     let detail = '';
     detail += '<div>玩家选择：' + escapeHtml(String(roll.actionText || '—')) + '</div>';
-    detail += '<div>掷骰：<b>D20 = ' + escapeHtml(String(roll.die)) + '</b></div>';
+    detail += '<div>掷骰：<b>D100 = ' + escapeHtml(String(roll.die)) + '</b></div>';
     if (roll.rate !== null && roll.rate !== undefined) {
       detail += '<div>成功率：' + escapeHtml(String(roll.rate)) + '%　（来源：' + escapeHtml(sourceLabel) + '）</div>';
     } else {
@@ -4915,7 +4915,7 @@ function renderRollDebugEntry(roll, timeStr, roundNum) {
       <div class="debug-card-header" onclick="toggleDebugCard('${entryId}')">
         <span class="debug-card-arrow">&#9654;</span>
         <span class="debug-card-round">第${roundNum}轮</span>
-        <span class="debug-card-summary">行动判定：${escapeHtml(String(roll.label || roll.outcome))}　(D20=${escapeHtml(String(roll.die))}${roll.rate !== null && roll.rate !== undefined ? ' ≤ ' + escapeHtml(String(roll.rate)) + '%' : ''})</span>
+        <span class="debug-card-summary">行动判定：${escapeHtml(String(roll.label || roll.outcome))}　(D100=${escapeHtml(String(roll.die))}${roll.rate !== null && roll.rate !== undefined ? ' / ' + escapeHtml(String(roll.rate)) + '%' : ''})</span>
         <span class="debug-card-time">${timeStr || ''}</span>
       </div>
       <div class="debug-card-body" style="display:none">
