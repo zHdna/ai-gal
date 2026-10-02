@@ -41,9 +41,12 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr /r /c:"LISTENING" ^| findstr 
 
 set HOST=0.0.0.0
 
+rem Let the server open the browser itself, using the port it REALLY bound.
+rem (The port can drift to 3211+ when 3210 is taken; a hardcoded URL here would
+rem  open the wrong address. server/index.js prints [Server] PORT=n and opens it.)
+set "AI_GAL_OPEN_BROWSER=1"
 echo Starting server (keep this window open)...
 echo.
-start http://127.0.0.1:3210
 "%NODE_EXE%" server\index.js
 rem Only pause when the server died with an error, so the message stays visible.
 rem Do NOT pause unconditionally: while cmd is blocked in "pause", closing the

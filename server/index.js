@@ -85,6 +85,38 @@ app.use((req, res, next) => {
 //   · 显式 ?desktop=1（含 Cookie 记忆）→ 停留在桌面版；移动端可随时切回
 //   · 需要完全停用移动端跳转时，启动带环境变量 DISABLE_MOBILE_FRONTEND=1（旧开关仍兼容）
 const DISABLE_MOBILE_FRONTEND = process.env.DISABLE_MOBILE_FRONTEND === '1';
+
+// ── 启动后自动打开浏览器（2026-10-02）───────────────────────────────────────
+// 为什么不让 bat 自己 `start http://127.0.0.1:3210`：
+//   端口被占用时 index.js 会自动 +1 避让（并把新端口回写 desktop-config.json），
+//   而 bat 里那个 URL 是**写死 3210** 的 → 浏览器打开的地址与服务器实际监听的不一致
+//   （轻则打不开，重则连到残留的旧实例上）。
+//   只有 server 自己知道**最终**监听的端口（见下方 listening 回调里的 port），
+//   所以由它来开浏览器才准确。
+//
+// 开关：环境变量 AI_GAL_OPEN_BROWSER=1（bat 里设置）。
+//   · 源码/LAN 模式（start.bat / Start-LAN.bat）→ 打开，用真实端口
+//   · 桌面版 Electron 外壳 → **不设**该变量，外壳自己 loadURL，避免重复开窗
+const OPEN_BROWSER = process.env.AI_GAL_OPEN_BROWSER === '1';
+
+/** 用系统默认浏览器打开 URL（零依赖：Windows 走 cmd start，其它平台走各自 opener） */
+function openInBrowser(url) {
+  try {
+    const { spawn } = require('child_process');
+    if (process.platform === 'win32') {
+      // 空字符串是 start 的"标题"占位参数：没有它，带引号的 URL 会被当成窗口标题
+      spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref();
+    } else if (process.platform === 'darwin') {
+      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+    }
+    console.log('[Server] 已在默认浏览器打开 ' + url);
+  } catch (e) {
+    // 开不起来不该影响服务本身
+    console.warn('[Server] 打开浏览器失败（请手动访问上面的地址）:', e && e.message);
+  }
+}
 const PUBLIC_DIR = appPaths.PUBLIC_DIR;
 const DESKTOP_INDEX = path.join(PUBLIC_DIR, 'index.html');
 const MOBILE_INDEX = path.join(PUBLIC_DIR, 'mobile.html');
@@ -235,6 +267,12 @@ function listenOn(port, attempt) {
     // 固定格式，供 Electron 外壳 / 启动器解析实际端口
     console.log(`[Server] PORT=${port}`);
     console.log(`[paths] ${appPaths.describe()}`);
+
+    // 由 server 用**真实**端口打开浏览器（原因见顶部 OPEN_BROWSER 注释）。
+    // ⚠️ LAN 模式监听 0.0.0.0，但浏览器要连本机回环地址，不能用 0.0.0.0 当 URL。
+    if (OPEN_BROWSER) {
+      openInBrowser(`http://127.0.0.1:${port}/`);
+    }
 
     // 后台预热缩略图缓存：把**已经存在**的老图补上缩略图，用户第一次进界面
     // 就不必为每张头像各等一次生成（首次请求生成约 50~100ms）。
