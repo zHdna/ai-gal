@@ -282,6 +282,12 @@ function initDatabase() {
   db.prepare(`INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`)
     .run(APP_KEYS.GLOBAL_SYSTEM_PROMPT, getDefaultSystemPrompt());
 
+  // Roll 点机制：默认开启（INSERT OR IGNORE —— 已存在则不动，用户关掉后不会被重置）
+  db.prepare(`INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`)
+    .run(APP_KEYS.ROLL_ENABLED, 'true');
+  db.prepare(`INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`)
+    .run(APP_KEYS.ROLL_STRICT_RETRY, 'true');
+
   // Insert a blank placeholder API provider if none exists.
   // Share build: ships NO working credentials and no author-specific model name —
   // the user fills in base_url / api_key / model from the Settings UI.

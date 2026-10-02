@@ -2277,8 +2277,12 @@ function buildTTSRouter(db) {
     if (_ttsHeartbeatTimer) return; // guard against double-start on hot reload
     const interval = (getSettings().heartbeat_interval_ms) || HEARTBEAT_DEFAULT_INTERVAL_MS;
     _ttsHeartbeatTimer = setInterval(ttsHeartbeatTick, interval);
+    // unref：heartbeat 只是保活探针，不该拖住进程退出 —— 否则窗口关闭时
+    // node 要等它（最长 interval 一整个周期）才肯退，表现为"未响应很久"。
+    _ttsHeartbeatTimer.unref();
     // Fire once shortly after boot to re-warm a cold instance early.
-    setTimeout(ttsHeartbeatTick, 5000);
+    const firstTick = setTimeout(ttsHeartbeatTick, 5000);
+    firstTick.unref();
     console.log('[TTS Heartbeat] started, interval=' + interval + 'ms (cloud-only, respects settings.heartbeat_enabled)');
   }
 

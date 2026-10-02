@@ -22,6 +22,7 @@ const { StringDecoder } = require('string_decoder');
 const fmt = require('../utils/aigalFormat');
 const { APP_KEYS } = require('../constants');
 const { decrypt: decryptApiKey } = require('../crypto');
+const { normalizeGeminiBase } = require('../gemini-url');
 
 // 引擎卡的世界状态播种标记（conversations.js 建对话时扫描的原始文本标记）。
 // 管道符用数组拼接表达，保持源码可读。
@@ -300,9 +301,8 @@ module.exports = (db) => {
       return url + '/responses';
     }
     if (provider_type === 'gemini' || url.includes('generativelanguage.googleapis.com')) {
-      if (!url.includes('/v1beta/openai')) url = url + '/v1beta/openai';
-      if (url.includes('/chat/completions')) return url;
-      return url + '/chat/completions';
+      // 归一化到 .../v1beta/openai（同 chat.js），避免 /v1beta 被二次拼接
+      return normalizeGeminiBase(url) + '/chat/completions';
     }
     if (url.includes('/chat/completions')) return url;
     return url + '/chat/completions';
@@ -392,7 +392,8 @@ module.exports = (db) => {
       const parsed = new URL(url);
       const isHttps = parsed.protocol === 'https:';
       const client = isHttps ? https : http;
-      const proxy = getProxySettings();
+      // 本机/局域网地址永远直连，不受「代理」设置影响（详见 chat.js callProviderAPI 处的说明）。
+      const proxy = isLocalOpenAICompatible(base_url, provider_type) ? null : getProxySettings();
       const body = {
         model,
         messages,

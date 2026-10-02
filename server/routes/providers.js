@@ -7,6 +7,7 @@ const { Router } = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { encrypt, decrypt } = require('../crypto');
 const { isUrlSafe } = require('../utils/urlGuard');
+const { normalizeGeminiBase } = require('../gemini-url');
 
 module.exports = (db) => {
   const router = Router();
@@ -235,12 +236,9 @@ async function fetchModelsFromProvider(baseUrl, apiKey, providerType) {
   const isGeminiUrl = url.includes('generativelanguage.googleapis.com');
   let modelsUrl;
   if (providerType === 'gemini' || isGeminiUrl) {
-    // Gemini OpenAI-compatible: /v1beta/openai/models
-    // Auto-append /v1beta/openai if missing from base_url (e.g. user saved old value)
-    if (!url.includes('/v1beta/openai')) {
-      url = url + '/v1beta/openai';
-    }
-    modelsUrl = url.includes('/models') ? url : url + '/models';
+    // Gemini OpenAI-compatible models endpoint: <root>/models
+    // 归一化见 server/gemini-url.js —— 避免 /v1beta 被二次拼成 /v1beta/v1beta/openai
+    modelsUrl = normalizeGeminiBase(url) + '/models';
   } else {
     modelsUrl = url.endsWith('/v1') ? url + '/models' : url + '/v1/models';
   }

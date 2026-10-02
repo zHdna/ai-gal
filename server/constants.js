@@ -15,6 +15,11 @@ exports.APP_KEYS = {
   IMAGE_ENABLED: 'image_enabled',
   MAIN_AI_PROVIDER_ID: 'main_ai_provider_id',
   BUTLER_AI_PRESET_ID: 'butler_ai_preset_id',
+  // Roll 点开关：默认开启。读取时用 !== 'false'（而非 === 'true'），
+  // 这样数据库里没有这一行时也判定为"开启"，真正满足"默认开启"。
+  ROLL_ENABLED: 'roll_enabled',
+  // Roll 违规重试：AI 输出与系统判定相悖时驳回重写一次。默认开启，出问题可一键关。
+  ROLL_STRICT_RETRY: 'roll_strict_retry',
 };
 
 // ── Image engines ──

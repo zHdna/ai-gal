@@ -28,7 +28,7 @@
     })();
   </script>
   -->
-  <link rel="stylesheet" href="css/ai-gal-redesign.css?v=20260905a">
+  <link rel="stylesheet" href="css/ai-gal-redesign.css?v=20261002a">
   <link rel="stylesheet" href="css/theater-enhance.css">
   <style>
     #btnTTSStop {
@@ -224,7 +224,7 @@
       }
     }
   </style>
-  <link rel="stylesheet" href="css/desktop/vn.css?v=20260923b">
+  <link rel="stylesheet" href="css/desktop/vn.css?v=20261002a">
 </head>
 
 <body>
@@ -1458,6 +1458,7 @@ confidence = 0.88</pre>
             <button class="settings-tab active" data-tab="mainAI" onclick="switchSettingsTab('mainAI')">主 AI</button>
             <button class="settings-tab" data-tab="butlerAI" onclick="switchSettingsTab('butlerAI')">管家 AI</button>
             <button class="settings-tab" data-tab="painterAI" onclick="switchSettingsTab('painterAI')">画家 AI</button>
+            <button class="settings-tab" data-tab="gameplay" onclick="switchSettingsTab('gameplay')">玩法规则</button>
             <button class="settings-tab" data-tab="proxy" onclick="switchSettingsTab('proxy')">代理</button>
           </div>
           <div class="settings-tab-content" id="tabMainAI" style="display:block">
@@ -1499,6 +1500,39 @@ confidence = 0.88</pre>
               </div>
             </div>
             <input type="file" id="butlerAIPresetFile" accept=".json" style="display:none">
+          </div>
+          <div class="settings-tab-content" id="tabGameplay" style="display:none">
+            <div class="form-group">
+              <label>Roll 点判定</label>
+              <div style="display:flex;align-items:center;gap:10px">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="rollEnabledToggle" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <span id="rollEnabledLabel" style="font-size:13px;color:var(--text-secondary)">已开启</span>
+              </div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
+                开启后，每个行动选项会显示成功率；你做出选择时由<strong>系统掷骰裁定成败</strong>，
+                再按结果生成剧情（AI 无法自行改写判定）。<br>
+                掷骰规则：D20，天然 20 大成功、天然 1 大失败；有成功率时按成功率判定；
+                未标注成功率的选项按「10 点及以上成功」；<strong>你手动输入的行动按 75% 加成判定</strong>。<br>
+                <span style="opacity:.75">骰值不在主界面显示（保持沉浸感）—— 想核对可在「调试」面板看到真实点数。</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>违背判定时驳回重写</label>
+              <div style="display:flex;align-items:center;gap:10px">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="rollStrictRetryToggle" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <span id="rollStrictRetryLabel" style="font-size:13px;color:var(--text-secondary)">已开启</span>
+              </div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
+                开启后，若 AI 写出了与系统判定相反的结果（例如判定成功却写成"最终还是失败了"），
+                本轮会被驳回重写一次，确保剧情严格遵守骰点结果。
+              </div>
+            </div>
           </div>
           <div class="settings-tab-content" id="tabPainterAI" style="display:none">
             <div class="form-group">

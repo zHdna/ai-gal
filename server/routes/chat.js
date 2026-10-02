@@ -26,11 +26,14 @@ const { decrypt: decryptApiKey } = require('../crypto');
 const { SETTINGS_ID, APP_KEYS, EVENT_LOG_FILE, ROSTER_FILE, MEMORY_KEYS, DEFAULT_INJECT_INTERVAL, DEFAULT_DROP_THRESHOLD } = require('../constants');
 const { applyWorldStateFromText, extractCheckpoint } = require('../utils/jsonpatch');
 const { isPathWithin } = require('../utils/pathGuard');
+const { normalizeGeminiBase } = require('../gemini-url');
 const { buildMvuPromptModule } = require('../mvu');
 const savePaths = require('../savePaths');
 const { lookupAnimeEnglishName } = require('../utils/anime-names');
 const { resolveContextWindow } = require('../utils/contextWindow');
 const { cleanupEventLog } = require('../utils/turnCleanup');
+// Roll 点：行动成败由代码裁定（见 server/utils/dice.js 与 ROLL-点机制-实施方案.md）
+const dice = require('../utils/dice');
 
 /**
  * Strip MVU variable blocks from narrative text. Variable blocks are DATA, not story:
@@ -1717,7 +1720,21 @@ module.exports = (db) => {
   }
 
   router.post('/stream', async (req, res) => {
-    let { conversation_id, content, provider_id, regenerate } = req.body;
+    let { conversation_id, content, provider_id, regenerate, roll_rate, roll_from_option } = req.body;
+
+    // ── Roll 点开关（默认开启）────────────────────────────────────────────────
+    // 用 !== 'false' 而非 === 'true'：数据库里没有这行时也判定为开启。
+    let rollEnabled = true;
+    try {
+      const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(APP_KEYS.ROLL_ENABLED);
+      if (row && String(row.value) === 'false') rollEnabled = false;
+    } catch (e) { /* 表还没建 → 按默认开启 */ }
+
+    let rollStrictRetry = true;
+    try {
+      const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(APP_KEYS.ROLL_STRICT_RETRY);
+      if (row && String(row.value) === 'false') rollStrictRetry = false;
+    } catch (e) { /* 同上 */ }
 
     // ── 单飞（single-flight）：同一对话只允许一个生成在跑 ──
     // 客户端那个 isGenerating 标记不是权威（「停止」会立刻把它置 false，而服务端可能还在生成），
@@ -1755,9 +1772,27 @@ module.exports = (db) => {
     }
 
     try {
+      // ── Roll 点判定（在 prepareChatContext 之前算好，判定块要随注入进 apiMessages）──
+      // regenerate 时不重掷：从被判定的那一轮 user 消息 formatted.roll 读回，
+      // 否则用户会看到"同一个选项这次成功、下次失败"。
+      let judgement = null;
+      try {
+        judgement = resolveTurnJudgement({
+          conversation_id, content, roll_rate, roll_from_option,
+          regenerate, rollEnabled, removedTurn
+        });
+      } catch (e) {
+        console.error('[Roll] 判定失败（已降级为无判定）:', e.message);
+        judgement = null;
+      }
+
       const { conv, character, provider, apiMessages, replacedContent, apiContent, wbInjected, tokenStats, cumulativeTotal } = await prepareChatContext(
         conversation_id, content, provider_id,
-        regenerate ? { dropTrailingUserMsg: true } : {}
+        {
+          dropTrailingUserMsg: !!regenerate,
+          judgement,          // ← 传给 buildApiMessages 做注入
+          rollEnabled,        // ← 关闭时不注入、不判定
+        }
       );
 
       // Apply preset parameters (temperature, top_p, etc.) from main AI preset
@@ -1786,7 +1821,7 @@ module.exports = (db) => {
       } else {
         // Store user message first — api_content（纯输入）+ wb_injected（世界书冷却台账）
         const userMsgId = uuidv4();
-        const userFormatted = formatUserMessage(apiContent, wbInjected);
+        const userFormatted = formatUserMessage(apiContent, wbInjected, judgement);
         db.prepare(`
           INSERT INTO messages (id, conversation_id, role, content, formatted)
           VALUES (?, ?, 'user', ?, ?)
@@ -1794,6 +1829,20 @@ module.exports = (db) => {
 
         // Send user message event
         res.write(`event: user_message\ndata: ${JSON.stringify({ id: userMsgId, role: 'user', content })}\n\n`);
+
+        // Roll 点：把判定结果发给前端。
+        // ⚠️ 骰值**不给前端**（主界面保持沉浸感，玩家只看到成败）；
+        //    完整明细（骰值/成功率/来源）在幕后控制台可见 —— 前端按需另取。
+        if (judgement) {
+          res.write(`event: roll_result\ndata: ${JSON.stringify({
+            outcome: judgement.outcome,
+            rate: judgement.rate,
+            source: judgement.source,
+            isCritical: !!judgement.isCritical,
+            label: dice.outcomeLabel(judgement.outcome),
+            badge: dice.outcomeBadgeText(judgement.outcome),
+          })}\n\n`);
+        }
       }
 
       // Stream from provider
@@ -1830,6 +1879,8 @@ module.exports = (db) => {
       let noThinkingRetried = false;    // 是否已因「预算被思维链吃光」重试过
       let budgetEatenByReasoning = false; // 供最终错误信息使用
       let butlerParseFailed = false;    // 管家 11 层兜底全部失败（本轮没有可靠的格式修复/画像/CG 判定）
+      let rollRetryUsed = false;        // Roll：是否已因"违背判定"驳回重写过（只允许一次）
+      let rollViolation = null;         // Roll：命中的违背片段（供幕后控制台显示）
       try {
       const MAX_MAIN_AI_RETRIES = 2;  // 1 original + 1 retry
       for (let attempt = 1; attempt <= MAX_MAIN_AI_RETRIES; attempt++) {
@@ -1865,6 +1916,31 @@ module.exports = (db) => {
               + '）→ 自动关闭思考模式重试一次（本地模型：' + (presetProvider.base_url || '?') + '）');
             continue;
           }
+
+          // ── Roll 点：违背判定即驳回重试（与上面两种重试共用 MAX_MAIN_AI_RETRIES 配额）──
+          // 判定是系统裁定的事实；AI 若写出相反结局（"虽然……但失败了"），
+          // 本轮作废重写。只重试 1 次：仍违背就放行（记 warn），绝不无限循环。
+          if (rollEnabled && rollStrictRetry && judgement && !rollRetryUsed && fullText.trim()) {
+            const verdict = dice.checkContradiction(extractStoryBodyForRoll(fullText), judgement.outcome);
+            if (verdict.violated) {
+              rollRetryUsed = true;
+              console.warn('[Roll] ⚠️ 主AI输出违背判定（' + judgement.outcome + '）："' + verdict.matched
+                + '" → 驳回重写一次');
+              rollViolation = verdict.matched;
+              // 把违规片段与更强硬的纠正指令追加进本轮上下文
+              apiMessages.push({ role: 'assistant', content: fullText });
+              apiMessages.push({ role: 'user', content:
+                '【系统驳回】你上一轮的输出违背了已经裁定的行动判定（判定结果：'
+                + dice.outcomeLabel(judgement.outcome) + '）。\n'
+                + '你写出的这段与判定矛盾："' + verdict.matched + '"\n'
+                + '请重新输出本轮剧情，**严格**按「' + dice.outcomeLabel(judgement.outcome)
+                + '」的结果来写，不得用任何方式架空或否定它。' });
+              fullText = '';
+              reasoningText = '';
+              continue;
+            }
+          }
+
           break;  // success → exit retry loop
         } catch (e) {
           const isRetryable =
@@ -3205,6 +3281,25 @@ module.exports = (db) => {
               + `${(butlerProvider && butlerProvider.max_tokens) || '未设置'}），或换一个更守格式的模型。`;
           }
 
+          // Roll 点：判定明细交给前端（幕后控制台显示真实骰值；主界面只用 outcome 显示成败）。
+          // 这是"玩家想核对 AI 有没有假判定"的窗口，所以骰值/成功率/判定线都给全。
+          if (judgement) {
+            result.roll = {
+              die: judgement.die,
+              rate: judgement.rate,
+              outcome: judgement.outcome,
+              source: judgement.source,
+              isCritical: !!judgement.isCritical,
+              label: dice.outcomeLabel(judgement.outcome),
+              line: judgement.rate !== null && !judgement.isCritical
+                ? (judgement.die + ' ≤ ' + judgement.rate + ' → ' + dice.outcomeLabel(judgement.outcome))
+                : ('天然 ' + judgement.die + ' → ' + dice.outcomeLabel(judgement.outcome)),
+              violated: rollViolation || null,   // 被驳回重写时命中的片段
+              retried: rollRetryUsed,
+              manual: judgement.source === dice.SOURCE.MANUAL,
+            };
+          }
+
           // Send done event with full data
           res.write(`event: done\ndata: ${JSON.stringify(result)}\n\n`);
         } else {
@@ -3320,7 +3415,10 @@ module.exports = (db) => {
     const replacedContent = replaceVariables(content, userProfile, character);
 
     // 8. Build API messages (inject memory context at end of user message)
-    const { messages: apiMessages, apiContent, wbInjected } = buildApiMessages(systemPrompt, messages, replacedContent, conv, character);
+    const { messages: apiMessages, apiContent, wbInjected } = buildApiMessages(
+      systemPrompt, messages, replacedContent, conv, character,
+      { judgement: options.judgement, rollEnabled: options.rollEnabled }
+    );
 
     // 9. Calculate token stats
     const tokenStats = calculateTokenStats(apiMessages);
@@ -3351,10 +3449,22 @@ module.exports = (db) => {
    *   injected this turn. Without it the cooldown scan has nothing to look at, because the
    *   【参考资料：】 block itself is never persisted (2026-09-29 修).
    */
-  function formatUserMessage(apiContent, wbInjected) {
+  function formatUserMessage(apiContent, wbInjected, roll) {
     const o = {};
     if (apiContent) o.api_content = apiContent;
     if (Array.isArray(wbInjected) && wbInjected.length) o.wb_injected = wbInjected;
+    // Roll 点判定：落库是权威来源 —— 重新生成时据此复用（不重掷），
+    // 幕后控制台也据此显示真实骰值。actionText 不必存（content 里已有）。
+    if (roll) {
+      o.roll = {
+        die: roll.die,
+        rate: roll.rate,
+        outcome: roll.outcome,
+        source: roll.source,
+        isCritical: !!roll.isCritical,
+        at: new Date().toISOString(),
+      };
+    }
     return Object.keys(o).length ? JSON.stringify(o) : '{}';
   }
 
@@ -3668,7 +3778,16 @@ ${ui.requiresStatus ? '### status\n（末尾输出{{user}}状态，属性名: �
     }
 
 ### actions
-- 在 ### summarize 之前，提供2-4个行动选项供{{user}}选择。格式为每行一个"选项内容"。你的输出在 ### summarize 后应立即停止，不要在 ### actions 后继续编写剧情或替{{user}}做出选择。
+- 在 ### summarize 之前，提供2-4个行动选项供{{user}}选择。格式为每行一个"选项内容【成功率 N%】"。你的输出在 ### summarize 后应立即停止，不要在 ### actions 后继续编写剧情或替{{user}}做出选择。
+- ⚠️【成功率是必填项】每个行动选项都必须在行尾标注【成功率 N%】，N 取 5-95 的整数：
+  · 按**该行动在当前情境下的合理难度**给值，不要都给同一个数；
+  · 顺手的小事（拿杯水、走两步）75~95%；需要技巧/运气的事 45~75%；冒险、硬闯、以弱敌强 5~40%。
+- ⚠️ 成功率由**系统掷骰判定**，不是你的判断依据：你只负责给出"这件事有多难"，
+  真正成不成功由系统掷 D20 决定并把结果告诉你。**不要**在剧情里预先写好这个行动的结果。
+- 示例：
+  --1、悄悄撬开窗户潜入【成功率 55%】
+  --2、直接正面交涉【成功率 70%】
+  --3、先观察四周动静【成功率 90%】
 
 ### summarize
  每轮末尾输出一句话剧情总结：时间 | 地点 | 人物 | 当前事件摘要`);
@@ -3851,8 +3970,9 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
   // block was read from conversations.memory_context unconditionally. Both are gone:
   // the table is now injected in full, once every N rounds, and dormant in between.
 
-  function buildApiMessages(systemPrompt, history, newContent, conv, character) {
+  function buildApiMessages(systemPrompt, history, newContent, conv, character, options) {
     const messages = [];
+    const opts = options || {};
 
     messages.push({ role: 'system', content: systemPrompt });
 
@@ -4264,6 +4384,14 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
     //   system message. Each dynPart already carries its own marker ([记忆] / 【参考资料：】 /
     //   【后置指令】 / [已有画像角色] …); we wrap the block so the model treats it as injected
     //   reference context, not player dialogue.
+    // === Roll 点：行动判定块（放在 dynParts 最后，紧邻本轮 user 消息，注意力权重最高）===
+    // 判定结果是**既定事实**，不是建议 —— AI 只负责把结果演成剧情。
+    // 骰值/成功率/判定线都对 AI 可见（AI 要据此区分"险胜"与"轻松成功"的写法）。
+    if (opts.rollEnabled !== false && opts.judgement) {
+      const block = dice.buildJudgementBlock(opts.judgement, opts.judgement.actionText || newContent);
+      if (block) dynParts.push(block);
+    }
+
     if (dynParts.length > 0) {
       const injBody = dynParts.join('\n\n');
       const injMsg =
@@ -4468,7 +4596,12 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
       const parsed = new URL(url);
       const isHttps = parsed.protocol === 'https:';
       const client = isHttps ? https : http;
-      const proxy = getProxySettings(db);
+      // 本机/局域网地址永远直连，不受「代理」设置影响。
+      // 这些地址（9router/ollama/llama.cpp 等）本来就在本机，不需要翻墙；
+      // 而隧道型代理（Clash/SSRDOG 等）只支持 CONNECT，对正向代理的绝对 URI
+      // 请求会直接 RST —— 把本地流量转给代理必然失败。
+      // 症状：开了代理后所有本地供应商都报 ECONNRESET，且错误与"直连被墙"一模一样。
+      const proxy = isLocalOpenAICompatible(base_url, provider_type) ? null : getProxySettings(db);
 
       const body = {
         model,
@@ -4672,7 +4805,8 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
       const parsed = new URL(url);
       const isHttps = parsed.protocol === 'https:';
       const client = isHttps ? https : http;
-      const proxy = getProxySettings(db);
+      // 本机/局域网地址永远直连，不受「代理」设置影响（详见 callProviderAPI 处的说明）。
+      const proxy = isLocalOpenAICompatible(base_url, provider_type) ? null : getProxySettings(db);
 
       const body = {
         model,
@@ -4952,15 +5086,8 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
       return url + '/responses';
     } else if (provider_type === 'gemini' || url.includes('generativelanguage.googleapis.com')) {
       // Google Gemini OpenAI-compatible endpoint
-      // base_url should be: https://generativelanguage.googleapis.com/v1beta/openai
-      // Auto-append /v1beta/openai if missing (e.g. user saved old incomplete value)
-      if (!url.includes('/v1beta/openai')) {
-        url = url + '/v1beta/openai';
-      }
-      if (url.includes('/chat/completions')) {
-        return url; // 已包含完整路径
-      }
-      return url + '/chat/completions';
+      // 归一化到 .../v1beta/openai，避免 .../v1beta 被二次拼接成 .../v1beta/v1beta/openai
+      return normalizeGeminiBase(url) + '/chat/completions';
     } else {
       // OpenAI-compatible: /v1/chat/completions
       if (url.includes('/chat/completions')) {
@@ -5056,7 +5183,10 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
 
 5. 【### actions 补全检查】
 — 缺失时必须分析剧情生成 2-4 个行动选项
-— 格式：--1、选项内容
+— 格式：--1、选项内容【成功率 75%】
+— ⚠️【成功率是必填项】每个选项都必须在行尾带【成功率 N%】（N 取 5-95 整数），
+  按该行动在当前情境下的合理难度给值，**不要都给同一个数**。
+  若主AI原文的选项缺少成功率，你必须补上；若已有则保留原值，不要改动。
 
 6. 【### mood 补全检查】
 — 缺失时从 nomal/battle/blue/ceremony/relaxed/suspense 中选择最匹配的
@@ -5429,6 +5559,84 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
 `;
 
   // 已删除：`BUTLER_MEMORY_SYS`（废弃常量，全仓零引用；记忆由主AI的 ### summarize 承担）
+
+
+
+  /**
+   * 从主 AI 的原始输出里抠出 ### story 正文，供 Roll 违规校验使用。
+   * 只校验叙事正文 —— ### status / ### portrait 等元数据段落里出现"失败"字样
+   * （如 status 里写"体力：失败"之类）不该算违背判定。
+   */
+  function extractStoryBodyForRoll(text) {
+    const s = String(text || '');
+    if (!s) return '';
+    const m = s.match(/###\s*story\s*\n([\s\S]*?)(?=\n###\s|$)/);
+    if (m) return m[1];
+    // 没有 ### story 标题（主 AI 漏写）→ 退化为全文（去掉各 ### 段）
+    return s.replace(/###\s*\w+\s*\n[\s\S]*?(?=\n###\s|$)/g, '');
+  }
+
+  /**
+   * Roll 点：解析本轮该用的判定。
+   *
+   * 优先级（与方案第三节一致）：
+   *   ① regenerate  → 复用被重生成那一轮的 formatted.roll（**绝不重掷**）
+   *   ② 点选项       → 用前端传来的 roll_rate；没有则从选项文案里抠；再没有 → 默认档
+   *   ③ 手动输入     → 固定 75% 加成档
+   *
+   * @returns {{die,rate,outcome,source,isCritical,actionText}|null}
+   */
+  function resolveTurnJudgement(o) {
+    if (!o || !o.rollEnabled) return null;
+
+    // ① 重新生成：读回原判定，保证同一选项结果稳定
+    if (o.regenerate && o.removedTurn && o.removedTurn.userContent) {
+      try {
+        const row = db.prepare(`
+          SELECT formatted FROM messages
+          WHERE conversation_id = ? AND role = 'user'
+          ORDER BY rowid DESC LIMIT 1
+        `).get(o.conversation_id);
+        if (row && row.formatted) {
+          const fmt = typeof row.formatted === 'string' ? JSON.parse(row.formatted) : row.formatted;
+          if (fmt && fmt.roll && fmt.roll.outcome) {
+            console.log('[Roll] 重新生成 → 复用原判定 D20=' + fmt.roll.die + ' ' + fmt.roll.outcome);
+            return Object.assign({}, fmt.roll, { actionText: o.content });
+          }
+        }
+      } catch (e) {
+        console.warn('[Roll] 复用原判定失败，改为重掷:', e.message);
+      }
+    }
+
+    // ② 点选项：优先用前端传来的成功率
+    let rate = null;
+    let source = null;
+    if (o.roll_from_option) {
+      if (o.roll_rate !== null && o.roll_rate !== undefined && Number.isFinite(Number(o.roll_rate))) {
+        rate = dice.clampRate(o.roll_rate);
+        source = dice.SOURCE.MAIN_AI;
+      } else {
+        // 前端没传 → 从选项文案里再抠一次（文案里可能带【成功率 65%】）
+        const p = dice.parseRate(o.content);
+        if (p.rate !== null) { rate = p.rate; source = dice.SOURCE.MAIN_AI; }
+      }
+      if (rate === null) {
+        // 主 AI 没写、管家也没补 → 默认档
+        source = dice.SOURCE.DEFAULT;
+      }
+      const j = dice.rollAndJudge(rate, source);
+      j.actionText = o.content;
+      console.log('[Roll] 选项判定 D20=' + j.die + ' rate=' + rate + ' → ' + j.outcome);
+      return j;
+    }
+
+    // ③ 手动输入：固定 75%（用户不满意选项、要自己作行动 → 给加成避免挫败感）
+    const j = dice.rollManual();
+    j.actionText = o.content;
+    console.log('[Roll] 手动输入判定 D20=' + j.die + ' → ' + j.outcome + '（75% 加成档）');
+    return j;
+  }
 
   // ── Normalize action options (robust against malformed model output) ──
   // Handles: single string with newlines / multiple "--N、" markers, array members

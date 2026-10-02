@@ -499,12 +499,23 @@ const ChatAPI = {
    * @param {boolean} [callbacks.regenerate] - 重新生成：后端先删掉本轮全部产物（主AI正文 +
    *   管家处理结果 + 本轮 CG），再用【上一条用户发言】重跑；此时 content 会被后端忽略。
    * @param {function} callbacks.onTurnRemoved - 后端已删除本轮旧回复 (info: {message_id, round, removed_cgs}) => void
+   * @param {number} [callbacks.rollRate] - Roll 点：所选项的成功率（点选项时传）
+   * @param {boolean} [callbacks.rollFromOption] - Roll 点：本次是否为"点选项"（false/缺省 = 手动输入）
+   * @param {function} [callbacks.onRollResult] - Roll 点判定已出 (data: {outcome, rate, label, badge}) => void
    * @returns {Promise<void>}
    */
   async stream(conversationId, content, providerId, callbacks = {}) {
     const body = { conversation_id: conversationId, content };
     if (providerId) body.provider_id = providerId;
     if (callbacks.regenerate) body.regenerate = true;
+    // Roll 点：点选项时带上该选项的成功率（后端据此判定）。
+    // roll_from_option 区分"点选项"与"手动输入" —— 手动输入走后端固定的 75% 加成档。
+    if (callbacks.rollFromOption) {
+      body.roll_from_option = true;
+      if (callbacks.rollRate !== null && callbacks.rollRate !== undefined) {
+        body.roll_rate = callbacks.rollRate;
+      }
+    }
 
     const url = `${API_BASE}/chat/stream`;
 
@@ -562,6 +573,11 @@ const ChatAPI = {
                 case 'turn_removed':
                   // 「重新生成」：后端已删掉本轮旧回复（含管家处理结果），前端据此精确移除那一楼
                   callbacks.onTurnRemoved?.(data);
+                  break;
+                case 'roll_result':
+                  // Roll 点：后端已掷骰并裁定成败。**不含骰值** —— 主界面只显示成败（沉浸感）；
+                  // 完整明细随 done 事件的 result.roll 到达，用于幕后控制台。
+                  callbacks.onRollResult?.(data);
                   break;
                 case 'token':
                   if (data.token !== undefined) {

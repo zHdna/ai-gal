@@ -15,6 +15,10 @@
  * 表述风格（设计文档前提 4）：本文件的注释与产出的文本一律正向表述。
  */
 
+// Roll 点：选项行的成功率后缀（`【成功率 65%】` 等）。判定内核在 ./dice，
+// 这里只借用它的解析能力，保证"格式层剥后缀"与"判定层读成功率"是同一份语义。
+const { parseRate: parseActionRate } = require('./dice');
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 客户端语义族（开场白路径：formatted='{}' 时的兜底渲染链，真源 = app.js）
 // 链条：replaceMacros(2448) → classifyAIOutput(2452) → stripThink(2557) →
@@ -260,7 +264,11 @@ function extractTailActions(displayText) {
   if (actionStart < lines.length) {
     actionLines = lines.slice(actionStart).map(l => {
       const am = l.trim().match(ACTION_CLEAN_RE);
-      return am ? am[1].trim() : l.trim().replace(ACTION_PREFIX_RE, '').trim();
+      let t = am ? am[1].trim() : l.trim().replace(ACTION_PREFIX_RE, '').trim();
+      // Roll 点：剥掉行尾的成功率后缀，actions[] 只留干净文案
+      // （成功率由 dice.coerceActions 在判定时另行读取，两条通道互不干扰）
+      t = parseActionRate(t).text || t;
+      return t;
     });
     lines.splice(actionStart);
   }
@@ -523,11 +531,12 @@ function normalizeActions(input) {
         for (let i = 0; i < matches.length; i++) {
           const start = matches[i].index + matches[i][0].length;
           const end = (i + 1 < matches.length) ? matches[i + 1].index : piece.length;
-          const opt = piece.slice(start, end).trim().replace(/^-{1,2}\s*/, '').trim();
+          const opt = parseActionRate(piece.slice(start, end).trim().replace(/^-{1,2}\s*/, '').trim()).text;
           if (opt) out.push(opt);
         }
       } else {
-        const cleaned = piece.replace(markerRe, '').trim();
+        // 剥掉成功率后缀（若有），选项文案保持干净 —— 与 extractTailActions 同一口径
+        const cleaned = parseActionRate(piece.replace(markerRe, '').trim()).text;
         if (cleaned) out.push(cleaned);
       }
     }

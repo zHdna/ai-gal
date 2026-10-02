@@ -5084,3 +5084,100 @@ body {
   display: none !important;
   animation: none !important;
 }
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Roll 点机制
+   · .choice-rate      选项上的成功率徽章（数字 + 四档染色）
+   · .gen-status--result  生成结束后把"故事生成中……"换成上一段成败
+   · .roll-debug-*     幕后控制台的判定明细卡片（骰值只在这里可见）
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 成功率徽章 ─────────────────────────────────────────────────────────── */
+.choice-option .choice-rate {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  border: 1.5px solid currentColor;
+  background: rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
+}
+
+/* 徽章之后才是箭头，两者不能抢 margin-left:auto */
+.choice-option .choice-rate + .choice-arrow {
+  margin-left: 6px;
+}
+
+/* 四档染色：高 / 中 / 低 / 险 */
+.choice-rate.rate-high { color: #2f8f5b; }
+.choice-rate.rate-mid  { color: #b5842a; }
+.choice-rate.rate-low  { color: #c06a2b; }
+.choice-rate.rate-risk { color: #b8474b; }
+
+/* 深色主题下提高对比度（浅底徽章在黑底上会糊） */
+[data-theme="dark"] .choice-option .choice-rate,
+body[theme-mode="dark"] .choice-option .choice-rate {
+  background: rgba(0, 0, 0, 0.28);
+}
+[data-theme="dark"] .choice-rate.rate-high,
+body[theme-mode="dark"] .choice-rate.rate-high { color: #6fd39a; }
+[data-theme="dark"] .choice-rate.rate-mid,
+body[theme-mode="dark"] .choice-rate.rate-mid  { color: #e0b355; }
+[data-theme="dark"] .choice-rate.rate-low,
+body[theme-mode="dark"] .choice-rate.rate-low  { color: #e09455; }
+[data-theme="dark"] .choice-rate.rate-risk,
+body[theme-mode="dark"] .choice-rate.rate-risk { color: #e8777b; }
+
+/* ── 生成提示条：结果态 ─────────────────────────────────────────────────── */
+/* 复用「故事生成中……」那一条（#genStatus / #genStatusLegacy），只换文案与配色 */
+.gen-status.gen-status--result {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.gen-status.roll-res-crit-success {
+  color: #f5c542;
+  text-shadow: 0 0 10px rgba(245, 197, 66, 0.55), 0 0 22px rgba(245, 197, 66, 0.25);
+}
+.gen-status.roll-res-success {
+  color: #7fd99a;
+}
+.gen-status.roll-res-failure {
+  color: #8fa3bf;
+}
+.gen-status.roll-res-crit-failure {
+  color: #ff7b80;
+  text-shadow: 0 0 10px rgba(224, 85, 90, 0.5);
+}
+
+/* 大成功/大失败抖一下，强化"这是系统裁定"的观感。
+   ⚠️ 用独立的 translate 属性而不是 transform —— 提示条自身靠
+   transform: translateX(-50%) 居中，若在 keyframes 里动 transform，
+   动画期间会顶掉居中位移，胶囊会跳到左边。translate 与 transform
+   是两个独立属性、可叠加；不支持的旧浏览器只是不抖，布局不坏。 */
+@keyframes rollShake {
+  0%, 100% { translate: 0 0; }
+  20%      { translate: -3px 0; }
+  40%      { translate: 3px 0; }
+  60%      { translate: -2px 0; }
+  80%      { translate: 2px 0; }
+}
+.gen-status.roll-shake {
+  animation: rollShake 0.45s ease-in-out 1;
+}
+
+/* ── 幕后控制台的判定卡片 ───────────────────────────────────────────────── */
+.roll-debug-card .debug-card-summary {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.roll-debug-card.roll-debug-crit-success .debug-card-summary { color: #f5c542; }
+.roll-debug-card.roll-debug-success .debug-card-summary      { color: #7fd99a; }
+.roll-debug-card.roll-debug-failure .debug-card-summary      { color: #8fa3bf; }
+.roll-debug-card.roll-debug-crit-failure .debug-card-summary { color: #e0555a; }

@@ -457,9 +457,11 @@ function warmCache(dirs, onDone) {
     done++;
     // 单张生成是 CPU 密集的（大图约 100ms），中间留一点空档，
     // 让并发的页面请求能插进来 —— 预热再久也不该让界面变卡。
-    setTimeout(step, 12);
+    const t = setTimeout(step, 12);
+    t.unref();   // 预热是纯后台优化，不该拖住进程退出（点 X 时若在预热中，等它跑完会卡窗口）
   }
-  setTimeout(step, 12);
+  const t0 = setTimeout(step, 12);
+  t0.unref();
   return { total, cancel: () => { cancelled = true; } };
 }
 

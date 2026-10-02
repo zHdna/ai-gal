@@ -647,7 +647,12 @@ function bindEvents() {
       if (action) {
         DOM.messageInput().value = action;
         DOM.messageInput().focus();
-        sendMessage();
+        // Roll 点：把该选项的成功率一并交给本轮发送（后端据此判定）。
+        // 没有 data-rate 时传 null → 后端走"默认档"（>=10 成功）。
+        const rateAttr = btn.dataset.rate;
+        const rate = (rateAttr !== undefined && rateAttr !== null && rateAttr !== '')
+          ? Number(rateAttr) : null;
+        sendMessage({ rollFromOption: true, rollRate: isFinite(rate) ? rate : null });
       }
       return;
     }
@@ -894,6 +899,11 @@ async function populateAIProviderSelectors() {
   const painterInfo = document.getElementById('painterAIProviderInfo');
   const imageToggle = document.getElementById('imageEnabledToggle');
   const imageLabel = document.getElementById('imageEnabledLabel');
+  // Roll 点开关（默认开启）
+  const rollToggle = document.getElementById('rollEnabledToggle');
+  const rollLabel = document.getElementById('rollEnabledLabel');
+  const rollRetryToggle = document.getElementById('rollStrictRetryToggle');
+  const rollRetryLabel = document.getElementById('rollStrictRetryLabel');
   if (!mainSelect || !butlerSelect) return;
 
   const providers = AppState.providers;
@@ -996,6 +1006,34 @@ async function populateAIProviderSelectors() {
       imageLabel.textContent = enabled ? '已开启' : '已关闭';
       await ThemeAPI.saveSettings({ image_enabled: enabled ? 'true' : 'false' });
       showToast(enabled ? '生图功能已开启' : '生图功能已关闭', 'success');
+    }, { signal });
+  }
+
+  // Roll 点开关（默认开启：settings 里没有这一行时也按开启处理）
+  if (rollToggle) {
+    const rollOn = settings.roll_enabled !== 'false';
+    rollToggle.checked = rollOn;
+    rollLabel.textContent = rollOn ? '已开启' : '已关闭';
+    setRollEnabled(rollOn);
+    rollToggle.addEventListener('change', async () => {
+      const on = rollToggle.checked;
+      rollLabel.textContent = on ? '已开启' : '已关闭';
+      setRollEnabled(on);
+      await ThemeAPI.saveSettings({ roll_enabled: on ? 'true' : 'false' });
+      showToast(on ? 'Roll 点判定已开启' : 'Roll 点判定已关闭', 'success');
+      // 已渲染的选项徽章要跟着变：重绘当前消息区
+      try { rerenderActionBadges(); } catch (e) { /* 非关键 */ }
+    }, { signal });
+  }
+  if (rollRetryToggle) {
+    const retryOn = settings.roll_strict_retry !== 'false';
+    rollRetryToggle.checked = retryOn;
+    rollRetryLabel.textContent = retryOn ? '已开启' : '已关闭';
+    rollRetryToggle.addEventListener('change', async () => {
+      const on = rollRetryToggle.checked;
+      rollRetryLabel.textContent = on ? '已开启' : '已关闭';
+      await ThemeAPI.saveSettings({ roll_strict_retry: on ? 'true' : 'false' });
+      showToast(on ? '违背判定时将驳回重写' : '不再驳回重写（AI 可自行叙述结果）', 'success');
     }, { signal });
   }
 
@@ -2766,6 +2804,88 @@ function normalizeActions(input) {
  *   不再用 `data-action="${escapeHtml(action)}"` 这种字符串拼接，
  *   改用 dataset.action 直接赋值（属性值不经 HTML 解析，永远保留原文）。
  */
+/**
+ * Roll 点：选项归一化（双形态兼容）。
+ *   · 旧形态：纯字符串 "潜入【成功率 65%】" → {text:'潜入', rate:65}
+ *   · 新形态：{text:'潜入', rate:65}
+ *   · 无成功率：rate = null
+ * 与服务端 dice.coerceAction 语义一致（前端只做展示，判定始终在后端）。
+ */
+function normalizeActionOption(item) {
+  if (item == null) return { text: '', rate: null };
+  const rawText = (typeof item === 'object')
+    ? String(item.text != null ? item.text : (item.action != null ? item.action : ''))
+    : String(item);
+  let rate = (typeof item === 'object' && item.rate !== null && item.rate !== undefined
+              && isFinite(Number(item.rate))) ? Math.round(Number(item.rate)) : null;
+  let text = rawText;
+
+  // 从文案里抠成功率：带"成功率"字样的标注最可靠；否则认行尾裸百分比
+  const labeled = text.match(/[（(\[【]\s*成功率\s*[:：]?\s*(\d{1,3})\s*[%％]\s*[）)\]】]/);
+  const bare = text.match(/成功率\s*[:：]?\s*(\d{1,3})\s*[%％]/);
+  const m = labeled || bare;
+  if (m) {
+    if (rate === null) rate = Math.round(Number(m[1]));
+    text = text.replace(m[0], ' ');
+  } else if (rate === null) {
+    const tail = text.match(/[（(\[【]?\s*(\d{1,3})\s*[%％]\s*[）)\]】]?\s*[。.!！]?\s*$/);
+    if (tail) {
+      rate = Math.round(Number(tail[1]));
+      text = text.slice(0, tail.index);
+    }
+  }
+
+  if (rate !== null) {
+    if (!isFinite(rate)) rate = null;
+    else rate = Math.min(95, Math.max(5, rate));
+    text = text.replace(/\s{2,}/g, ' ').replace(/[\s，、；]+$/, '').trim();
+  }
+  return { text: text.trim(), rate };
+}
+
+/** Roll 点：成功率档位 → CSS 类（高/中/低/险 四档染色） */
+function rateTierClass(rate) {
+  const r = Number(rate);
+  if (!isFinite(r)) return '';
+  if (r >= 80) return 'rate-high';
+  if (r >= 60) return 'rate-mid';
+  if (r >= 40) return 'rate-low';
+  return 'rate-risk';
+}
+
+/**
+ * Roll 点开关切换后重绘已渲染选项的成功率徽章。
+ *
+ * 只动徽章，不动按钮本身 —— 重绘整块会丢掉事件监听与滚动位置。
+ * 关闭时移除所有徽章；开启时按 data-rate 补回。
+ */
+function rerenderActionBadges() {
+  const on = isRollEnabled();
+  document.querySelectorAll('.choice-option').forEach(btn => {
+    const existing = btn.querySelector('.choice-rate');
+    if (!on) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) return;                       // 已有徽章，不重复加
+    const rateAttr = btn.dataset.rate;
+    if (rateAttr === undefined || rateAttr === null || rateAttr === '') return;
+    const rate = Number(rateAttr);
+    if (!isFinite(rate)) return;
+    const span = document.createElement('span');
+    span.className = 'choice-rate ' + rateTierClass(rate);
+    span.textContent = rate + '%';
+    const arrow = btn.querySelector('.choice-arrow');
+    if (arrow) btn.insertBefore(span, arrow);
+    else btn.append(span);
+  });
+}
+
+/** Roll 点开关（默认开启）。由 loadRollSettings() 从后端同步；关闭时前端不渲染徽章。 */
+let ROLL_ENABLED = true;
+function isRollEnabled() { return ROLL_ENABLED !== false; }
+function setRollEnabled(on) { ROLL_ENABLED = !!on; }
+
 function renderActionButtons(actions) {
   actions = normalizeActions(actions);
   if (!actions || !Array.isArray(actions) || actions.length === 0) return '';
@@ -2793,10 +2913,16 @@ function renderActionButtons(actions) {
   const list = wrap.querySelector('.choice-list');
 
   actions.forEach((action, i) => {
-    const text = String(action);
+    // Roll 点：从选项文案里剥出成功率。
+    // 双形态兼容 —— 老存档 / 开场白兜底是纯字符串，新形态是 {text, rate} 结构体。
+    // 无论哪种，最终都归一到 { text, rate }。
+    const norm = normalizeActionOption(action);
+    const text = norm.text;
     const btn = document.createElement('button');
     btn.className = 'choice-option';
     btn.dataset.action = text;                   // 关键：绕开 HTML attribute 解析
+    // 成功率单独放 dataset：点击时随请求发给后端做判定（不塞进 content，保持台词干净）
+    if (norm.rate !== null) btn.dataset.rate = String(norm.rate);
     btn.title = `选择选项${i + 1}`;
 
     const num = document.createElement('span');
@@ -2807,10 +2933,21 @@ function renderActionButtons(actions) {
     lbl.className = 'choice-label';
     lbl.textContent = text;                       // textContent 不解析，永远安全
 
+    btn.append(num, lbl);
+
+    // 成功率徽章：数字 + 按档位染色。没有成功率的选项不渲染（留白，不显示"未知"）。
+    // 开关关闭时整块不渲染 —— 与后端"关闭即不判定"保持一致。
+    if (norm.rate !== null && isRollEnabled()) {
+      const rate = document.createElement('span');
+      rate.className = 'choice-rate ' + rateTierClass(norm.rate);
+      rate.textContent = norm.rate + '%';
+      btn.append(rate);
+    }
+
     const arrow = document.createElement('span');
     arrow.className = 'choice-arrow';
+    btn.append(arrow);
 
-    btn.append(num, lbl, arrow);
     list.append(btn);
   });
 
@@ -4721,6 +4858,74 @@ function renderTable(lines) {
 }
 
 /**
+ * Roll 点：幕后控制台显示本轮判定明细。
+ *
+ * 这是**玩家唯一能看到真实骰值的地方**（主界面刻意隐藏，保持沉浸感）。
+ * 定位：当玩家怀疑"AI 是不是假判定了"时，用这里核对系统实际掷出的点数与判定线。
+ */
+function renderRollDebugEntry(roll, timeStr, roundNum) {
+  if (!roll) return;
+  const box = DOM.debugMainAgentContent && DOM.debugMainAgentContent();
+  if (!box) return;
+  try {
+    const empty = box.querySelector('.debug-empty');
+    if (empty) empty.remove();
+
+    const entryId = 'debug-roll-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    const clsMap = {
+      critical_success: 'roll-debug-crit-success',
+      success: 'roll-debug-success',
+      failure: 'roll-debug-failure',
+      critical_failure: 'roll-debug-crit-failure',
+    };
+    const cls = clsMap[roll.outcome] || '';
+    const sourceLabel = {
+      main_ai: '主AI给出的成功率',
+      butler: '管家补全的成功率',
+      default: '未提供成功率 → 默认档',
+      manual: '玩家手动输入 → 75% 加成档',
+    }[roll.source] || roll.source || '未知';
+
+    let detail = '';
+    detail += '<div>玩家选择：' + escapeHtml(String(roll.actionText || '—')) + '</div>';
+    detail += '<div>掷骰：<b>D20 = ' + escapeHtml(String(roll.die)) + '</b></div>';
+    if (roll.rate !== null && roll.rate !== undefined) {
+      detail += '<div>成功率：' + escapeHtml(String(roll.rate)) + '%　（来源：' + escapeHtml(sourceLabel) + '）</div>';
+    } else {
+      detail += '<div>成功率：未提供　（' + escapeHtml(sourceLabel) + '）</div>';
+    }
+    detail += '<div>判定：' + escapeHtml(String(roll.line || '')) + '</div>';
+    if (roll.retried) {
+      detail += '<div style="color:#f0a040">⚠️ 主AI首次输出违背判定，已被驳回重写一次</div>';
+    }
+    if (roll.violated) {
+      detail += '<div style="color:#e0555a">违规片段：' + escapeHtml(String(roll.violated)) + '</div>';
+    }
+
+    const card = `<div class="debug-card roll-debug-card ${cls}" id="${entryId}" data-round="${escapeAttr(String(roundNum))}">
+      <div class="debug-card-header" onclick="toggleDebugCard('${entryId}')">
+        <span class="debug-card-arrow">&#9654;</span>
+        <span class="debug-card-round">第${roundNum}轮</span>
+        <span class="debug-card-summary">行动判定：${escapeHtml(String(roll.label || roll.outcome))}　(D20=${escapeHtml(String(roll.die))}${roll.rate !== null && roll.rate !== undefined ? ' ≤ ' + escapeHtml(String(roll.rate)) + '%' : ''})</span>
+        <span class="debug-card-time">${timeStr || ''}</span>
+      </div>
+      <div class="debug-card-body" style="display:none">
+        <div class="debug-section">
+          <div class="debug-section-title">本轮判定明细</div>
+          <div style="font-size:var(--debug-font,13px);line-height:1.7">${detail}</div>
+        </div>
+      </div>
+    </div>`;
+
+    const cards = box.querySelectorAll('.debug-card');
+    if (cards.length > 0) cards[0].insertAdjacentHTML('beforebegin', card);
+    else box.insertAdjacentHTML('afterbegin', card);
+  } catch (e) {
+    console.warn('[Roll] 控制台卡片渲染失败:', e && e.message);
+  }
+}
+
+/**
  * 渲染主Agent调试卡片（含思维链、完整输出）
  */
 function renderMainAgentDebugEntry(formatted, rawContent, timeStr, roundNum) {
@@ -4833,7 +5038,7 @@ function renderPlainText(text) {
 
 // ============ 发送消息 ============
 
-async function sendMessage() {
+async function sendMessage(opts = {}) {
   const input = DOM.messageInput();
   const content = input.value.trim();
 
@@ -4879,7 +5084,12 @@ async function sendMessage() {
   input.value = '';
   updateSendButton();
 
-  await runGenerationTurn({ content });
+  // Roll 点：点选项时带上成功率；手动输入时不带 → 后端走 75% 加成档。
+  await runGenerationTurn({
+    content,
+    rollFromOption: !!opts.rollFromOption,
+    rollRate: (opts.rollRate === null || opts.rollRate === undefined) ? null : opts.rollRate,
+  });
 }
 
 /**
@@ -4926,6 +5136,9 @@ async function regenerateMessage() {
 async function runGenerationTurn(opts = {}) {
   const regenerate = !!opts.regenerate;
   const content = regenerate ? '' : (opts.content || '');
+  // Roll 点：点选项 → rollFromOption + 成功率；手动输入 → 两者都不带（后端按 75% 档）
+  const rollFromOption = !!opts.rollFromOption;
+  const rollRate = (opts.rollRate === null || opts.rollRate === undefined) ? null : opts.rollRate;
 
   AppState.isGenerating = true;
   setGeneratingUI(true);
@@ -4990,6 +5203,15 @@ async function runGenerationTurn(opts = {}) {
       null,
       {
         regenerate,
+        // Roll 点：只在这两处透传 —— 后端据 roll_from_option 区分"点选项/手动输入"
+        rollFromOption: regenerate ? false : rollFromOption,
+        rollRate: regenerate ? null : rollRate,
+        onRollResult: (info) => {
+          if (isStale()) return;
+          // 判定已出：把"故事生成中……"提示条换成上一段的成败。
+          // ⚠️ 只显示成败 —— 这里刻意不拿骰值（沉浸感），骰值走 onDone 的 result.roll 进控制台。
+          try { showRollResult(info); } catch (e) { console.warn('[Roll] 结果提示失败:', e); }
+        },
         onTurnRemoved: (info) => {
           if (isStale()) return;
           // 后端已把本轮旧回复删掉：按其回报的 message_id 精确移除那一楼（权威来源 ——
@@ -5040,7 +5262,9 @@ async function runGenerationTurn(opts = {}) {
           if (result.formatted && typeof result.formatted === 'object') {
             aiMsgDiv.innerHTML = renderAIBlock(result.formatted, result.content, new Date().toISOString());
             // 向调试面板推送完整输出（带上真实轮次，便于「回顾」删除该轮时一并清掉记录）
-            appendDebugEntry(result.formatted, result.content, formatTime(new Date().toISOString()), result.butler, currentRound);
+            // Roll 点：把判定明细交给控制台（骰值只在这里可见）
+            appendDebugEntry(result.formatted, result.content, formatTime(new Date().toISOString()), result.butler, currentRound,
+              result.roll ? Object.assign({}, result.roll, { actionText: content }) : null);
           } else {
             aiMsgDiv.innerHTML = renderAIBlock(null, result.content, new Date().toISOString());
           }
@@ -5151,7 +5375,72 @@ async function runGenerationTurn(opts = {}) {
 function setGeneratingUI(on) {
   const active = !!on;
   try { document.body.classList.toggle('is-generating', active); } catch (e) { /* 非关键 */ }
+  // 开始生成 → 提示条回到"故事生成中……"（并清掉上一轮的判定结果态）
+  if (active) resetGenStatusToProgress();
   document.querySelectorAll('.gen-status').forEach(el => { el.hidden = !active; });
+}
+
+/**
+ * Roll 点：把"故事生成中……"提示条切换成**上一段行动的判定结果**。
+ *
+ * 这一段是你指定的交互：生成时显示"故事生成中……"，生成完在**同一个位置**
+ * 显示上一段是否成功。⚠️ 只显示成败 —— **不显示骰值**（主界面保持沉浸感；
+ * 想看真实骰值请开幕后控制台）。
+ *
+ * @param {{outcome:string, isCritical?:boolean, manual?:boolean}} roll
+ */
+function showRollResult(roll) {
+  if (!roll || !roll.outcome) return;
+  const textMap = {
+    critical_success: '◆ 大成功！',
+    success: '◇ 上一段行动：成功',
+    failure: '✕ 行动失败',
+    critical_failure: '☠ 大失败！',
+  };
+  const text = textMap[roll.outcome];
+  if (!text) return;
+  const clsMap = {
+    critical_success: 'roll-res-crit-success',
+    success: 'roll-res-success',
+    failure: 'roll-res-failure',
+    critical_failure: 'roll-res-crit-failure',
+  };
+  const cls = clsMap[roll.outcome] || 'roll-res-success';
+
+  document.querySelectorAll('.gen-status').forEach(el => {
+    el.textContent = text;
+    el.hidden = false;
+    el.classList.remove('gen-status--progress');
+    el.classList.add('gen-status--result', cls);
+    // 大成功/大失败抖动一下，强化"这是系统裁定"的观感
+    if (roll.isCritical) {
+      el.classList.remove('roll-shake');
+      void el.offsetWidth;            // 强制重排，让动画能重放
+      el.classList.add('roll-shake');
+    } else {
+      el.classList.remove('roll-shake');
+    }
+  });
+  // 停留一段时间后自动淡出，不长期占着提示条
+  clearTimeout(showRollResult._timer);
+  showRollResult._timer = setTimeout(() => {
+    document.querySelectorAll('.gen-status').forEach(el => {
+      if (el.classList.contains('gen-status--result') && !document.body.classList.contains('is-generating')) {
+        el.hidden = true;
+      }
+    });
+  }, 6000);
+}
+
+/** 把判定提示条复位成"故事生成中……" */
+function resetGenStatusToProgress() {
+  clearTimeout(showRollResult._timer);
+  document.querySelectorAll('.gen-status').forEach(el => {
+    el.classList.remove('gen-status--result', 'roll-res-crit-success', 'roll-res-success',
+                        'roll-res-failure', 'roll-res-crit-failure', 'roll-shake');
+    el.classList.add('gen-status--progress');
+    el.textContent = '故事生成中……';
+  });
 }
 
 /**
@@ -7176,10 +7465,16 @@ function getBarClass(pctOrKey) {
  *   必须传真实轮次：卡片带 data-round 后，「回顾」里删除某轮回复时才能把
  *   该轮的主 Agent + 管家 Agent 处理记录一起清掉。缺省退回内部计数器。
  */
-function appendDebugEntry(formatted, rawContent, timeStr, butlerResult, storyRound) {
+function appendDebugEntry(formatted, rawContent, timeStr, butlerResult, storyRound, rollInfo) {
   AppState.debugRoundCounter++;
   const roundNum = (storyRound == null || storyRound === '') ? AppState.debugRoundCounter : storyRound;
   const MAX_DEBUG_ENTRIES = 50; // 限制调试条目数量，防止DOM累积导致浏览器卡死
+
+  // Roll 点：把本轮判定明细插到最上面（玩家核对"AI 有没有假判定"的唯一窗口）。
+  // 骰值只在这里出现 —— 主界面刻意隐藏。
+  if (rollInfo && rollInfo.die != null) {
+    renderRollDebugEntry(Object.assign({}, rollInfo, { actionText: rollInfo.actionText }), timeStr, roundNum);
+  }
 
   // 主Agent面板
   const mainContainer = DOM.debugMainAgentContent();

@@ -14,6 +14,41 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
+// ── 快速退出（2026-10-02，修「点 X 关窗口未响应很久」）────────────────────────
+// 点控制台窗口的 X 会发 CTRL_CLOSE_EVENT。**Node 在 Windows 上把它映射为 SIGHUP**
+// （不是 SIGBREAK！2026-10-02 用 PostMessage WM_CLOSE 打真实控制台窗口实测确认：
+//   日志里收到的是 SIGHUP）。所以要覆盖四种信号才完整：
+//   · SIGHUP    ← 点 X 关窗口（CTRL_CLOSE_EVENT / 注销 / 关机）
+//   · SIGINT    ← Ctrl+C
+//   · SIGBREAK  ← Ctrl+Break
+//   · SIGTERM   ← taskkill（不带 /F）等优雅终止路径
+// 有显式处理器 = 立刻主动退出，不等事件循环里的活跃句柄（HTTP server、TTS heartbeat
+// 的 setInterval、缩略图预热的 setTimeout 链、SQLite）逐个自然收尾。
+let _shuttingDown = false;
+// 由 listenOn() 在监听成功后回填 —— 退出时要主动掐断它的所有连接。
+let _httpServer = null;
+
+function shutdownFast(signal) {
+  if (_shuttingDown) return;
+  _shuttingDown = true;
+  const note = _httpServer ? '（' + (activeConnCount()) + ' 条连接）' : '';
+  console.log('[Server] 收到 ' + signal + '，快速退出' + note);
+  // 关键：主动断开所有 keep-alive / SSE 连接。
+  // 不这样做的话，浏览器留下的长连接会挂住事件循环，conhost 关闭窗口时要干等它们
+  // 自然超时（实测用户侧"未响应 30 秒以上"，诊断显示 CPU 0ms 纯等待 + 8 条 ESTABLISHED）。
+  try { _httpServer && _httpServer.closeAllConnections && _httpServer.closeAllConnections(); } catch (e) { /* 尽力而为 */ }
+  process.exit(0);
+}
+
+/** 当前连接数（仅用于退出日志，便于事后排查） */
+function activeConnCount() {
+  try { return _httpServer && _httpServer._connections != null ? _httpServer._connections : 0; } catch (e) { return 0; }
+}
+process.on('SIGHUP', () => shutdownFast('SIGHUP'));     // Windows 点 X（CTRL_CLOSE_EVENT）
+process.on('SIGINT', () => shutdownFast('SIGINT'));     // Ctrl+C
+process.on('SIGBREAK', () => shutdownFast('SIGBREAK')); // Ctrl+Break
+process.on('SIGTERM', () => shutdownFast('SIGTERM'));   // taskkill 优雅路径
+
 // 桌面版 sidecar 模式：外壳（Electron）退出后本进程必须跟着退出，否则会留下
 // 孤儿 node 占着端口，用户下次启动就会莫名换端口。IPC 通道断开是父进程已死的
 // 可靠信号 —— 比「写 stdout 时撞上 EPIPE」这种偶然事件确定得多。
@@ -189,6 +224,7 @@ function listenOn(port, attempt) {
   attempt = attempt || 0;
   const server = app.listen(port, LISTEN_HOST);
 
+  _httpServer = server;   // 退出处理器要用它来掐断连接
   server.on('listening', () => {
     if (port !== PORT) {
       console.warn(`[Server] 端口 ${PORT} 已被占用，自动改用 ${port}（已记入 desktop-config.json）`);

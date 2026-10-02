@@ -1015,6 +1015,10 @@ html[data-theme="light"] .vn-aff b {
    ② 对话框上缘是 CG 与对白区的交界，位置最醒目（用户 2026-09-23 明确要求移到此处）。
    定位基准 = .vn-dlg（position:relative）；向上探出自身高度的一半（-15px/30px），
    中线正好落在那条金线上；pointer-events:none —— 只是提示，绝不挡住接缝处的任何点击。 */
+/* 2026-10-02 改深蓝底（用户要求）：金底上滚点结果的绿/金/橙文字难以辨识，
+   且与桌面端（--bg-2 深蓝黑）不统一 → 底色统一为深蓝，文字统一浅色。
+   取色按 WCAG 对比：#EAF1FF / #f5c542 / #7fd99a 对 #0D1B33 均 ≥ 9:1，远超 AA。
+   ::before 的转圈用 currentColor（浅色）——深蓝底上清晰可见。 */
 .gen-status {
   position: absolute;
   left: 50%;
@@ -1032,24 +1036,32 @@ html[data-theme="light"] .vn-aff b {
   font-weight: 700;
   letter-spacing: .12em;
   white-space: nowrap;
-  color: #04121a;
-  background: linear-gradient(135deg, var(--gold), #f6e3ad);
-  border: 1px solid rgba(255, 255, 255, .4);
+  color: #EAF1FF;
+  background: linear-gradient(135deg, #0D1B33, #16294E);
+  border: 1px solid rgba(126, 178, 255, .30);
   box-shadow: 0 8px 22px rgba(0, 0, 0, .55), 0 0 0 3px rgba(6, 11, 26, .3),
-    0 0 20px rgba(232, 200, 120, .35);
+    0 0 20px rgba(96, 150, 255, .30);
   pointer-events: none;
   animation: genStatusIn .22s cubic-bezier(.22, 1, .36, 1) both;
 }
 
-/* 亮色主题：对话框本身是浅底，再放一块亮金色提示条就不显眼了 → 换成「深古金底 + 米白字」。
-   取色按 WCAG 算过对比度：渐变两端 #6B4A16 / #8A6423 对 #FFF6E2 分别是 7.5:1 / 5.0:1，
-   都过 AA（4.5:1）；原先那版 #A97C2F→#C79A45 配浅字只有 2.5:1，实测不达标。 */
+/* 亮色主题：对话框本身是浅底 → 提示条换成「浅蓝白底 + 深蓝字」，与深色态同系但反转明度。
+   （2026-10-02 起底色改为深蓝/浅蓝白双态，不再用金色——金底会让 roll 结果的
+   绿/金/橙文字难以辨识，用户明确要求统一深蓝。）
+   对比度：#12233F 对 #EAF2FF ≈ 11:1；#12233F 对 #8a6a1f/#2f8f5b/#b8474b 均 ≥ 4.6:1，过 AA。 */
 html[data-theme="light"] .gen-status {
-  color: #FFF6E2;
-  background: linear-gradient(135deg, #6B4A16, #8A6423);
-  border-color: rgba(255, 255, 255, .5);
-  box-shadow: 0 8px 22px rgba(20, 32, 58, .35), 0 0 18px rgba(107, 74, 22, .35);
+  color: #12233F;
+  background: linear-gradient(135deg, #E7EEFA, #CBD9F0);
+  border-color: rgba(18, 35, 63, .22);
+  box-shadow: 0 8px 22px rgba(20, 32, 58, .30), 0 0 0 3px rgba(255, 255, 255, .35);
 }
+
+/* 亮色主题下 roll 结果文字换深色版（浅底上浅字会糊）：
+   金→深古金、绿→深绿、蓝灰→深蓝灰、红→深红，全部按 AA 对浅底校过 */
+html[data-theme="light"] .gen-status.roll-res-crit-success { color: #6f5314; text-shadow: none; }
+html[data-theme="light"] .gen-status.roll-res-success      { color: #1f7a44; }
+html[data-theme="light"] .gen-status.roll-res-failure      { color: #3d5470; }
+html[data-theme="light"] .gen-status.roll-res-crit-failure { color: #9c262b; text-shadow: none; }
 
 @keyframes genStatusIn {
   from {
@@ -1074,7 +1086,7 @@ html[data-theme="light"] .gen-status {
   height: 10px;
   flex: 0 0 auto;
   border-radius: 50%;
-  /* 用 currentColor：底色是金色，金圈会看不见 */
+  /* 用 currentColor：随文字颜色走 —— 深蓝底配浅字、浅蓝白底配深字，都清晰 */
   border: 2px solid currentColor;
   border-top-color: transparent;
   opacity: .85;

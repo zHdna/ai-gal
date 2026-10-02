@@ -1362,11 +1362,26 @@
       letter-spacing: .08em;
       white-space: nowrap;
       color: var(--text, #EAF1FF);
-      background: var(--bg-2, #0C1322);
+      /* 2026-10-02 统一深蓝底（用户要求）：桌面原为 --bg-2（深蓝黑），移动原为金色。
+         金底上滚点结果的绿/金/橙文字难以辨识 → 两端统一深蓝，结果文字共用一套浅色。 */
+      background: linear-gradient(135deg, #0D1B33, #16294E);
       border: 1px solid var(--line-2, rgba(126, 178, 255, .26));
       box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
       pointer-events: none;
     }
+
+    /* 亮色主题：浅蓝白底 + 深蓝字（与移动端同一套反转明度方案，2026-10-02）。
+       roll 结果文字换深色版 —— 浅底上浅字（金/绿）会糊，全部压深并去掉发光。 */
+    html[data-theme="light"] .gen-status {
+      color: #12233F;
+      background: linear-gradient(135deg, #E7EEFA, #CBD9F0);
+      border-color: rgba(18, 35, 63, .22);
+      box-shadow: 0 6px 18px rgba(20, 32, 58, .25);
+    }
+    html[data-theme="light"] .gen-status.roll-res-crit-success { color: #6f5314; text-shadow: none; }
+    html[data-theme="light"] .gen-status.roll-res-success      { color: #1f7a44; }
+    html[data-theme="light"] .gen-status.roll-res-failure      { color: #3d5470; }
+    html[data-theme="light"] .gen-status.roll-res-crit-failure { color: #9c262b; text-shadow: none; }
 
     /* hidden 属性会被 display:flex 压过，必须显式关掉 */
     .gen-status[hidden] {
