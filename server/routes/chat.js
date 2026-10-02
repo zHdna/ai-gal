@@ -4584,6 +4584,32 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
   }
 
   /**
+   * 给已序列化的请求体盖上 Content-Length。
+   *
+   * ── 为什么必须显式设置（2026-10-03 实测定案，§35 的遗留缺口）────────────────
+   * Node 的 `req.write(str)` 在**没有** Content-Length 时会自动改用
+   * `Transfer-Encoding: chunked`。这对大多数网关无所谓，但**本机 llama.cpp 系的
+   * 服务（Strata）不解析分块请求体** —— 它认为 body 是空的，于是 3ms 内直接回
+   * `400 {"error":{"type":"invalid_request_error","message":"No messages provided."}}`。
+   *
+   * 这个失败的现场极具误导性，实测排错记录如下（供后人参考，别再走一遍弯路）：
+   *   · TCP 代理抓到的是「连接建立 → 3ms 后被重置」，看起来像防火墙/超时问题；
+   *   · 同一进程内直连同一端点（用 curl 或带 Content-Length 的自测）**完全正常 200**；
+   *   · 服务端日志 `bytesWritten=0` —— 因为 chunked 的分块头里没有可解析的消息体；
+   *   · 于是「模型列表能拉（GET 无 body）」但「对话必失败（POST 有 body）」。
+   * 结论：不是网络、不是鉴权、不是 max_tokens、不是分块响应 —— 是**请求体编码方式**。
+   *
+   * ⚠️ §35 曾把 cardStudio.js 的同款修复回流进本仓，但当时**漏了 chat.js**（注释里
+   *    提到的 withContentLength 其实并不存在）。本函数即为补齐该缺口，别再丢第二次。
+   *
+   * 兼容性：Content-Length 是 HTTP/1.0 起就有的标准头，比 chunked 更通用；
+   * 对所有供应商（含远程网关）都是无害且更稳妥的。
+   */
+  function withContentLength(headers, bodyText) {
+    return { ...headers, 'Content-Length': Buffer.byteLength(bodyText) };
+  }
+
+  /**
    * Non-streaming API call
    */
   function callProviderAPI(provider, messages, reasoningCollector) {
@@ -4652,7 +4678,9 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
         port: parsed.port || (isHttps ? 443 : 80),
         path: parsed.pathname + parsed.search,
         method: 'POST',
-        headers,
+        // ⚠️ 必须带 Content-Length，否则 Node 会发 chunked，本地 llama.cpp/Strata 解析不出 body
+        //    → 3ms 内 400 "No messages provided."（详见 withContentLength 的注释）
+        headers: withContentLength(headers, JSON.stringify(body)),
         protocol: isHttps ? 'https:' : 'http:'
       };
 
@@ -4846,7 +4874,9 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
         port: parsed.port || (isHttps ? 443 : 80),
         path: parsed.pathname + parsed.search,
         method: 'POST',
-        headers,
+        // ⚠️ 必须带 Content-Length，否则 Node 会发 chunked，本地 llama.cpp/Strata 解析不出 body
+        //    → 3ms 内 400 "No messages provided."（详见 withContentLength 的注释）
+        headers: withContentLength(headers, JSON.stringify(body)),
         protocol: isHttps ? 'https:' : 'http:'
       };
 
@@ -5589,6 +5619,22 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
    */
   function resolveTurnJudgement(o) {
     if (!o || !o.rollEnabled) return null;
+
+    // ⓪ 第 1 轮对话（开场白之后的首次发言）**不做判定**。
+    //
+    // 为什么：开场白里的"选项"经常不是真正的行动，而是**设定类/启动类**的选择
+    // （选角色、选难度、确认设定、填初始信息…）。对这类操作掷骰裁定成败毫无意义，
+    // 抽到大失败还会把开局写歪。
+    //
+    // 判据：countRounds() 数的是**库里已有的** user 消息数，而本函数在
+    // 当前这条 user 消息入库**之前**运行（见 /stream 里的调用点），所以
+    // 首次发言时它返回 0 → 跳过；从第 2 轮起返回 >=1 → 正常判定。
+    // 注意 regenerate 不在此列：它复用原判定，不会被这段拦掉。
+    const roundsSoFar = countRounds(o.conversation_id);
+    if (!o.regenerate && roundsSoFar === 0) {
+      console.log('[Roll] 第 1 轮对话（开场白后首次发言）→ 跳过成功率判定');
+      return null;
+    }
 
     // ① 重新生成：读回原判定，保证同一选项结果稳定
     if (o.regenerate && o.removedTurn && o.removedTurn.userContent) {
