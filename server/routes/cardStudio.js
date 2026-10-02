@@ -407,15 +407,18 @@ module.exports = (db) => {
       if (thinkingOff && isLocalLLM && provider_type !== 'xai') {
         body.chat_template_kwargs = { enable_thinking: false };
       }
+      const payload = JSON.stringify(body);
       const reqOptions = {
         hostname: parsed.hostname,
         port: parsed.port || (isHttps ? 443 : 80),
         path: parsed.pathname + parsed.search,
         method: 'POST',
-        headers,
+        // ⚠️ 必须显式带 Content-Length：没有它时 Node 会改用 Transfer-Encoding: chunked，
+        //    而本地 llama.cpp 系服务（Strata）不解析分块请求体 → 3ms 内 400 "No messages provided."
+        //    （2026-10-03 在 ai-rp-tool 实测定案，此处同步回干净仓库）
+        headers: { ...headers, 'Content-Length': Buffer.byteLength(payload) },
         protocol: isHttps ? 'https:' : 'http:'
       };
-      const payload = JSON.stringify(body);
       let req;
 
       function handleResponse(res) {
