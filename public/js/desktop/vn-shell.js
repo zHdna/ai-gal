@@ -126,13 +126,22 @@
     return out;
   }
 
-  /** 行动选项：app.js 渲染成 .choice-menu > .choice-list > .choice-option[data-action] */
+  /** 行动选项：app.js 渲染成 .choice-menu > .choice-list > .choice-option[data-action]
+   *
+   *  Roll 点：同时把成功率带出来（app.js 把进度写在 data-rate 上）。
+   *  ⚠️ 这些选项按钮是**外壳自己重建**的，不走 app.js 的事件委托 ——
+   *  所以必须在这里把 rate 一并取出并透传给 chooseAction，
+   *  否则点击会被当成"手动输入"而走 75% 加成档（曾由此产生
+   *  "选哪个选项都用 75%" 的 bug）。 */
   function extractChoices(block) {
     if (!block) return [];
     return $$('.choice-menu .choice-option, .choice-menu .action-btn', block).map(function (b) {
       var label = $('.choice-label', b);
-      return (b.dataset.action || (label ? label.textContent : b.textContent) || '').trim();
-    }).filter(Boolean);
+      var text = (b.dataset.action || (label ? label.textContent : b.textContent) || '').trim();
+      var rateAttr = b.dataset ? b.dataset.rate : null;
+      var rate = (rateAttr !== undefined && rateAttr !== null && rateAttr !== '') ? Number(rateAttr) : null;
+      return { text: text, rate: (isFinite(rate) ? rate : null) };
+    }).filter(function (c) { return !!c.text; });
   }
 
   function blockText(block) {
@@ -435,7 +444,10 @@
     box.innerHTML = '';
     if (!list.length) { box.classList.add('hidden'); return; }
     box.classList.remove('hidden');
-    list.forEach(function (text, i) {
+    /* 兼容两种形态：{text,rate}（extractChoices 新返回）与纯字符串（历史调用） */
+    list.forEach(function (item, i) {
+      var text = (typeof item === 'string') ? item : String(item && item.text || '');
+      var rate = (typeof item === 'object' && item) ? item.rate : null;
       var b = document.createElement('button');
       b.className = 'ch';
       b.type = 'button';
@@ -445,7 +457,7 @@
       k.textContent = String(i + 1);
       b.appendChild(s);
       b.appendChild(k);
-      b.addEventListener('click', function () { chooseAction(text); });
+      b.addEventListener('click', function () { chooseAction(text, rate); });
       box.appendChild(b);
     });
   }
@@ -939,13 +951,21 @@
     render();
   }
 
-  function chooseAction(text) {
+  function chooseAction(text, rate) {
     var input = byId('messageInput');
     var send = byId('btnSend');
     if (!input || !send) { toast('输入区未就绪'); return; }
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    send.click();
+    /* Roll 点：把选项成功率交给 app.js 的发送路径。
+       chooseAction 是外壳自己的入口（不走 app.js 的事件委托），
+       不显式交接的话 app.js 会当成"手动输入"→ 走 75% 档，
+       于是"选哪个选项都用同一个成功率"。 */
+    if (typeof window.__rollPickOption === 'function') {
+      window.__rollPickOption(text, (rate === undefined ? null : rate));
+    } else {
+      send.click();
+    }
     S.optionsOpen = false;
     renderChoices([]);
     app.classList.remove('choosing');

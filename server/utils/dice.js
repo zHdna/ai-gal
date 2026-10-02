@@ -1,15 +1,22 @@
 /**
  * Roll 点判定内核 —— 行动的成败由代码裁定，不由 AI 自述。
  *
- * 设计要点（与 ROLL-点机制-实施方案.md 对应）：
- *   · 天然 1 = 大失败、天然 20 = 大成功，且【绝对优先】—— 任何成功率都盖不掉它；
- *       95% 掷出 1 依然大失败，5% 掷出 20 依然大成功。
- *   · 有成功率时按 D20 判定：骰值 <= 成功率 → 成功。
- *   · 无成功率（主 AI 没写、管家也没补）→ 默认档：>=10 成功，2-9 失败。
- *   · 玩家手动输入（不点选项）→ 固定 75%：表示他不满意给出的选项、要自己作行动，
- *       给一份加成以免挫败感。
+ * 骰制：**D100**（1-100）
+ *   · **1-5**   = 大失败（critical failure）
+ *   · **96-100** = 大成功（critical success）
+ *   · 两者**绝对优先**：成功率再高也挡不住 1-5 的大失败，再低也挡不住 96-100 的大成功。
+ *   · 其余点数按成功率判定：**点数 > (100 - 成功率)** 即成功。
+ *       例：75% → 点数 > 25 成功（26-100，恰好 75 个点 = 75%）
+ *           10% → 点数 > 90 成功（91-100，10 个点 = 10%）
+ *       这个写法让"成功率"与"骰点区间"一一对应，不再有 D20 那种
+ *       "75% 到底对应几点"的换算歧义（旧版就是在这里出的 bug：
+ *       拿 D20 点数直接跟 75 比 → 恒真 → 所有选项成功率都一样）。
  *
- * 可见性（三档受众，见方案第四节）：
+ * 成功率来源：
+ *   ① 主 AI 在选项行尾写【成功率 65%】② 管家补全 ③ 都没写 → 默认档
+ *   ④ 玩家手动输入（不点选项）→ 75% 加成档
+ *
+ * 可见性（三档受众）：
  *   · 骰值 / 成功率 / 判定线 → **对 AI 可见**（AI 要知道难度与掷点才能把
  *     "险胜" 与 "轻松成功" 演出不同质感），也写进幕后控制台供玩家核对；
  *   · 主界面**只显示成败**，不显示骰值（沉浸感）。
@@ -31,16 +38,18 @@ const OUTCOME = {
 const SOURCE = {
   MAIN_AI: 'main_ai',   // 主 AI 在选项行尾写了成功率
   BUTLER: 'butler',     // 管家补全的成功率
-  DEFAULT: 'default',   // 都没写 → 默认档（>=10 成功）
-  MANUAL: 'manual',     // 玩家手动输入 → 固定 75%
+  DEFAULT: 'default',   // 都没写 → 默认档
+  MANUAL: 'manual',     // 玩家手动输入 → 75% 加成档
 };
 
+// ── 骰制常量（D100）──────────────────────────────────────────────────────────
 const DIE_MIN = 1;
-const DIE_MAX = 20;
-/** 无成功率时的默认成功线：**骰值 >= 10 即成功**，2-9 失败（1/20 仍是大小失败）。
- *  注意这是骰值自身的绝对线，不是"50% 成功率"——两者对 2-9 点结论不同。 */
-const DEFAULT_SUCCESS_LINE = 10;
-/** 默认档对外展示的等效成功率（仅用于控制台/AI 提示的"难度百分比"口径） */
+const DIE_MAX = 100;
+/** 大失败区间：1-5（含） */
+const CRIT_FAIL_MAX = 5;
+/** 大成功区间：96-100（含） */
+const CRIT_SUCCESS_MIN = 96;
+/** 无成功率时的默认档：50%（即点数 > 50 成功，51-100 共 50 个点） */
 const DEFAULT_RATE = 50;
 /** 玩家手动输入的加成档位 */
 const MANUAL_RATE = 75;
@@ -49,9 +58,9 @@ const RATE_MIN = 5;
 const RATE_MAX = 95;
 
 /**
- * 掷骰。默认 1-20。
+ * 掷骰。默认 1-100。
  * @param {number} [min=1]
- * @param {number} [max=20]
+ * @param {number} [max=100]
  * @returns {number} 闭区间内的均匀随机整数
  */
 function roll(min, max) {
@@ -69,66 +78,68 @@ function clampRate(rate) {
 }
 
 /**
+ * 成功率 → 成功所需的最小点数（判定线）。
+ *   点数 > (100 - rate) 即成功  ⇔  点数 >= 101 - rate
+ *   用整数运算，避免 100*(1-0.9) = 9.999... 这类浮点误差把线算歪。
+ *   rate=75 → 26；rate=10 → 91；rate=50 → 51；rate=95 → 6；rate=5 → 96
+ */
+function successLine(rate) {
+  const r = clampRate(rate);
+  if (r === null) return null;
+  return (DIE_MAX + 1) - r;   // = 101 - rate
+}
+
+/**
  * 核心判定。**纯函数**：给定骰值与成功率，返回结论（不掷骰，便于复用与测试）。
  *
- * @param {number} die   骰值 1-20
- * @param {number|null} rate 成功率阈值（5-95）；null/undefined → 走默认档
+ * @param {number} die   骰值 1-100
+ * @param {number|null} rate 成功率（5-95）；null/undefined → 走默认档
  * @returns {{outcome: string, die: number, rate: number, source: string, isCritical: boolean}}
  */
 function judge(die, rate, source) {
-  // ⚠️ 这里**不能**把超过 20 的输入夹到 20 —— 那会把 63 变成 20、凭空造出一个"大成功"。
-  // die 只做"至少 1 的整数"归一；越界值由调用方（roll）保证不会产生，
-  // 真收到越界值说明调用写错了，如实按原值判定比静默篡改安全。
+  // ⚠️ 这里**不能**把超出范围的输入夹进 1-100 —— 那会把越界值伪造成合法点数
+  // （旧代码曾把 die=63 夹成 20，凭空造出一个"大成功"）。
+  // 只做"至少 1 的整数"归一；越界由调用方（roll）保证不会产生。
   const n = Math.floor(Number(die));
   const d = Number.isFinite(n) && n >= DIE_MIN ? n : DIE_MIN;
 
-  // ① 天然 1/20 绝对优先 —— 先判，不被成功率覆盖
-  if (d === DIE_MAX) {
+  // ① 天然大失败 / 大成功 —— 先判，不被成功率覆盖
+  if (d >= CRIT_SUCCESS_MIN) {
     return { outcome: OUTCOME.CRITICAL_SUCCESS, die: d, rate: null, source: source || SOURCE.DEFAULT, isCritical: true };
   }
-  if (d === DIE_MIN) {
+  if (d <= CRIT_FAIL_MAX) {
     return { outcome: OUTCOME.CRITICAL_FAILURE, die: d, rate: null, source: source || SOURCE.DEFAULT, isCritical: true };
   }
 
   // ② 常规判定
   const hasRate = rate !== null && rate !== undefined && Number.isFinite(Number(rate));
-  if (!hasRate) {
-    // 默认档是**骰值自身的绝对线**（10 点及以上成功），不是"50% 成功率"——
-    // 写成 d <= 50 会让 2-9 点也判成功，是错的。这里用 DEFAULT_SUCCESS_LINE 直接比。
-    return {
-      outcome: d >= DEFAULT_SUCCESS_LINE ? OUTCOME.SUCCESS : OUTCOME.FAILURE,
-      die: d,
-      rate: null,
-      source: source || SOURCE.DEFAULT,
-      isCritical: false,
-    };
-  }
-  const r = clampRate(rate);
+  const r = hasRate ? clampRate(rate) : DEFAULT_RATE;
+  const line = successLine(r);
   return {
-    outcome: d <= r ? OUTCOME.SUCCESS : OUTCOME.FAILURE,
+    outcome: d >= line ? OUTCOME.SUCCESS : OUTCOME.FAILURE,
     die: d,
     rate: r,
-    source: source || SOURCE.MAIN_AI,
+    source: source || (hasRate ? SOURCE.MAIN_AI : SOURCE.DEFAULT),
     isCritical: false,
   };
 }
 
 /**
  * 掷骰 + 判定一步到位。
- * @param {number|null} rate 成功率；null → 默认档
+ * @param {number|null} rate 成功率；null → 默认档(50%)
  * @param {string} [source] 来源标记
  */
 function rollAndJudge(rate, source) {
   const hasRate = rate !== null && rate !== undefined && Number.isFinite(Number(rate));
   const die = roll();
   const res = judge(die, hasRate ? rate : null, hasRate ? (source || SOURCE.MAIN_AI) : SOURCE.DEFAULT);
-  // 天然 1/20 时 judge 会把 rate 抹成 null（因为成功率没参与判定）——
+  // 天然大成功/大失败时 judge 会把 rate 抹成 null（成功率没参与判定）——
   // 但 AI 与控制台仍需要知道"这条行动的难度线是多少"，所以补回去。
-  if (res.isCritical && hasRate) res.rate = clampRate(rate);
+  if (res.isCritical) res.rate = hasRate ? clampRate(rate) : DEFAULT_RATE;
   return res;
 }
 
-/** 玩家手动输入：固定 75% 档 */
+/** 玩家手动输入：固定 75% 加成档 */
 function rollManual() {
   const die = roll();
   const res = judge(die, MANUAL_RATE, SOURCE.MANUAL);
@@ -307,15 +318,18 @@ function buildJudgementBlock(judgement, actionText) {
 
   let head = '【行动判定·系统已裁定，不得更改】\n';
   head += '玩家选择：' + String(actionText || '').trim() + '\n';
-  head += '掷骰：D20 = ' + die + '\n';
+  head += '掷骰：D100 = ' + die + '\n';
   if (rate !== null && rate !== undefined) {
+    const line = successLine(rate);
     head += '成功率：' + rate + '%';
-    // 天然 1/20 时成功率没参与判定，如实说明，免得 AI 困惑"为什么 95% 也失败"
-    if (judgement.isCritical) head += '（天然 ' + die + '，大小成功/失败优先，不参考成功率）';
-    else head += '（判定线：' + die + ' ≤ ' + rate + '）';
+    if (judgement.isCritical) {
+      head += '（天然 ' + die + ' → ' + label + '，大小成功/失败优先，不参考成功率）';
+    } else {
+      head += '（判定线：点数 ≥ ' + line + ' 成功，即 ' + die + (die >= line ? ' ≥ ' : ' < ') + line + '）';
+    }
     head += '\n';
   } else {
-    head += '成功率：未提供（走默认档：10 点及以上成功，2-9 点失败）\n';
+    head += '成功率：未提供（走默认档 ' + DEFAULT_RATE + '%）\n';
   }
   head += '判定结果：' + label + '\n';
 
@@ -326,10 +340,13 @@ function buildJudgementBlock(judgement, actionText) {
       tail = '· 这是**大成功**：玩家行动不仅达成目的，还须带来超出预期的额外收获（意外情报、额外盟友、\n' +
              '  意外之财、对方露出破绽……），写得比普通成功更痛快、更有回报感。';
       break;
-    case OUTCOME.SUCCESS:
+    case OUTCOME.SUCCESS: {
+      // 距判定线很近 → 写成险胜
+      const near = rate !== null && rate !== undefined && (die - successLine(rate)) <= 15;
       tail = '· 这是**成功**：让玩家的行动真实生效、达成其意图。' +
-             (rate !== null && (rate - die) <= 3 ? '\n  骰值与判定线极为接近 —— 请写成**险胜**：过程有阻力、有惊无险，不是轻松做到。' : '');
+             (near ? '\n  骰值勉强压过判定线 —— 请写成**险胜**：过程有阻力、有惊无险，不是轻松做到。' : '');
       break;
+    }
     case OUTCOME.CRITICAL_FAILURE:
       tail = '· 这是**大失败**：行动以最糟的方式落空，必须写出**明确且代价性的恶果**' +
              '（受伤、被发觉、失去信任、错失时机、引来更强敌意……），且该恶果会在后续产生回响。';
@@ -354,8 +371,9 @@ function buildJudgementBlock(judgement, actionText) {
 
 module.exports = {
   OUTCOME, SOURCE,
-  DIE_MIN, DIE_MAX, DEFAULT_RATE, DEFAULT_SUCCESS_LINE, MANUAL_RATE, RATE_MIN, RATE_MAX,
-  roll, clampRate, judge, rollAndJudge, rollManual,
+  DIE_MIN, DIE_MAX, CRIT_FAIL_MAX, CRIT_SUCCESS_MIN,
+  DEFAULT_RATE, MANUAL_RATE, RATE_MIN, RATE_MAX,
+  roll, clampRate, successLine, judge, rollAndJudge, rollManual,
   parseRate, coerceAction, coerceActions,
   checkContradiction,
   outcomeLabel, outcomeBadgeText, buildJudgementBlock,

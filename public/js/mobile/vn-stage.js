@@ -244,7 +244,12 @@
       var lbl = $('.choice-label', b);
       var t = (lbl ? textOf(lbl) : '') || b.getAttribute('data-action') || textOf(b);
       t = String(t || '').trim();
-      if (t) out.push(t);
+      /* Roll 点：连成功率一起取出（app.js 写在 data-rate 上）。
+         这些按钮是外壳重建的、不走 app.js 的事件委托，不在这里带上 rate
+         就会被当成"手动输入"→ 一律走 75% 档（曾由此产生"选哪个都用 75%"的 bug）。 */
+      var rateAttr = b.getAttribute('data-rate');
+      var rate = (rateAttr !== null && rateAttr !== '') ? Number(rateAttr) : null;
+      if (t) out.push({ text: t, rate: isFinite(rate) ? rate : null });
     });
     return out;
   }
@@ -408,14 +413,17 @@
     if (!choicesEl) return;
     choicesEl.innerHTML = '';
     if (!list || !list.length) { choicesEl.classList.add('hidden'); return; }
-    list.forEach(function (text) {
+    /* 兼容两种形态：{text,rate}（extractChoices 新返回）与纯字符串（历史调用） */
+    list.forEach(function (item) {
+      var text = (typeof item === 'string') ? item : String((item && item.text) || '');
+      var rate = (typeof item === 'object' && item) ? item.rate : null;
       var b = document.createElement('button');
       b.className = 'vn-ch';
       var span = document.createElement('span');
       span.textContent = text;
       b.appendChild(span);
       b.addEventListener('click', function () {
-        chooseAction(text);
+        chooseAction(text, rate);
       });
       choicesEl.appendChild(b);
     });
@@ -427,13 +435,18 @@
   }
 
   /** 点击行动选项：填入输入框并发送（复用 app.js 的发送逻辑） */
-  function chooseAction(text) {
+  function chooseAction(text, rate) {
     var input = document.getElementById('messageInput');
     var send = document.getElementById('btnSend');
     if (!input || !send) return;
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    send.click();
+    /* Roll 点：把选项成功率交给 app.js 的发送路径（缺了它会被当成手动输入 → 75%） */
+    if (typeof window.__rollPickOption === 'function') {
+      window.__rollPickOption(text, (rate === undefined ? null : rate));
+    } else {
+      send.click();
+    }
     pendingChoices = [];
     if (choicesEl) { choicesEl.innerHTML = ''; choicesEl.classList.add('hidden'); }
     VN.shell && VN.shell.toast && VN.shell.toast('已选择：' + text);

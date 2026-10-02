@@ -3783,7 +3783,8 @@ ${ui.requiresStatus ? '### status\n（末尾输出{{user}}状态，属性名: �
   · 按**该行动在当前情境下的合理难度**给值，不要都给同一个数；
   · 顺手的小事（拿杯水、走两步）75~95%；需要技巧/运气的事 45~75%；冒险、硬闯、以弱敌强 5~40%。
 - ⚠️ 成功率由**系统掷骰判定**，不是你的判断依据：你只负责给出"这件事有多难"，
-  真正成不成功由系统掷 D20 决定并把结果告诉你。**不要**在剧情里预先写好这个行动的结果。
+  真正成不成功由系统掷 D100（1-100）决定并把结果告诉你：1-5 恒为大失败、96-100 恒为大成功，
+  其余按你给的成功率判定。**不要**在剧情里预先写好这个行动的结果。
 - 示例：
   --1、悄悄撬开窗户潜入【成功率 55%】
   --2、直接正面交涉【成功率 70%】
@@ -5600,7 +5601,7 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
         if (row && row.formatted) {
           const fmt = typeof row.formatted === 'string' ? JSON.parse(row.formatted) : row.formatted;
           if (fmt && fmt.roll && fmt.roll.outcome) {
-            console.log('[Roll] 重新生成 → 复用原判定 D20=' + fmt.roll.die + ' ' + fmt.roll.outcome);
+            console.log('[Roll] 重新生成 → 复用原判定 D100=' + fmt.roll.die + ' ' + fmt.roll.outcome);
             return Object.assign({}, fmt.roll, { actionText: o.content });
           }
         }
@@ -5627,14 +5628,14 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
       }
       const j = dice.rollAndJudge(rate, source);
       j.actionText = o.content;
-      console.log('[Roll] 选项判定 D20=' + j.die + ' rate=' + rate + ' → ' + j.outcome);
+      console.log('[Roll] 选项判定 D100=' + j.die + ' rate=' + rate + ' → ' + j.outcome);
       return j;
     }
 
     // ③ 手动输入：固定 75%（用户不满意选项、要自己作行动 → 给加成避免挫败感）
     const j = dice.rollManual();
     j.actionText = o.content;
-    console.log('[Roll] 手动输入判定 D20=' + j.die + ' → ' + j.outcome + '（75% 加成档）');
+    console.log('[Roll] 手动输入判定 D100=' + j.die + ' → ' + j.outcome + '（75% 加成档）');
     return j;
   }
 

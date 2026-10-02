@@ -638,6 +638,15 @@ function bindEvents() {
     btn.addEventListener('click', () => switchChatTab(btn.dataset.tab));
   });
 
+  // Roll 点：供 VN 外壳（桌面/移动）调用 —— 外壳自己重建了选项按钮，
+  // 不走下面的事件委托，所以要把"选了哪个选项 + 它的成功率"显式交过来。
+  // 缺了它，外壳的点击会被当成"手动输入"→ 一律走 75% 档。
+  window.__rollPickOption = function (text, rate) {
+    if (!text) return;
+    const r = (rate === null || rate === undefined || rate === '') ? null : Number(rate);
+    sendMessage({ rollFromOption: true, rollRate: isFinite(r) ? r : null });
+  };
+
   // 行动按钮点击（事件委托）
   DOM.messagesArea().addEventListener('click', (e) => {
     const btn = e.target.closest('.choice-option') || e.target.closest('.action-btn');
