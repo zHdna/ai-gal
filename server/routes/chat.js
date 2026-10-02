@@ -3291,12 +3291,14 @@ module.exports = (db) => {
               source: judgement.source,
               isCritical: !!judgement.isCritical,
               label: dice.outcomeLabel(judgement.outcome),
-              line: judgement.rate !== null && !judgement.isCritical
-                ? (judgement.die + ' ≤ ' + judgement.rate + ' → ' + dice.outcomeLabel(judgement.outcome))
-                : ('天然 ' + judgement.die + ' → ' + dice.outcomeLabel(judgement.outcome)),
+              // 判定线文案统一由 dice.judgementLine 生成（单一真源；改骰制时不会再漏改这里）
+              line: dice.judgementLine(judgement),
               violated: rollViolation || null,   // 被驳回重写时命中的片段
               retried: rollRetryUsed,
               manual: judgement.source === dice.SOURCE.MANUAL,
+              // 本轮判定的那条玩家发言。regenerate 时前端不传 content（由后端从库里取回），
+              // 不带这个字段幕后就只能显示"玩家选择：—"，看不出判的是哪一句。
+              actionText: judgement.actionText || content || '',
             };
           }
 

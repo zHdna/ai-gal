@@ -5273,7 +5273,9 @@ async function runGenerationTurn(opts = {}) {
             // 向调试面板推送完整输出（带上真实轮次，便于「回顾」删除该轮时一并清掉记录）
             // Roll 点：把判定明细交给控制台（骰值只在这里可见）
             appendDebugEntry(result.formatted, result.content, formatTime(new Date().toISOString()), result.butler, currentRound,
-              result.roll ? Object.assign({}, result.roll, { actionText: content }) : null);
+              // actionText 优先用后端回传的（regenerate 时本地 content 为空，
+              // 用本地的会让幕后控制台显示"玩家选择：—"）
+              result.roll ? Object.assign({}, result.roll, { actionText: result.roll.actionText || content }) : null);
           } else {
             aiMsgDiv.innerHTML = renderAIBlock(null, result.content, new Date().toISOString());
           }
@@ -5622,7 +5624,8 @@ async function scriptGenerate(content, opts = {}) {
         processAIResponse(result);
         if (result.formatted && typeof result.formatted === 'object') {
           aiMsgDiv.innerHTML = renderAIBlock(result.formatted, result.content, new Date().toISOString());
-          appendDebugEntry(result.formatted, result.content, formatTime(new Date().toISOString()), result.butler, currentRound);
+          appendDebugEntry(result.formatted, result.content, formatTime(new Date().toISOString()), result.butler, currentRound,
+            result.roll ? Object.assign({}, result.roll, { actionText: result.roll.actionText || content }) : null);
         } else {
           aiMsgDiv.innerHTML = renderAIBlock(null, result.content, new Date().toISOString());
         }

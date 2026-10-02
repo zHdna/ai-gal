@@ -295,6 +295,25 @@ function outcomeLabel(outcome) {
   }
 }
 
+/**
+ * 判定线的可读文案（幕后控制台用）。
+ *
+ * ⚠️ 这里是**唯一**生成该文案的地方 —— 以前在 chat.js 里手写串
+ * （`die + ' ≤ ' + rate`），改 D100 时漏改，导致控制台一直显示 D20 时代的
+ * "73 ≤ 65 → 成功"（语义完全反了：D100 是点数**够高**才成功）。
+ * 统一放到 dice.js，以后改骰制只动这一处。
+ *
+ * @param {{die:number, rate:number|null, outcome:string, isCritical:boolean}} j
+ */
+function judgementLine(j) {
+  if (!j) return '';
+  const label = outcomeLabel(j.outcome);
+  if (j.isCritical) return '天然 ' + j.die + ' → ' + label;
+  const rate = (j.rate === null || j.rate === undefined) ? DEFAULT_RATE : j.rate;
+  const line = successLine(rate);
+  return j.die + (j.die >= line ? ' ≥ ' : ' < ') + line + '（' + rate + '%）→ ' + label;
+}
+
 /** 主界面 genStatus 用的短提醒 */
 function outcomeBadgeText(outcome) {
   switch (outcome) {
@@ -376,5 +395,5 @@ module.exports = {
   roll, clampRate, successLine, judge, rollAndJudge, rollManual,
   parseRate, coerceAction, coerceActions,
   checkContradiction,
-  outcomeLabel, outcomeBadgeText, buildJudgementBlock,
+  outcomeLabel, outcomeBadgeText, judgementLine, buildJudgementBlock,
 };
