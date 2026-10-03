@@ -5089,6 +5089,7 @@ body {
 /* ══════════════════════════════════════════════════════════════════════════
    Roll 点机制
    · .choice-rate      选项上的成功率徽章（数字 + 四档染色）
+   · .choice-lamp      选项末尾的成功率灯（纯颜色，与徽章同一套四档）
    · .gen-status--result  生成结束后把"故事生成中……"换成上一段成败
    · .roll-debug-*     幕后控制台的判定明细卡片（骰值只在这里可见）
    ══════════════════════════════════════════════════════════════════════════ */
@@ -5114,11 +5115,28 @@ body {
   margin-left: 6px;
 }
 
-/* 四档染色：高 / 中 / 低 / 险 */
-.choice-rate.rate-high { color: #2f8f5b; }
-.choice-rate.rate-mid  { color: #b5842a; }
-.choice-rate.rate-low  { color: #c06a2b; }
-.choice-rate.rate-risk { color: #b8474b; }
+/* ── 成功率灯：按钮末尾的小圆点 ──────────────────────────────────────────
+   ★ 与 .choice-rate 徽章**共用同一套四档颜色**（就是下面这几条 .rate-*）：
+   灯只是把颜色单独拎出来放到按钮末尾，让主人在点下去之前一眼看出
+   「大致成功率」，不必去读数字。
+   聊天区（.choice-option）与两端 VN 外壳（桌面 .ch / 移动 .vn-ch）共用这份
+   定义 —— 外壳只在各自的 CSS 里补定位，绝不重复定义颜色。 */
+.choice-lamp {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  align-self: center;
+  background: currentColor;                     /* 颜色由下面的档位类给 */
+  box-shadow: 0 0 7px currentColor, inset 0 0 2px rgba(255, 255, 255, 0.55);
+}
+
+/* 四档染色：高 / 中 / 低 / 险（徽章文字与末尾的灯共用） */
+.choice-rate.rate-high, .choice-lamp.rate-high { color: #2f8f5b; }
+.choice-rate.rate-mid,  .choice-lamp.rate-mid  { color: #b5842a; }
+.choice-rate.rate-low,  .choice-lamp.rate-low  { color: #c06a2b; }
+.choice-rate.rate-risk, .choice-lamp.rate-risk { color: #b8474b; }
 
 /* 深色主题下提高对比度（浅底徽章在黑底上会糊） */
 [data-theme="dark"] .choice-option .choice-rate,
@@ -5126,13 +5144,21 @@ body[theme-mode="dark"] .choice-option .choice-rate {
   background: rgba(0, 0, 0, 0.28);
 }
 [data-theme="dark"] .choice-rate.rate-high,
-body[theme-mode="dark"] .choice-rate.rate-high { color: #6fd39a; }
+body[theme-mode="dark"] .choice-rate.rate-high,
+[data-theme="dark"] .choice-lamp.rate-high,
+body[theme-mode="dark"] .choice-lamp.rate-high { color: #6fd39a; }
 [data-theme="dark"] .choice-rate.rate-mid,
-body[theme-mode="dark"] .choice-rate.rate-mid  { color: #e0b355; }
+body[theme-mode="dark"] .choice-rate.rate-mid,
+[data-theme="dark"] .choice-lamp.rate-mid,
+body[theme-mode="dark"] .choice-lamp.rate-mid  { color: #e0b355; }
 [data-theme="dark"] .choice-rate.rate-low,
-body[theme-mode="dark"] .choice-rate.rate-low  { color: #e09455; }
+body[theme-mode="dark"] .choice-rate.rate-low,
+[data-theme="dark"] .choice-lamp.rate-low,
+body[theme-mode="dark"] .choice-lamp.rate-low  { color: #e09455; }
 [data-theme="dark"] .choice-rate.rate-risk,
-body[theme-mode="dark"] .choice-rate.rate-risk { color: #e8777b; }
+body[theme-mode="dark"] .choice-rate.rate-risk,
+[data-theme="dark"] .choice-lamp.rate-risk,
+body[theme-mode="dark"] .choice-lamp.rate-risk { color: #e8777b; }
 
 /* ── 生成提示条：结果态 ─────────────────────────────────────────────────── */
 /* 复用「故事生成中……」那一条（#genStatus / #genStatusLegacy），只换文案与配色 */

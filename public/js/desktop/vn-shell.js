@@ -465,6 +465,13 @@
       k.textContent = String(i + 1);
       b.appendChild(s);
       b.appendChild(k);
+      /* Roll 点：按钮末尾的成功率灯。档位阈值与四档配色**只由 app.js 提供**
+         （window.__rollLamp），外壳只负责摆放 —— 两边各写一套阈值必然漂移。
+         外壳自己重建选项按钮是本项目的系统性风险，改这里务必同步移动端 vn-stage.js。 */
+      if (typeof window.__rollLamp === 'function') {
+        var lamp = window.__rollLamp(rate);
+        if (lamp) b.appendChild(lamp);
+      }
       b.addEventListener('click', function () { chooseAction(text, rate); });
       box.appendChild(b);
     });

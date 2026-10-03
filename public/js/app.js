@@ -2870,23 +2870,39 @@ function rateTierClass(rate) {
  */
 function rerenderActionBadges() {
   const on = isRollEnabled();
+  // VN 外壳重建的按钮（#choices .ch / #vnChoices .vn-ch）**没有 data-rate**（速率存在外壳闭包里），
+  // 所以关闭 Roll 点时只能把它们已经画出来的灯摘掉；重新开启要等外壳下一次渲染才会补回来
+  // —— 总比"关了还留着一排彩灯"诚实。
+  if (!on) {
+    document.querySelectorAll('#choices .ch .choice-lamp, #vnChoices .vn-ch .choice-lamp')
+      .forEach(el => el.remove());
+  }
   document.querySelectorAll('.choice-option').forEach(btn => {
-    const existing = btn.querySelector('.choice-rate');
+    const badge = btn.querySelector('.choice-rate');
+    const lamp = btn.querySelector('.choice-lamp');
     if (!on) {
-      if (existing) existing.remove();
+      if (badge) badge.remove();
+      if (lamp) lamp.remove();
       return;
     }
-    if (existing) return;                       // 已有徽章，不重复加
+    if (badge && lamp) return;                  // 两样都在，不重复加
     const rateAttr = btn.dataset.rate;
     if (rateAttr === undefined || rateAttr === null || rateAttr === '') return;
     const rate = Number(rateAttr);
     if (!isFinite(rate)) return;
-    const span = document.createElement('span');
-    span.className = 'choice-rate ' + rateTierClass(rate);
-    span.textContent = rate + '%';
-    const arrow = btn.querySelector('.choice-arrow');
-    if (arrow) btn.insertBefore(span, arrow);
-    else btn.append(span);
+    if (!badge) {
+      const span = document.createElement('span');
+      span.className = 'choice-rate ' + rateTierClass(rate);
+      span.textContent = rate + '%';
+      const arrow = btn.querySelector('.choice-arrow');
+      if (arrow) btn.insertBefore(span, arrow);
+      else btn.append(span);
+    }
+    // 灯永远在按钮**最末尾**（箭头之后）—— 与 renderActionButtons 的摆放保持一致
+    if (!lamp) {
+      const el = createRateLamp(rate);
+      if (el) btn.append(el);
+    }
   });
 }
 
@@ -2894,6 +2910,38 @@ function rerenderActionBadges() {
 let ROLL_ENABLED = true;
 function isRollEnabled() { return ROLL_ENABLED !== false; }
 function setRollEnabled(on) { ROLL_ENABLED = !!on; }
+
+/**
+ * Roll 点：成功率灯（按档位染色的小圆点，放在选项按钮末尾）。
+ *
+ * 与 .choice-rate 徽章**同源**：颜色取自同一个 rateTierClass()，
+ * 只是把颜色独立成一个灯放在按钮末尾 —— 主人点下去之前扫一眼颜色就知道
+ * 大致成功率，不必去读数字。四档色值在 ai-gal-redesign.css 的 .rate-* 规则里。
+ *
+ * @returns {HTMLElement|null} 成功率非法时返回 null，调用方忽略即可
+ */
+function createRateLamp(rate) {
+  // ⚠️ 必须显式挡掉 null/undefined/''：Number(null) === 0 且 isFinite(0) 为真，
+  // 会把「AI 没写成功率」的选项渲染成一个 0%（最险档）的灯 —— 比不显示更误导。
+  if (rate === null || rate === undefined || rate === '') return null;
+  const r = Number(rate);
+  if (!isFinite(r)) return null;
+  const lamp = document.createElement('span');
+  lamp.className = 'choice-lamp ' + rateTierClass(r);
+  lamp.title = '成功率约 ' + Math.round(r) + '%';
+  return lamp;
+}
+
+/**
+ * Roll 点：给 VN 外壳（桌面 vn-shell / 移动 vn-stage）用的灯工厂。
+ *
+ * 外壳会**自己重建**选项按钮、不走 app.js 的渲染，但档位阈值与配色**只允许一份**：
+ * 外壳调这个函数取灯，避免两边各写一套阈值日后漂移（历史上已因外壳重建成灾）。
+ * 关闭 Roll 点 → 返回 null：不判定就不该提示成功率。
+ */
+window.__rollLamp = function (rate) {
+  return isRollEnabled() ? createRateLamp(rate) : null;
+};
 
 function renderActionButtons(actions) {
   actions = normalizeActions(actions);
@@ -2956,6 +3004,13 @@ function renderActionButtons(actions) {
     const arrow = document.createElement('span');
     arrow.className = 'choice-arrow';
     btn.append(arrow);
+
+    // 成功率灯：放在按钮**最末尾**（箭头之后）。颜色与上面的 % 徽章同一套档位，
+    // 让主人不看数字也能一眼扫出「大致成功率」。开关关闭时整块不渲染。
+    if (norm.rate !== null && isRollEnabled()) {
+      const lamp = createRateLamp(norm.rate);
+      if (lamp) btn.append(lamp);
+    }
 
     list.append(btn);
   });

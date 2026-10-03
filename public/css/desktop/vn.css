@@ -1067,6 +1067,18 @@
       background: var(--bg-input);
     }
 
+    /* Roll 点：成功率灯。选项文案是严格居中的，所以这里也**绝对定位**
+       （贴在键位数字 kbd 的左侧，kbd 占着 right:12px 那一条），
+       绝不能改成流内元素 —— 那会把居中的文案整体推歪。
+       颜色/档位定义在 ai-gal-redesign.css 的 .choice-lamp.rate-*（四档共用一套）。 */
+    .app .ch .choice-lamp {
+      position: absolute;
+      right: 44px;
+      top: 50%;
+      transform: translateY(-50%);
+      margin: 0;
+    }
+
     /* 选项升起时画面压暗一档，让选项跳出来（传统 GAL 惯例） */
     .app .art-frame {
       transition: filter .32s;

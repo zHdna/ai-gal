@@ -1,6 +1,6 @@
 {
   "name": "ai-gal",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "本地运行的 AI 角色扮演 / 视觉小说引擎（SillyTavern 兼容角色卡 · 世界书 · MVU 变量 · ComfyUI 生图 · TTS）",
   "main": "server/index.js",
   "license": "MIT",

@@ -987,6 +987,15 @@ html[data-theme="light"] .vn-aff b {
   min-width: 0;
 }
 
+/* Roll 点：成功率灯（按钮最右端）。.vn-ch 是 flex 行、文案左对齐，
+   所以灯直接排在文案之后即为"末尾"；颜色/档位见 ai-gal-redesign.css 的
+   .choice-lamp.rate-*（与桌面端、聊天区共用同一套四档色）。 */
+.vn-ch .choice-lamp {
+  align-self: center;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
 /* ===================== 7. 指令条 ===================== */
 .vn-cmd {
   position: relative;

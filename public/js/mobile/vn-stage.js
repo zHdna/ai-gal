@@ -422,6 +422,12 @@
       var span = document.createElement('span');
       span.textContent = text;
       b.appendChild(span);
+      /* Roll 点：按钮末尾的成功率灯（与桌面端 vn-shell.js 同款）。
+         档位阈值/配色由 app.js 的 window.__rollLamp 统一提供，这里只摆放。 */
+      if (typeof window.__rollLamp === 'function') {
+        var lamp = window.__rollLamp(rate);
+        if (lamp) b.appendChild(lamp);
+      }
       b.addEventListener('click', function () {
         chooseAction(text, rate);
       });
