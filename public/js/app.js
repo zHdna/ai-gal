@@ -7851,19 +7851,86 @@ function showAvatarLightbox(src) {
   document.body.appendChild(lb);
 }
 
+/**
+ * 计算某条消息所属的轮次（与后端 countRounds 同口径）。
+ *
+ * 口径：**该消息之前（含自身）的 user 消息条数**，开场问候属于第 0 段（不计轮）。
+ * assistant 消息归属于它之前最近的那条 user 所在的轮。
+ *
+ * @param {number} index AppState.messages 里的下标
+ * @returns {number} 1 起的轮次；0 = 在第 1 条 user 之前（开场问候）
+ */
+function roundOfMessageIndex(index) {
+  const msgs = AppState.messages || [];
+  let n = 0;
+  for (let i = 0; i <= index && i < msgs.length; i++) {
+    if (msgs[i] && msgs[i].role === 'user') n++;
+  }
+  return n;
+}
+
+/**
+ * 「回顾」里点 ✕：**从该轮起截断**。
+ *
+ * 语义（用户 2026-10-03 明确）：删第 N 轮 ⇒ 第 N 轮及之后**全部**删除，
+ * 于是下次发言正好回到第 N 轮。记忆表格里对应轮次由后端一并清掉
+ * （messages 路由 → cleanupEventLog），前端随后重建视图。
+ *
+ * 为什么不只删这一条：一轮 = user + assistant 两条。只删一条会留下"半轮"，
+ * 下一轮的轮号就与库里对不上了（旧实现在这里出的问题）。
+ */
 async function deleteMessage(msgId) {
-  if (!confirm('确定删除此消息？')) return;
+  const msgs = AppState.messages || [];
+  const idx = msgs.findIndex(m => String(m.id) === String(msgId));
+  if (idx < 0) { showToast('找不到该消息', 'error'); return; }
+
+  const round = roundOfMessageIndex(idx);
+  const total = msgs.filter(m => m.role === 'user').length;
+
+  // 开场问候（第 0 轮）没有对应轮次：只允许单独删除这一条，不做截断
+  if (round === 0) {
+    if (!confirm('这是开场白（不属于任何轮次）。\n\n确定删除它吗？')) return;
+    try {
+      await request(`/messages/${msgId}`, { method: 'DELETE' });
+      AppState.messages = AppState.messages.filter(m => m.id !== msgId);
+      renderMessages();
+      updateTokenCounter();
+      showToast('开场白已删除', 'success');
+    } catch (err) { showToast('删除失败', 'error'); }
+    return;
+  }
+
+  const willDelete = total - round + 1;   // 该轮及之后还有几轮
+  const ok = confirm(
+    `将从第 ${round} 轮起截断剧情。\n\n` +
+    `· 删除第 ${round}~${total} 轮（共 ${willDelete} 轮，含各自的玩家发言与 AI 回复）\n` +
+    `· 记忆表格里第 ${round}~${total} 轮的记录一并删除\n` +
+    `· 之后你将从第 ${round} 轮重新开始\n\n` +
+    `此操作不可撤销，确定继续吗？`
+  );
+  if (!ok) return;
+
+  // ⚠️ 交给**后端**删：消息区是**分页渲染**的（默认只挂最新 100 条），
+  //    AppState.messages 不是全量，本地拼"第 N 轮之后"的 id 清单会算错
+  //    （实测漏删，留下孤儿 AI 回复）。后端按 rowid 顺序一次删净并清理记忆表格。
   try {
-    await request(`/messages/${msgId}`, { method: 'DELETE' });
-    // 从界面上移除
-    const el = DOM.messagesArea().querySelector(`[data-id="${msgId}"]`);
-    if (el) el.remove();
-    // 从 app state 移除
-    AppState.messages = AppState.messages.filter(m => m.id !== msgId);
+    const resp = await request('/messages/truncate-from-round', {
+      method: 'POST',
+      body: { conversation_id: AppState.currentConversation.id, round },
+    });
+    // 重新拉取消息列表：轮号、分页、调试卡片全部回到一致状态
+    try { await loadConversation(AppState.currentConversation.id); } catch (e) {
+      console.warn('[Delete] reload failed:', e && e.message);
+      renderMessages();
+    }
     updateTokenCounter();
-    showToast('消息已删除', 'success');
+    // 记忆表格界面可能开着：重取一次，避免还显示已删除的旧快照
+    try { await loadMemoryPage(); } catch (e) { /* 记忆面板可能没打开，非关键 */ }
+    showToast(`已从第 ${round} 轮截断，删除 ${willDelete} 轮`, 'success');
+    if (resp && resp.deleted === 0) showToast('没有可删除的内容', 'warning');
   } catch (err) {
-    showToast('删除失败', 'error');
+    console.error('[Delete] 截断失败:', err);
+    showToast('删除失败: ' + (err && err.message ? err.message : err), 'error');
   }
 }
 

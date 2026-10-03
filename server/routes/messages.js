@@ -91,6 +91,65 @@ module.exports = (db) => {
     res.json({ updated: result.changes, message: `${result.changes} messages ${hideValue ? 'hidden' : 'unhidden'}` });
   });
 
+  // ── 从第 N 轮起截断（2026-10-03，用户要求）────────────────────────────────
+  // 删掉第 N 轮及之后的**全部**消息（玩家发言 + AI 回复），并同步清理记忆表格里
+  // 对应轮次；于是下次发言正好回到第 N 轮。
+  //
+  // 为什么必须在后端做：消息区是**分页渲染**的，前端只有最新若干条的 id，
+  // 用它来拼"第N轮之后"的删除清单会漏（实测：历史超过一页时，早期楼层不在 DOM 里，
+  // 反而把范围算歪）。后端能一次看到全量行，口径与 countRounds 完全一致。
+  //
+  // 轮次口径（与 chat.js countRounds / turnCleanup.roundOfRowId 相同）：
+  //   第 k 轮 = 第 k 条 user 消息；assistant 归属于它之前最近的 user 那一轮。
+  //   开场白（第一条 user 之前）属于第 0 段，**不在截断范围内**（永远保留）。
+  router.post('/truncate-from-round', (req, res) => {
+    const { conversation_id, round } = req.body || {};
+    const target = parseInt(round, 10);
+    if (!conversation_id) return res.status(400).json({ error: 'conversation_id required' });
+    if (!Number.isFinite(target) || target < 1) return res.status(400).json({ error: 'round must be >= 1' });
+
+    // 按 rowid（真实写入顺序）取全部消息，顺序推算轮次
+    const rows = db.prepare(
+      'SELECT rowid AS rid, id, role FROM messages WHERE conversation_id = ? ORDER BY rowid'
+    ).all(conversation_id);
+    if (!rows.length) return res.json({ deleted: 0, round: target, remainingRounds: 0 });
+
+    let n = 0;
+    const victimIds = [];
+    for (const row of rows) {
+      if (row.role === 'user') n++;
+      if (n >= target) victimIds.push(row.id);   // 第 target 轮及之后（含同轮的 assistant）
+    }
+    if (!victimIds.length) {
+      const total = rows.filter(r => r.role === 'user').length;
+      return res.json({ deleted: 0, round: target, remainingRounds: total, note: 'nothing to delete' });
+    }
+
+    // 删除前先算受影响轮次（cleanupEventLog 需要）
+    const affected = getAffectedRounds(db, victimIds);
+
+    const placeholders = victimIds.map(() => '?').join(',');
+    const result = db.prepare(`DELETE FROM messages WHERE id IN (${placeholders})`).run(...victimIds);
+
+    try { cleanupEventLog(db, conversation_id, affected); }
+    catch (e) { console.warn('[Messages] Event log cleanup failed:', e.message); }
+
+    const remainingRounds = (() => {
+      const c = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND role = 'user'").get(conversation_id);
+      return c ? c.n : 0;
+    })();
+    console.log('[Truncate] conv=' + conversation_id + ' from round ' + target +
+      ' → deleted ' + result.changes + ' msgs, rounds affected=' + JSON.stringify([...affected]) +
+      ', remaining rounds=' + remainingRounds);
+    res.json({
+      deleted: result.changes,
+      round: target,
+      affectedRounds: [...affected],
+      remainingRounds,
+      nextRound: remainingRounds + 1,
+    });
+  });
+
   // Batch delete messages by IDs
   router.post('/batch-delete', (req, res) => {
     const { message_ids } = req.body;

@@ -30,7 +30,15 @@
     return;
   }
 
-  var App = window.AppState || {};
+  // ⚠️ 不要用 `var App = window.AppState || {}` 这种**快照** —— app.js 若在 vn-shell
+  // 之后才建好 AppState，这个快照就永远是空对象 {}，之后所有 App.xxx 读取都是 undefined
+  // （实测：App.messages 恒为 undefined → "删除条数"统计成 0、删除范围也对不上）。
+  // 改用 getter，每次访问都取当前的 window.AppState。
+  var App = new Proxy({}, {
+    get: function (_t, k) { return (window.AppState || {})[k]; },
+    set: function (_t, k, v) { try { (window.AppState || {})[k] = v; } catch (e) { } return true; },
+    has: function (_t, k) { return k in (window.AppState || {}); }
+  });
 
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
@@ -1943,17 +1951,30 @@
         e.stopPropagation();
         var round = b.dataset.round;
         var op = b.dataset.histOp;
-        var n = aiBlocksOfRound(round).length;
-        if (!n) { toast('这一轮没有可删除的 AI 回复'); return; }
         if (op === 'regen') {
+          // 「重新生成」仍是"只删该轮 AI 回复、保留你的发言"，判据不变
+          if (!aiBlocksOfRound(round).length) { toast('这一轮没有可删除的 AI 回复'); return; }
           if (!confirm('删除「第 ' + round + ' 轮」的 AI 回复并重新生成？\n（你的发言会保留，作为重新生成的输入）')) return;
           regenerateRound(round);
           return;
         }
-        if (!confirm('删除「第 ' + round + ' 轮」的 AI 回复？\n会一并删除该轮的管家 Agent 处理记录（含思维链 / portrait / CG 判定）。\n你的发言会保留。')) return;
+        // 「删除」= 从该轮起截断（用户 2026-10-03 明确要求）：
+        // 删掉该轮及之后的全部楼层，记忆表格对应轮次一并清理，之后从该轮重新开始。
+        // 统计口径：回顾面板的每一行 = 一轮（renderHistory 按轮次分组生成）。
+        // 不用 App.messages —— 它是**分页加载**的，不是全量，算出来的"总轮数"会偏小。
+        var totalRounds = $$('#histBody .hist').length || 0;
+        var last = totalRounds;
+        var victimsCount = Math.max(0, totalRounds - parseInt(round, 10) + 1);
+        if (!confirm(
+          '将从第 ' + round + ' 轮起截断剧情。\n\n' +
+          '· 删除第 ' + round + '~' + last + ' 轮的全部内容（共 ' + victimsCount + ' 轮：玩家发言 + AI 回复）\n' +
+          '· 记忆表格里第 ' + round + '~' + last + ' 轮的记录一并删除\n' +
+          '· 之后你将从第 ' + round + ' 轮重新开始\n\n' +
+          '此操作不可撤销，确定继续吗？'
+        )) return;
         b.disabled = true;
-        deleteRoundReply(round).then(function (dropped) {
-          toast('已删除该轮回复' + (dropped ? '，并清掉 ' + dropped + ' 条管家处理记录' : ''));
+        truncateFromRound(round).then(function (n) {
+          toast('已从第 ' + round + ' 轮截断，删除 ' + n + ' 条内容');
         }).catch(function (err) {
           toast('删除失败：' + (err && err.message ? err.message : err));
           b.disabled = false;
@@ -2020,6 +2041,61 @@
     });
     return removed;
   }
+  /**
+   * 从第 `round` 轮起**截断剧情**：删掉该轮及之后的所有楼层（玩家发言 + AI 回复），
+   * 后端会连带清掉记忆表格里对应轮次，于是下次发言正好回到第 `round` 轮。
+   *
+   * 与 deleteRoundReply 的区别：那个只删该轮的 AI 回复、保留玩家发言（供"重新生成"用）；
+   * 这个是**不可逆的截断**，用于"这段剧情不要了，回到那时候重来"。
+   *
+   * @returns {Promise<number>} 实际删除的消息条数
+   */
+  function truncateFromRound(round) {
+    var target = parseInt(round, 10);
+    if (!isFinite(target) || target < 1) { toast('轮次无效'); return Promise.resolve(0); }
+    var convId = (window.AppState && window.AppState.currentConversation && window.AppState.currentConversation.id) || '';
+    if (!convId) { toast('没有活跃的对话'); return Promise.resolve(0); }
+
+    // ⚠️ 交给**后端**做截断，不要在本地拼删除清单。
+    //    原因：消息区是**分页渲染**的（默认只挂最新 100 条），AppState/DOM 里
+    //    都没有全量消息 —— 本地推算"第 N 轮之后"必然算错（实测漏删/多删）。
+    //    后端按 rowid 顺序 + countRounds 同口径一次删净，并同步清理记忆表格。
+    return fetch('/api/messages/truncate-from-round', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversation_id: convId, round: target })
+    }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (info) {
+      // 后端已删净，前端直接重建：重新拉取消息（这样轮号、分页、画廊都回到一致状态）
+      return reloadAfterTruncate(target).then(function () { return info.deleted || 0; });
+    });
+  }
+
+  /** 截断后重建前端：重取消息列表 + 刷新幕后控制台与回顾面板 */
+  function reloadAfterTruncate(target) {
+    var chain = Promise.resolve();
+    if (typeof loadConversation === 'function' && window.AppState && window.AppState.currentConversation) {
+      chain = loadConversation(window.AppState.currentConversation.id).catch(function (e) {
+        console.warn('[Truncate] reload failed:', e && e.message);
+      });
+    }
+    return chain.then(function () {
+      // 幕后控制台里属于被删轮次的卡片一并清掉
+      ['debugMainAgentContent', 'debugButlerContent'].forEach(function (id) {
+        var box = byId(id);
+        if (!box) return;
+        $$('.debug-card', box).forEach(function (c) {
+          var r = parseInt(c.getAttribute('data-round'), 10);
+          if (isFinite(r) && r >= target) c.remove();
+        });
+      });
+      try { renderConsole(); } catch (e) { }
+      try { renderHistory(); } catch (e) { }
+    });
+  }
+
   function deleteRoundReply(round) {
     var ai = aiBlocksOfRound(round);
     if (!ai.length) { toast('这一轮没有可删除的 AI 回复'); return Promise.resolve(0); }
