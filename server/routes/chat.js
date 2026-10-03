@@ -23,7 +23,8 @@ const { StringDecoder } = require('string_decoder');
 const fs = require('fs');
 const path = require('path');
 const { decrypt: decryptApiKey } = require('../crypto');
-const { SETTINGS_ID, APP_KEYS, EVENT_LOG_FILE, ROSTER_FILE, MEMORY_KEYS, DEFAULT_INJECT_INTERVAL, DEFAULT_DROP_THRESHOLD } = require('../constants');
+const { SETTINGS_ID, APP_KEYS, EVENT_LOG_FILE, ROSTER_FILE, MEMORY_KEYS, DEFAULT_INJECT_INTERVAL, DEFAULT_DROP_THRESHOLD,
+  DEFAULT_GEN_MODE, isProseGenMode, isAnimaHybridGenMode, isPureNaturalGenMode } = require('../constants');
 const { applyWorldStateFromText, extractCheckpoint } = require('../utils/jsonpatch');
 const { isPathWithin } = require('../utils/pathGuard');
 const { normalizeGeminiBase } = require('../gemini-url');
@@ -496,8 +497,8 @@ const PORTRAIT_QUALITY_PREFIX = 'masterpiece,+best_quality,+ultra_detailed,';
 function getImageSettings(db) {
   try {
     const s = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
-    return s || { mode: 'anima', gen_mode: 'tag' };
-  } catch { return { mode: 'anima', gen_mode: 'tag' }; }
+    return s || { mode: 'anima', gen_mode: DEFAULT_GEN_MODE };
+  } catch { return { mode: 'anima', gen_mode: DEFAULT_GEN_MODE }; }
 }
 
 // Helper: get quality prefix for portrait (custom overrides default)
@@ -605,7 +606,7 @@ function buildPortraitPrompt(rosterEntry, qualityPrefix) {
   return prefix + tags.join(',');
 }
 
-// ============ Natural-language (English) helpers for gen_mode = 'natural' ============
+// ============ Natural-language (English) helpers for the prose gen_modes ('anima' / 'natural') ============
 // When the user selects natural-language image mode, prompts must be sent as plain
 // English prose (NOT danbooru tags) so OpenAI-compatible image models render them
 // correctly. The character name is also romanized to English so fan-art subjects
@@ -2296,7 +2297,7 @@ module.exports = (db) => {
                     try { dEntry = JSON.parse(fs.readFileSync(safeSavePath(dSavePath, ROSTER_FILE), 'utf-8'))[nm] || {}; } catch {}
                     triggerDebutCg({
                       name: nm, entry: dEntry, painterResult,
-                      scene: dScene, safety: dSafety,
+                      scene: dScene, safety: dSafety, provider: resolvePainterProvider(),
                       conversation_id, savePath: dSavePath, reason: 'master-reuse',
                     });
                   } catch (e) { console.error('[Image] Debut CG (master-reuse) error:', e.message); }
@@ -2515,7 +2516,7 @@ module.exports = (db) => {
                       try { reuseEntry = JSON.parse(fs.readFileSync(safeSavePath(save.save_path, ROSTER_FILE), 'utf-8'))[p.name] || {}; } catch {}
                       triggerDebutCg({
                         name: p.name, entry: { ...p, ...reuseEntry }, painterResult,
-                        scene: debutCtx.scene, safety: debutCtx.safety,
+                        scene: debutCtx.scene, safety: debutCtx.safety, provider: resolvePainterProvider(),
                         conversation_id, savePath: save.save_path, reason: 'master-reuse',
                       });
                     } catch (e) { console.error('[Image] Debut CG (master-reuse) error:', e.message); }
@@ -2619,8 +2620,9 @@ module.exports = (db) => {
                   try {
                   const imgSettings = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
                   if (imgSettings && imgSettings.mode !== 'none') {
-                    if (imgSettings.gen_mode === 'natural') {
-                      // Natural-language mode: Anima two-layer shape (Hard Tags + caption).
+                    const portraitGenMode = imgSettings.gen_mode || DEFAULT_GEN_MODE;
+                    if (isAnimaHybridGenMode(portraitGenMode)) {
+                      // Anima 两层模式：Hard Tags + caption（两层都在最终提示词里）。
                       // The tags layer carries the subject count / gender (`1girl`), framing
                       // (`portrait`, `close-up`) and the single-subject anchor (`solo`); the
                       // caption carries the appearance prose. Sending prose alone left the image
@@ -2642,6 +2644,40 @@ module.exports = (db) => {
                         if (!r.ok) console.error('[Butler] Portrait gen HTTP', r.status);
                         else console.log('[Butler] Triggered natural portrait for:', p.name, '(english prompt name:', enName, ')');
                       }).catch(e => console.error('[Butler] Portrait trigger failed:', e.message));
+                    } else if (isPureNaturalGenMode(portraitGenMode)) {
+                      // 纯自然语言模式：代码先抽标签并拼接（名册体貌 → 完整标签串，与 Tag 模式同一套），
+                      // 再由画家AI 第二趟改写成纯英文散文；第二趟失败就退回代码直出的散文
+                      // （buildPortraitPromptNatural），绝不把标签串发去生图。
+                      const enName = resolveEnglishName(p);
+                      const customQuality = getPortraitQualityPrefix(db);
+                      const tagBundle = (() => {
+                        const base = normalizeImageTags(buildPortraitPrompt(p, customQuality), p);
+                        return (enName && enName !== p.name)
+                          ? (base ? base + ', ' + enName : enName)
+                          : base;
+                      })();
+                      const nl = buildPortraitPromptNatural(p);
+                      const sendPortrait = (finalPrompt) => {
+                        fetch(`${BASE_URL}/api/images/generate`, {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          // character_name 仍是中文名（名册键）；英文名已在 prompt 里给生图模型认角色
+                          body: JSON.stringify({ type: 'portrait', prompt: finalPrompt, character_name: p.name, conversation_id, portrait: p })
+                        }).then(r => {
+                          if (!r.ok) console.error('[Butler] Portrait gen HTTP', r.status);
+                          else console.log('[Butler] Triggered pure-prose portrait for:', p.name, '(english prompt name:', enName, ')');
+                        }).catch(e => console.error('[Butler] Portrait trigger failed:', e.message));
+                      };
+                      console.log('[Butler] 纯自然语言 portrait for:', p.name, '| english name:', enName, '| tag bundle:', tagBundle.slice(0, 140));
+                      callPainterProsePass(resolvePainterProvider(), {
+                        tags: tagBundle, caption: nl, kind: 'portrait', name: p.name,
+                      }).then(prose => {
+                        if (prose) console.log('[Painter] 纯自然语言 portrait 改写完成:', p.name, '|', prose.slice(0, 100));
+                        else console.warn('[Painter] 纯自然语言 portrait 第二趟失败，退回代码散文:', p.name);
+                        sendPortrait(prose || nl);
+                      }).catch(e => {
+                        console.warn('[Painter] 纯自然语言 portrait 第二趟异常:', e.message, '— 退回代码散文');
+                        sendPortrait(nl);
+                      });
                     } else {
                       // Tag mode (default): existing danbooru-tag pipeline
                       // Build portrait prompt from roster fields with custom quality prefix
@@ -2676,7 +2712,7 @@ module.exports = (db) => {
                       try {
                         triggerDebutCg({
                           name: p.name, entry: p, painterResult,
-                          scene: debutCtx.scene, safety: debutCtx.safety,
+                          scene: debutCtx.scene, safety: debutCtx.safety, provider: resolvePainterProvider(),
                           conversation_id, savePath: save && save.save_path, reason: 'portrait-generated',
                         });
                       } catch (e) { console.error('[Image] Debut CG (portrait-generated) error:', e.message); }
@@ -2808,13 +2844,34 @@ module.exports = (db) => {
                       entry.avatar = 'pending';
                       fs.writeFileSync(rosterPath, JSON.stringify(fileRoster, null, 2), 'utf-8');
 
-                      fetch(`${BASE_URL}/api/images/generate`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ type: 'portrait', prompt: normalized, character_name: speaker, conversation_id, portrait: entry })
-                      }).then(r => {
-                        if (!r.ok) console.error('[Butler] Roster backfill HTTP', r.status);
-                        else console.log('[Butler] Roster backfill triggered for:', speaker);
-                      }).catch(e => console.error('[Butler] Roster backfill failed:', e.message));
+                      const sendBackfill = (finalPrompt) => {
+                        fetch(`${BASE_URL}/api/images/generate`, {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ type: 'portrait', prompt: finalPrompt, character_name: speaker, conversation_id, portrait: entry })
+                        }).then(r => {
+                          if (!r.ok) console.error('[Butler] Roster backfill HTTP', r.status);
+                          else console.log('[Butler] Roster backfill triggered for:', speaker);
+                        }).catch(e => console.error('[Butler] Roster backfill failed:', e.message));
+                      };
+                      // 纯自然语言模式：这条补图路径也必须走「代码抽标签 → 画家第二趟改写」，
+                      // 否则它会直接把标签串发去生图（永远出动漫），与其它立绘路径不一致。
+                      if (isPureNaturalGenMode(imgSettings.gen_mode || DEFAULT_GEN_MODE)) {
+                        const enNameB = resolveEnglishName(entry);
+                        const tagBundleB = (enNameB && enNameB !== speaker)
+                          ? (normalized ? normalized + ', ' + enNameB : enNameB)
+                          : normalized;
+                        const nlB = buildPortraitPromptNatural(entry);
+                        console.log('[Butler] Roster backfill（纯自然语言）抽标签完成 → 画家第二趟:', speaker, '|', tagBundleB.slice(0, 120));
+                        callPainterProsePass(resolvePainterProvider(), {
+                          tags: tagBundleB, caption: nlB, kind: 'portrait', name: speaker,
+                        }).then(prose => sendBackfill(prose || nlB))
+                          .catch(e => {
+                            console.warn('[Painter] Roster backfill 纯自然语言第二趟异常:', e.message, '— 退回代码散文');
+                            sendBackfill(nlB);
+                          });
+                      } else {
+                        sendBackfill(normalized);
+                      }
 
                       portraitTriggered = true;
                     }
@@ -2847,19 +2904,21 @@ module.exports = (db) => {
               // Which imagePrompt wins?
               //  • TAG mode: the painter only corrects tag fields, so the butler's prompt is
               //    normally at least as good; keep preferring it (falls back to the painter's).
-              //  • NATURAL mode: the painter now emits the Anima standard HYBRID shape
+              //  • ANIMA / NATURAL(纯自然语言) mode: the painter emits the Anima standard HYBRID shape
               //    (Hard-Tags line + blank line + natural-language caption), which carries the
               //    roster-derived character/identity tags that butler prose cannot express.
+              //    · anima  → 两层直接当最终提示词；
+              //    · natural → 代码只取 Hard Tags 行，再交画家第二趟改写成散文。
               //    So a painter prompt that actually contains those two layers is preferred —
               //    but a prose-only painter prompt must NOT override the butler's, because a
               //    shortened/summarized one would then miss the `> 20` length guard below and
               //    silently drop the request.
-              let cgPromptMode = 'tag';
-              try { cgPromptMode = (getImageSettings(db) || {}).gen_mode || 'tag'; } catch {}
+              let cgPromptMode = DEFAULT_GEN_MODE;
+              try { cgPromptMode = (getImageSettings(db) || {}).gen_mode || DEFAULT_GEN_MODE; } catch {}
               const cgTrigger = butlerResult?.triggerImage || painterResult?.triggerImage || false;
               const butlerCgLong = !!(butlerResult?.imagePrompt && butlerResult.imagePrompt.trim().length > 20);
               const painterCgPrompt = String(painterResult?.imagePrompt || '');
-              const painterCgHybrid = cgPromptMode === 'natural'
+              const painterCgHybrid = isProseGenMode(cgPromptMode)
                 && painterCgPrompt.trim().length > 20
                 && hasAnimaHybridLayers(painterCgPrompt);
               const usePainterCg = painterCgHybrid || !butlerCgLong;
@@ -2989,12 +3048,12 @@ module.exports = (db) => {
                   const cgSettings = getImageSettings(db) || {};
                   const cgGenMode = cgSettings.gen_mode || 'tag';
 
-                  // Anima hybrid detection (natural mode only): the painter is required to emit
-                  //   line 1 = comma-separated Hard Tags, blank line, then the natural-language caption.
-                  // When that structure survives, prefer it: it carries the character/identity tags
-                  // (roster-derived) that pure prose cannot express. `cgPrompt` itself already
-                  // prefers the painter's output over the butler's in natural mode (see above).
-                  const cgHasHybridLayers = cgGenMode === 'natural' && hasAnimaHybridLayers(cgPrompt);
+                  // Anima 两层探测：anima 与 natural 两个散文模式里，画家第一趟都被要求产出
+                  //   line 1 = 逗号分隔 Hard Tags，空行，然后是英文自然语言层。
+                  //   · anima：两层就是最终提示词；
+                  //   · natural（纯自然语言）：代码只取 Hard Tags 行当标签源，再由第二趟改写成散文。
+                  // `cgPrompt` 本身在散文模式里已优先取画家的输出（见上方 usePainterCg）。
+                  const cgHasHybridLayers = isProseGenMode(cgGenMode) && hasAnimaHybridLayers(cgPrompt);
 
                   // Composites actually present in this roster (`human_girl`, `elf_girl`, …). Used to
                   // repair a painter that echoed the roster's composite token verbatim into the
@@ -3025,7 +3084,7 @@ module.exports = (db) => {
                   // must not inject its (Chinese) name into the prompt where the image model can't use it.
                   const participantUnits = [];
                   for (const re of cgParticipants) {
-                    if (cgGenMode === 'natural') {
+                    if (isAnimaHybridGenMode(cgGenMode)) {
                       const appearance = buildPortraitPromptNatural(re).replace(/^A portrait of\s+/i, '');
                       const en = (re.english_name || '').toString().trim();
                       const enName = (en && /^[\x00-\x7F]+$/.test(en)) ? en : '';
@@ -3037,8 +3096,12 @@ module.exports = (db) => {
                     }
                   }
 
+                  // 纯自然语言模式的中间产物：代码抽出的标签包（Hard Tags 行）与散文层。
+                  // anima 模式下始终为空，第二趟只在 pure 模式触发。
+                  let pureHardLine = '';
+                  let pureCaption = '';
                   let cgTags;
-                  if (cgGenMode === 'natural') {
+                  if (isProseGenMode(cgGenMode)) {   // anima 与 natural 共用画家第一趟的 Anima 两层
                     const hybrid = cgHasHybridLayers
                       ? splitAnimaHybrid(cgPrompt)
                       : { hardTags: [], caption: '', hybrid: false };
@@ -3071,9 +3134,16 @@ module.exports = (db) => {
                       if (cgTags !== beforeDecompose) {
                         console.log('[Butler] CG natural mode — decomposed composite race_gender tags');
                       }
-                      console.log('[Butler] CG natural mode — Anima hybrid layers: hardTags=',
+                      console.log('[Butler] CG hybrid layers: hardTags=',
                         hybrid.hardTags.length, '| caption chars=', hybrid.caption.length,
                         '| custom quality prefix skipped (kept painter hard tags)');
+                      if (isPureNaturalGenMode(cgGenMode)) {
+                        // 纯模式：代码在这里「抽取标签」——只留 Hard Tags 行，散文层另存给第二趟
+                        const pureParts = cgTags.split(/\n\n/);
+                        pureHardLine = pureParts[0].trim();
+                        pureCaption = pureParts.slice(1).join(' ').trim();
+                        console.log('[Butler] 纯自然语言：已从画家两层中抽出标签包（', pureHardLine.length, 'chars）');
+                      }
                     } else {
                       // Legacy / fallback: no hard-tag layer survived (butler prose, or a painter
                       // that failed to emit the hybrid shape) → assemble prose as before.
@@ -3085,11 +3155,23 @@ module.exports = (db) => {
                         .replace(/\s+/g, ' ')
                         .trim();
                       const unitsStr = participantUnits.join(', ');
-                      console.log('[Butler] CG natural mode (prose fallback) - participant units:', unitsStr.slice(0, 160), '| cleaned NL:', nlText.slice(0, 120));
-                      // Assemble: nsfw + quality prefix + participant units + natural-language scene
-                      cgTags = 'nsfw, ' + (customCGPrefix ? customCGPrefix + ', ' : 'masterpiece, best+quality, ')
-                        + (unitsStr ? unitsStr + ', ' : '')
-                        + nlText;
+                      console.log('[Butler] CG prose fallback - participant units:', unitsStr.slice(0, 160), '| cleaned NL:', nlText.slice(0, 120));
+                      if (isPureNaturalGenMode(cgGenMode)) {
+                        // 纯模式：这里正是「代码抽标签并拼接」——participantUnits 是名册体貌标签
+                        // （见上方 loop：纯模式走 else 分支按 Tag 抽取），participantTags 是兜底性别/种族；
+                        // 场景散文留给第二趟改写，绝不能混进标签包。
+                        const unitTags2 = unitsStr ? unitsStr.split(',').map(t => t.trim()).filter(Boolean) : [];
+                        const fbTags2 = participantTags ? participantTags.split(',').map(t => t.trim()).filter(Boolean) : [];
+                        const qualityTags = customCGPrefix ? customCGPrefix.split(',').map(t => t.trim()).filter(Boolean) : [];
+                        pureHardLine = ['nsfw', ...qualityTags, ...unitTags2, ...fbTags2].join(', ');
+                        pureCaption = nlText;
+                        cgTags = '';
+                      } else {
+                        // Assemble: nsfw + quality prefix + participant units + natural-language scene
+                        cgTags = 'nsfw, ' + (customCGPrefix ? customCGPrefix + ', ' : 'masterpiece, best+quality, ')
+                          + (unitsStr ? unitsStr + ', ' : '')
+                          + nlText;
+                      }
                     }
                   } else {
                     // Tag mode (default): strip field-name prefixes, build tag list.
@@ -3109,11 +3191,31 @@ module.exports = (db) => {
                     const allTags = [...unitTags, ...sceneTags, ...fbTags];
                     cgTags = 'nsfw, ' + (customCGPrefix ? customCGPrefix + ', ' : 'masterpiece, best+quality, ') + allTags.join(', ');
                   }
+
+                  // ── 纯自然语言模式：代码抽标签拼接 → 画家AI 第二趟改写成纯英文散文 ──
+                  // 到这里 cgTags 在 anima 下就是最终两层提示词；在 pure 下只是中间产物，
+                  // 真正发出去的是第二趟的散文（失败才退回画家散文层，最后才退标签包）。
+                  if (isPureNaturalGenMode(cgGenMode)) {
+                    const bundle = (pureHardLine || cgTags.split(/\n\n/)[0] || '').trim();
+                    const proseCaption = (pureCaption || cgTags.split(/\n\n/).slice(1).join(' ') || '').trim();
+                    const prose = await callPainterProsePass(resolvePainterProvider(), {
+                      tags: bundle,
+                      caption: proseCaption,
+                      kind: 'cg',
+                    });
+                    if (prose) {
+                      cgTags = prose;
+                      console.log('[Painter] 纯自然语言：标签包已改写为散文（bundle', bundle.length, 'chars → prose', prose.length, 'chars）');
+                    } else {
+                      cgTags = proseCaption || bundle;
+                      console.warn('[Painter] ⚠️ 纯自然语言第二趟失败：退回', proseCaption ? '画家/管家散文层' : '标签包');
+                    }
+                  }
                   console.log('[Image] CG imagePrompt RAW:', cgPrompt.slice(0, 200));
                   console.log('[Butler] CG stripped tags HEAD:', cgTags.slice(0, 150));
                   console.log('[Butler] CG stripped tags TAIL:', cgTags.slice(-120));
-                  if (cgGenMode === 'natural') {
-                    // Safety net: natural mode MUST be pure English. Warn loudly if Chinese slips through
+                  if (isProseGenMode(cgGenMode)) {
+                    // Safety net: 散文模式必须是纯英文。Warn loudly if Chinese slips through
                     // (the butler/painter prompts above already require translation; this catches model failures).
                     if (/[一-龥]/.test(cgTags)) {
                       console.warn('[Butler] ⚠️ NATURAL-MODE CG PROMPT CONTAINS CHINESE — image model will likely fail!', cgTags.slice(0, 160));
@@ -3764,8 +3866,10 @@ battle / blue / ceremony / relaxed / nomal / suspense
 
 ### cg
 - 仅在触发NSFW场景时输出此字段。
-${genMode === 'natural'
-  ? '（用自然语言详细描述当前NSFW场景画面，包括角色外貌、姿势、表情、环境、光线等）'
+${isProseGenMode(genMode)
+  ? (isPureNaturalGenMode(genMode)
+      ? '（用完整的英文自然语言句子详细描述当前NSFW场景画面：角色外貌、姿势、表情、环境、光线等。⚠️ 只写句子：禁止逗号标签串、禁止 danbooru 关键词，也不要写 1girl/black_hair 这类标签）'
+      : '（用自然语言详细描述当前NSFW场景画面，包括角色外貌、姿势、表情、环境、光线等）')
   : '（用tag描述当前场景：character/camera/pose/clothing/body/action/expression/background/count）'}
 
 ${ui.requiresStatus ? '### status\n（末尾输出{{user}}状态，属性名: 属性值）\n' : ''}
@@ -3841,13 +3945,14 @@ id: 001
 ⚠️ 不要输出 prompt 字段！系统会自动从以上字段提取tag生成生图指令。`);
 
     // CG requirement
-    if (genMode === 'natural') {
+    if (isProseGenMode(genMode)) {
       parts.push(`
 【CG 生图 - 强制规则（自然语言模式）】
 当情节进入 NSFW 场景（性行为、裸露、亲密接触）时，你必须输出 ### cg 段落：
 ### cg
 Provide a detailed description of the current NSFW scene in English natural language, including the character's appearance, posture, facial expressions, environment, lighting atmosphere, etc. No need to use tag format, just describe it in a complete sentence. The system will automatically convert it into a visual prompt word.
-Ignoring this rule will result in NSFW scenes being unable to generate illustrations`);
+Ignoring this rule will result in NSFW scenes being unable to generate illustrations
+${isPureNaturalGenMode(genMode) ? '\n\u26a0\ufe0f\u672c模\u5f0f\u4e0b `### cg` \u53ea\u5199\u82f1\u6587\u81ea\u7136\u8bed\u8a00\uff1a\u7981\u6b62 `1girl, black_hair` \u8fd9\u7c7b\u9017\u53f7\u6807\u7b7e\u4e32\uff0c\u7981\u6b62\u4e2d\u6587\u3002' : ''}`);
     } else {
       parts.push(`
 【CG 生图 - 强制规则】
@@ -5529,6 +5634,28 @@ An empty bedroom in the soft morning light, the rumpled bed and the half-open wi
 - ⚠️ 两层之间的空行在 JSON 里必须写成 \\n\\n（与 imagePrompt 相同）
 `;
 
+  // 纯自然语言模式：管家这一层与 Anima 模式共用（都给英文散文，供画家AI 第一趟抽标签），
+  // 唯一区别是【NSFW 结束空镜】—— 纯模式下没有 Hard Tags 行，整段就是英文散文。
+  const BUTLER_CG_PURE_INSTR = (() => {
+    const sceneBlockRe = /【NSFW 流程结束空镜 sceneImagePrompt 的格式（仅 nsfwEnd: true 时填写）】[\s\S]*$/;
+    if (!sceneBlockRe.test(BUTLER_CG_NATURAL_INSTR)) {
+      console.warn('[Butler] BUTLER_CG_PURE_INSTR：未匹配到空镜段，退回 Anima 文案');
+      return BUTLER_CG_NATURAL_INSTR;
+    }
+    return BUTLER_CG_NATURAL_INSTR
+      .replace('=== 当前生图模式：自然语言模式（NATURAL LANGUAGE MODE）===',
+        '=== 当前生图模式：纯自然语言模式（PURE NATURAL LANGUAGE MODE）===')
+      .replace('（本模式对应 Z-image / Anima 等新模型，CG 提示词是【纯英文自然语言】句子，不是标签）',
+        '（本模式对应 Qwen-Image 2.1 / Z-image 等写实底模：提示词必须是【纯英文自然语言】，一个标签都不能出现）')
+      .replace(sceneBlockRe, [
+        '【NSFW 流程结束空镜 sceneImagePrompt 的格式（仅 nsfwEnd: true 时填写）】',
+        '同样是【纯英文自然语言】，整段就是一段空镜画面描写，【不允许出现标签行、不允许逗号标签串】：',
+        'An empty bedroom in the soft morning light, the rumpled bed and the half-open window filling the frame. Warm sunlight falls across the wooden floor while the far corner of the room fades gently out of focus. There is no one in the room.',
+        '- ⚠️ 画面里不得出现任何人：禁止角色名、1girl / 1boy、服装 / 表情 / 动作 / 亲密互动描写',
+        '- ⚠️ 必须用一个完整句子写明「画面里空无一人」（如 There is no one in the room.）',
+      ].join('\n'));
+  })();
+
   // 画师在自然语言模式下替换 base 里 Tag CG 段的内容（保留 portrait 段不变）
   // 目标：输出符合 Anima 模型标准的 **Hybrid（Hard Tags + Natural Language）** 生图提示词。
   const BUTLER_PAINTER_NATURAL_CG = `=== CG imagePrompt 处理规则：Anima 标准混合格式（HYBRID FORMAT） ===
@@ -5591,6 +5718,129 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
 ⚠️ imagePrompt 是 JSON 字符串：两段之间的空行必须写成 \\n\\n；不要在 JSON 之外输出任何文字。
 `;
 
+  // ════════════════════════════════════════════════════════════════
+  // 纯自然语言模式：画家AI「第二趟」——把代码抽好的标签包改写成纯英文自然语言
+  //   第一趟（BUTLER_PAINTER_NATURAL_CG）照旧产出 Anima 两层，代码只取它的 Hard Tags 行；
+  //   第二趟只做一件事：把「标签包 + 场景原句」改写成【一个标签都没有】的英文画面描述，
+  //   然后才发 /api/images/generate。
+  //   为什么必须多这一趟：Qwen-Image 2.1 这类写实底模看到标签串会画成 2.5D 插画，
+  //   只有纯散文才稳定出照片（2026-10-03 对照实验，见 constants.js 的 gen_mode 注释）。
+  // ════════════════════════════════════════════════════════════════
+  const BUTLER_PAINTER_PROSE_SYS = `你是画家AI的「纯自然语言改写」环节。上游代码已经把你上一轮给出的 Hard Tags 与实际体貌数据合并成了一份【标签包】，你要把它改写成可直接生图的纯英文自然语言描述。
+
+=== 输入 ===
+- 【标签包】：逗号分隔的 danbooru 标签（含人数 / 性别 / 种族 / 外观 / 服装 / 动作 / 道具 / 场景锚点 / 安全分级）
+- 【场景原句】：管家AI 给出的英文场景描述（构图 / 光照 / 氛围），可能为空
+- 【本轮任务】：cg（CG 画面）/ debut（角色登场 CG，必须写明半身取景）/ portrait（头像）
+
+=== 输出规则（违反任何一条都算失败）===
+1. 只输出一行 JSON：{"prose":"..."}，prose 是【纯英文】。
+2. prose 里【绝对不能出现任何标签】：不得出现下划线标签（black_hair / 1girl / half_body / nsfw …）、不得出现逗号标签串、不得出现 character: / participant: 等字段前缀。
+   把标签翻译成自然语言：1girl → a young woman / the girl；black_hair → with long black hair；half_body → a half-body (waist-up) shot；nsfw → 用画面本身表达成人向内容（裸露 / 亲密），不要写 "nsfw" 这个词。
+3. 保留标签包里的【全部信息】：人数与性别、种族特征、发型发色瞳色、身材、服装（含颜色）、动作与姿势、道具、场景锚点。一个都不能丢，也不要编造标签包里没有的人物。
+4. 构图必须写清：景别（close-up / half-body / full-body）+ 主体占画面的比例 + 背景层级；再写空间关系与动作接触；最后写光照（主光源 → 方向 → 照亮部位 → 背景光 → 暗部）与景深。
+5. 句数：cg / debut 写 3~5 句；portrait 写 2~3 句。段落连贯，不要写成分点列表。
+6. 写实取向：这是相机拍到的画面，不要写 anime / illustration / cel shaded / 二次元 这类词；也不要写分辨率、采样器、CFG、seed、权重数字。
+7. 任务为 debut 时：第一句必须明确是 half-body（waist-up）取景，并且必须描述【场景原句】里的当前场景。
+8. 禁止中文；除 JSON 外不要输出任何解释、前言或代码块标记。
+
+=== 正确示例（仅示意格式，内容须与当前场景一致）===
+{"prose":"A half-body waist-up shot of a young woman with very long black hair tied in a high bun, violet eyes and a slender figure, wearing a red silk gown with a high slit and holding a solid gold bell in both hands. She stands in a grand marble hall at night, the character filling most of the frame while the hall recedes behind her. Cold starlight falls from above onto her face and bare shoulders, the red silk catching the light against the dark stone platform, with the far arches softly out of focus."}
+`;
+
+  /**
+   * 取画家AI 的 provider（没单独配置画家时复用管家）。
+   *
+   * ⚠️ 2026-10-03 事故：纯自然语言的第二趟要在多个作用域被调用（立绘循环 / 名册补图 / CG / 登场 CG），
+   * 而 /stream 里那个 `painterProvider` 是 `if (imageEnabled) {` 的**块级**变量；直接引用会抛
+   * `painterProvider is not defined`，又被每角色/每分支的 try·catch 吞掉 —— 日志里只剩一句
+   * 「Portrait trigger failed for X - continuing with remaining portraits」，表现就是**一直不出图**。
+   * 这里改成按需查库，不依赖任何外层作用域。
+   */
+  function resolvePainterProvider() {
+    try {
+      const pp = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(APP_KEYS.PAINTER_PROVIDER_ID);
+      if (pp && pp.value) {
+        const p = db.prepare('SELECT * FROM api_providers WHERE id = ?').get(pp.value);
+        if (p) return p;
+      }
+      const bp = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(APP_KEYS.BUTLER_PROVIDER_ID);
+      if (bp && bp.value) {
+        const b = db.prepare('SELECT * FROM api_providers WHERE id = ?').get(bp.value);
+        if (b) return b;
+      }
+    } catch (e) { console.warn('[Painter] resolvePainterProvider error:', e.message); }
+    return null;
+  }
+
+  /**
+   * 纯自然语言模式的画家第二趟：标签包 + 场景原句 → 纯英文散文。
+   * 失败（无 provider / 网络错 / 模型把标签原样吐回来）一律返回 ''，由调用方兜底 —— 绝不让
+   * 一份夹着标签的"散文"发去生图（那正是动漫画风的来源）。
+   */
+  async function callPainterProsePass(provider, payload, onReasoning) {
+    const p = payload || {};
+    const tags = String(p.tags || '').trim();
+    const caption = String(p.caption || '').trim();
+    if (!provider || (!tags && !caption)) return '';
+    const task = p.kind === 'portrait' ? 'portrait' : (p.kind === 'debut' ? 'debut' : 'cg');
+    const userMsg = [
+      `【本轮任务】${task}`,
+      p.name ? `【角色】${p.name}` : '',
+      `【标签包】\n${tags || '(空)'}`,
+      `【场景原句】\n${caption || '(空)'}`,
+      '请按系统规则输出一行 JSON：{"prose":"..."}',
+    ].filter(Boolean).join('\n\n');
+    const messages = [
+      { role: 'system', content: BUTLER_PAINTER_PROSE_SYS },
+      { role: 'user', content: userMsg },
+    ];
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        let effectiveProvider = applyPresetToProvider(provider, APP_KEYS.BUTLER_AI_PRESET_ID);
+        effectiveProvider = { ...effectiveProvider, max_tokens: 4096 };
+        const reasoningCollector = { value: '' };
+        const content = await callProviderAPI(effectiveProvider, messages, reasoningCollector);
+        if (reasoningCollector.value && onReasoning) onReasoning(reasoningCollector.value);
+        const prose = parsePainterProse(content);
+        if (prose) return prose;
+        console.warn('[Painter] 纯自然语言第二趟没有产出合格散文，重试…（前 120 字）:', String(content || '').slice(0, 120));
+      } catch (e) {
+        console.warn(`[Painter] 纯自然语言第二趟第 ${attempt} 次失败:`, e.message);
+      }
+      if (attempt < 2) await new Promise(r => setTimeout(r, 3000));
+    }
+    return '';
+  }
+
+  /**
+   * 从第二趟的返回里抠出 prose，并挡掉"模型把标签原样吐回来"。
+   * 判失败的三种形态：prose 太短 / 下划线标签 ≥3 个 / 通篇逗号且没有句号。
+   */
+  function parsePainterProse(content) {
+    const text = String(content || '').trim();
+    if (!text) return '';
+    let prose = '';
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        const obj = JSON.parse(text.slice(start, end + 1));
+        if (obj && typeof obj.prose === 'string') prose = obj.prose;
+      } catch (e) { /* 非 JSON：按纯文本处理 */ }
+    }
+    if (!prose) {
+      prose = text.replace(/^\s*\x60\x60\x60[a-z]*\s*/i, '').replace(/\x60\x60\x60\s*$/, '').trim();
+      const m = prose.match(/"prose"\s*:\s*"([\s\S]*)$/);
+      if (m && m[1]) prose = m[1];
+    }
+    prose = prose.replace(/\\n/g, ' ').replace(/\\"/g, '"').replace(/\s+/g, ' ').trim();
+    if (prose.length < 40) return '';
+    const underscoreTags = (prose.match(/\b[a-z0-9]+(?:_[a-z0-9]+)+\b/g) || []).length;
+    if (underscoreTags >= 3) return '';
+    if ((prose.match(/,/g) || []).length >= 8 && !/[.!?]/.test(prose)) return '';
+    return prose;
+  }
   // 已删除：`BUTLER_MEMORY_SYS`（废弃常量，全仓零引用；记忆由主AI的 ### summarize 承担）
 
 
@@ -6036,9 +6286,12 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
       // the natural-mode prose rules, and vice-versa. Switched by image_settings.gen_mode.)
       const butlerImgSettings = getImageSettings(db);
       const butlerGenMode = butlerImgSettings.gen_mode || 'tag';
-      if (butlerGenMode === 'natural') {
+      if (isAnimaHybridGenMode(butlerGenMode)) {
         butlerSystemContent += BUTLER_CG_NATURAL_INSTR;
-        console.log('[Butler] CG gen_mode = natural → injected NATURAL-LANGUAGE instruction block (TAG block NOT injected)');
+        console.log('[Butler] CG gen_mode = anima → injected NATURAL-LANGUAGE instruction block (Anima 两层；TAG block NOT injected)');
+      } else if (isPureNaturalGenMode(butlerGenMode)) {
+        butlerSystemContent += BUTLER_CG_PURE_INSTR;
+        console.log('[Butler] CG gen_mode = natural(纯自然语言) → injected PURE-PROSE instruction block (TAG block NOT injected)');
       } else {
         butlerSystemContent += BUTLER_CG_TAG_INSTR;
         console.log('[Butler] CG gen_mode = tag → injected TAG instruction block (NATURAL block NOT injected)');
@@ -6459,25 +6712,62 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
     markRoster(stamp);
 
     const caption = prompt.split('\n\n')[1] || '';
+    // 纯自然语言模式：代码抽标签（两层的第一行）→ 画家AI 第二趟改写成纯英文散文。
+    // 上面的 half_body 断言针对的是【标签侧】（画家/代码兜底都保证有 half_body），
+    // 第二趟的散文里若没写取景，只告警 —— 不再 abort（宁可画面略松也不要丢图）。
+    const debutGenMode = (() => {
+      try { return (getImageSettings(db) || {}).gen_mode || DEFAULT_GEN_MODE; } catch { return DEFAULT_GEN_MODE; }
+    })();
+    // 形参刻意叫 prompt（遮蔽外层同名变量）：cg_test/test_debut_cg.js 的源码级断言
+    // 逐字匹配 `type: 'cg', prompt, …` 这行接线，改名会让该回归失去意义。
+    const sendDebutRequest = (prompt) => {
+      fetch(`${BASE_URL}/api/images/generate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'cg', prompt, character_name: name, conversation_id: o.conversation_id, debut_cg: true })
+      }).then(r => {
+        if (!r.ok) {
+          console.error('[Image] Debut CG HTTP', r.status, '— 清除标记，下一轮可重试:', name);
+          markRoster(null);
+        } else console.log('[Image] Debut CG triggered for:', name);
+      }).catch(e => {
+        console.error('[Image] Debut CG failed:', e.message, '— 清除标记，下一轮可重试:', name);
+        markRoster(null);
+      });
+    };
     console.log('[Image] Debut CG → CG 公用流 for:', name,
       '| reason:', o.reason || '-',
       '| source:', source,
+      '| gen_mode:', debutGenMode,
       '| half_body:', /half_body/.test(prompt),
       '| prompt len:', prompt.length,
       '| 场景句:', caption.slice(0, 90) || '(无)');
 
-    fetch(`${BASE_URL}/api/images/generate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'cg', prompt, character_name: name, conversation_id: o.conversation_id, debut_cg: true })
-    }).then(r => {
-      if (!r.ok) {
-        console.error('[Image] Debut CG HTTP', r.status, '— 清除标记，下一轮可重试:', name);
-        markRoster(null);
-      } else console.log('[Image] Debut CG triggered for:', name);
-    }).catch(e => {
-      console.error('[Image] Debut CG failed:', e.message, '— 清除标记，下一轮可重试:', name);
-      markRoster(null);
-    });
+    if (isPureNaturalGenMode(debutGenMode)) {
+      // 「代码抽取标签和拼接」：取两层的第一段当标签包，第二段 + 当前场景当散文输入
+      const parts = String(prompt).split(/\n\n/);
+      const bundle = (parts[0] || prompt).trim();
+      const debutCaption = (parts.slice(1).join(' ') || String(o.scene || ''))
+        .replace(/\s+/g, ' ').trim();
+      console.log('[Image] Debut CG（纯自然语言）抽标签完成 → 交画家第二趟:', bundle.slice(0, 120));
+      callPainterProsePass(o.provider || resolvePainterProvider(), { tags: bundle, caption: debutCaption, kind: 'debut', name })
+        .then(prose => {
+          if (!prose) {
+            console.warn('[Image] Debut CG 第二趟失败，退回画家两层/代码兜底提示词:', name);
+            sendDebutRequest(prompt);
+            return;
+          }
+          if (!/half[-\s]?body|waist[-\s]?up|from the waist/i.test(prose)) {
+            console.warn('[Image] ⚠️ Debut CG 纯散文里没有 half-body 取景表述，仍按原文下发:', name);
+          }
+          sendDebutRequest(prose);
+        })
+        .catch(e => {
+          console.warn('[Image] Debut CG 第二趟异常:', e.message, '— 退回兜底提示词');
+          sendDebutRequest(prompt);
+        });
+    } else {
+      sendDebutRequest(prompt);
+    }
     return true;
   }
 
@@ -6533,8 +6823,19 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
       try { return getCGQualityPrefix(db) || 'masterpiece, best+quality'; } catch { return 'masterpiece, best+quality'; }
     })();
     let prompt;
-    if (genMode === 'natural') {
-      // 自然语言模式：Anima 两层结构（Hard Tags + 空行 + 英文散文）。管家给的是散文时补出头层，
+    if (isPureNaturalGenMode(genMode)) {
+      // 纯自然语言模式：管家在纯模式下给的就是一段英文空镜散文；兼容它仍写成两层的情况
+      // （取空行之后的部分当散文）。纯散文里【绝不能】再补 safe / no_humans 这类标签 ——
+      // 标签串会把写实底模推回插画域，"画面里没有人"改用一句自然语言表达。
+      const hasBlankLine = /\r?\n[ \t]*\r?\n/.test(raw);
+      prompt = hasBlankLine ? raw.slice(raw.search(/\r?\n[ \t]*\r?\n/)).replace(/^\s+/, '') : raw;
+      prompt = prompt.replace(/\s+/g, ' ').trim();
+      if (!/no one|no people|nobody|without anyone|unoccupied|deserted/i.test(prompt)) {
+        prompt = prompt.replace(/\s*$/, ' ') + 'There is no one in the room.';
+      }
+      console.log('[Image] NSFW 结束空镜（纯自然语言）→ 英文散文，无标签层');
+    } else if (isAnimaHybridGenMode(genMode)) {
+      // Anima 两层模式：Hard Tags + 空行 + 英文散文。管家给的是散文时补出头层，
       // 保证第 1 段一定存在 —— 只有散文层的提示词会丢掉 no_humans 这个"无人物"约束。
       const hasBlankLine = /\r?\n[ \t]*\r?\n/.test(raw);
       if (hasBlankLine) {
@@ -6650,13 +6951,16 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
     // stays intact in both modes (portrait always uses danbooru tags regardless of gen_mode).
     let painterSystemContent = BUTLER_PAINTER_SYS;
     const imgSettings = getImageSettings(db);
-    const genMode = imgSettings.gen_mode || 'tag';
-    if (genMode === 'natural') {
+    const genMode = imgSettings.gen_mode || DEFAULT_GEN_MODE;
+    // anima 与 natural 都用同一套 Anima 两层规则作为【第一趟】：
+    //   · anima：两层就是最终提示词；
+    //   · natural（纯自然语言）：代码只取它的 Hard Tags 行，再交给第二趟改写成散文。
+    if (isProseGenMode(genMode)) {
       painterSystemContent = painterSystemContent.replace(
         /=== CG imagePrompt tag 扫描规则 ===[\s\S]*?(?=== 输出一行JSON ===)/,
         BUTLER_PAINTER_NATURAL_CG
       );
-      console.log('[Painter] gen_mode = natural → replaced tag CG section with natural-language CG section (portrait section untouched)');
+      console.log(`[Painter] gen_mode = ${genMode} → replaced tag CG section with Anima hybrid CG section (portrait section untouched)`);
     } else {
       console.log('[Painter] gen_mode = tag → using tag-oriented CG section as-is');
     }

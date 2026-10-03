@@ -226,8 +226,8 @@ function initDatabase() {
       api_key                   TEXT DEFAULT '${ANIMA.API_KEY}',
       model                     TEXT DEFAULT 'flux',
       workflow_id               TEXT DEFAULT '',
-      custom_params             TEXT DEFAULT '{}',             -- JSON string
-      gen_mode                  TEXT DEFAULT 'tag',            -- tag | natural (生图提示词模式)
+      custom_params             TEXT DEFAULT '{}',             -- JSON string（仅 NovelAI 高级参数；ComfyUI 参数由工作流决定）
+      gen_mode                  TEXT DEFAULT 'tag',            -- tag | anima | natural (生图提示词模式)
       portrait_quality_prefix   TEXT DEFAULT '',               -- 头像自定义质量前缀
       cg_quality_prefix         TEXT DEFAULT '',               -- CG自定义质量前缀
       portrait_positive_node    TEXT DEFAULT '',               -- 头像正向提示词节点ID
@@ -287,6 +287,22 @@ function initDatabase() {
     .run(APP_KEYS.ROLL_ENABLED, 'true');
   db.prepare(`INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`)
     .run(APP_KEYS.ROLL_STRICT_RETRY, 'true');
+
+  db.prepare(`INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`)
+    .run(APP_KEYS.ROLL_STRICT_RETRY, 'true');
+
+  // gen_mode 拆分（2026-10-03）：'natural' 的语义从「Anima 两层」改为「纯自然语言」，
+  // 旧库里的 natural 行必须迁到 'anima'，否则老用户的出图效果会突然变样（少了 Hard Tags 层）。
+  // ⚠️ 必须用 app_settings 标记做「只跑一次」守卫：否则每次启动都会把用户新选的
+  //    'natural'（纯自然语言）又改回 'anima'，新功能会静默失效。
+  try {
+    const genModeSplitDone = db.prepare("SELECT value FROM app_settings WHERE key = 'gen_mode_split_20261003'").get();
+    if (!genModeSplitDone) {
+      const info = db.prepare("UPDATE image_settings SET gen_mode = 'anima' WHERE gen_mode = 'natural'").run();
+      db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('gen_mode_split_20261003', '1')").run();
+      console.log('[DB] gen_mode 迁移完成（natural → anima）:', info.changes, '行');
+    }
+  } catch (e) { console.warn('[DB] gen_mode 迁移失败:', e.message); }
 
   // Insert a blank placeholder API provider if none exists.
   // Share build: ships NO working credentials and no author-specific model name —

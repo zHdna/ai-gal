@@ -10200,6 +10200,11 @@ function collectNovelAIParams(root) {
   const scope = root || document;
   const group = scope.querySelector ? scope.querySelector('#imageNovelaiGroup') : null;
   if (!group) return null;
+  // 只有选中 NovelAI 引擎时才维护 custom_params：这组控件在其它引擎下只是 display:none，
+  // 仍在 DOM 里 —— 不挡住的话，切到 ComfyUI 后保存设置会把隐藏框里的残留值反复写回库里
+  //（ComfyUI 的 steps/cfg 由工作流决定，见 server/routes/images.js）。
+  const modeEl = scope.querySelector ? scope.querySelector('#imageMode') : null;
+  if (modeEl && modeEl.value !== 'novelai') return null;
   let base = {};
   try { base = JSON.parse(group.dataset.baseParams || '{}') || {}; } catch { base = {}; }
   const num = (sel) => {
@@ -10245,7 +10250,8 @@ function renderImageGenSettings() {
         <label>提示词模式</label>
         <select id="genPromptMode" class="setting-select">
           <option value="tag" ${(s.gen_mode || 'tag') === 'tag' ? 'selected' : ''}>关键词Tag模式</option>
-          <option value="natural" ${s.gen_mode === 'natural' ? 'selected' : ''}>自然语言模式</option>
+          <option value="anima" ${s.gen_mode === 'anima' ? 'selected' : ''}>Anima两层模式（Hard Tags + 自然语言）</option>
+          <option value="natural" ${s.gen_mode === 'natural' ? 'selected' : ''}>纯自然语言模式（无标签）</option>
         </select>
       </div>
       <div class="form-group" id="comfyuiGroup" style="display:${hasComfyGroup(mode) ? 'block' : 'none'}">
@@ -10594,7 +10600,8 @@ function openImageGenSettingsInPanel() {
       <div class="form-group"><label>提示词模式</label>
         <select id="genPromptMode" class="setting-select">
           <option value="tag" ${(s.gen_mode || 'tag') === 'tag' ? 'selected' : ''}>关键词Tag模式</option>
-          <option value="natural" ${s.gen_mode === 'natural' ? 'selected' : ''}>自然语言模式</option>
+          <option value="anima" ${s.gen_mode === 'anima' ? 'selected' : ''}>Anima两层模式（Hard Tags + 自然语言）</option>
+          <option value="natural" ${s.gen_mode === 'natural' ? 'selected' : ''}>纯自然语言模式（无标签）</option>
         </select></div>
       <div class="form-group" id="comfyuiGroup" style="display:${hasComfyGroup(mode) ? 'block' : 'none'}">
         <label>ComfyUI 地址</label>
@@ -10828,7 +10835,7 @@ function renderImageSettings() {
     const mode = s.mode || 'anima';
     const genMode = s.gen_mode || 'tag';
     const eff = effectiveApiSettings(Object.assign({}, s, { mode }));
-    // NovelAI 高级参数（存 custom_params：steps/cfg/seed/sampler，与 ComfyUI 的 getGenerationParams 共用键名）
+    // NovelAI 高级参数（存 custom_params：steps/cfg/seed/sampler）。ComfyUI 不用它 —— 参数由工作流决定。
     const cp = (() => { try { return JSON.parse(s.custom_params || '{}') || {}; } catch { return {}; } })();
     container.innerHTML = `
       <div class="setting-row" style="flex-direction:column;align-items:flex-start">
@@ -10847,9 +10854,10 @@ function renderImageSettings() {
         <label>提示词模式</label>
         <select id="imageGenMode" class="setting-select">
           <option value="tag" ${genMode === 'tag' ? 'selected' : ''}>关键词Tag模式（标签拼凑）</option>
-          <option value="natural" ${genMode === 'natural' ? 'selected' : ''}>自然语言模式（完整描述）</option>
+          <option value="anima" ${genMode === 'anima' ? 'selected' : ''}>Anima两层模式（Hard Tags + 自然语言）</option>
+          <option value="natural" ${genMode === 'natural' ? 'selected' : ''}>纯自然语言模式（无标签·完整描述）</option>
         </select>
-        <small style="color:var(--text-muted)">Tag模式：主AI和管家AI以标签组织生图提示词；自然语言模式：以完整句子描述场景</small>
+        <small style="color:var(--text-muted)">Tag模式：主AI和管家AI以 danbooru 标签组织提示词（SD/Pony/Illustrious）；Anima两层模式：Hard Tags 一行 + 空行 + 英文自然语言（Anima/Z-image）；纯自然语言模式：代码先抽标签拼接，再由画师AI 改写成【不含任何标签】的英文散文后生图（Qwen-Image 2.1 等写实底模，可避免标签串导致的动漫画风）</small>
       </div>
       <div id="imageComfyuiGroup" style="display:${hasComfyGroup(mode) ? 'block' : 'none'}">
         <div class="setting-row" style="flex-direction:column;align-items:flex-start">

@@ -6,7 +6,7 @@ const http = require('http');
 const zlib = require('zlib');
 const path = require('path');
 const fs = require('fs');
-const { SETTINGS_ID, ANIMA_PRESET, NOVELAI_PRESET, OPENAI_COMPATIBLE_MODES, EXTERNAL_IMAGE_MODES, EXTERNAL_API_TIMEOUT_MS, DEFAULT_COMFYUI_URL } = require('../constants');
+const { SETTINGS_ID, ANIMA_PRESET, NOVELAI_PRESET, OPENAI_COMPATIBLE_MODES, EXTERNAL_IMAGE_MODES, EXTERNAL_API_TIMEOUT_MS, DEFAULT_COMFYUI_URL, DEFAULT_GEN_MODE, isPureNaturalGenMode } = require('../constants');
 const { isPathWithin } = require('../utils/pathGuard');
 const savePaths = require('../savePaths');
 const { isUrlSafe } = require('../utils/urlGuard');
@@ -162,6 +162,27 @@ const CLOTHING_TAGS = [
  */
 function isAnimaHybridPrompt(prompt) {
   return /\r?\n[ \t]*\r?\n/.test(String(prompt || ''));
+}
+
+/**
+ * 纯自然语言模式（gen_mode = 'natural'）的最小规范化：只压空白，【绝不】按逗号切分、
+ * 【绝不】注入任何标签。标签清洗（nsfw 注入 / 按逗号去重）会把一整段散文切碎，
+ * 而 nsfw / 1girl 这类词正是把 Qwen-Image 2.1 这类写实底模推回动漫画风的元凶。
+ */
+function normalizeProsePrompt(prompt) {
+  return String(prompt || '').replace(/\r\n?/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 纯场景空镜（NSFW 流程结束图）在纯自然语言模式下的兜底：
+ * 不加 safe / no_humans 标签，只用一句自然语言写明「画面里没有人」。
+ */
+function ensureNoHumansProse(prompt) {
+  const text = normalizeProsePrompt(prompt);
+  // 判据必须落到「明确说了没有人」上：只写 empty bedroom 的场景，模型照样会塞个人进去。
+  if (/no one|no people|nobody|without anyone|unoccupied|deserted/i.test(text)) return text;
+  return (text + ' There is no one in the room.').trim();
 }
 
 /**
@@ -479,7 +500,18 @@ function isLink(v) {
  * - Text encoders use `text`
  * - Unknown classes qualify only if they already hold a string in one of those
  */
-function getPromptInputKey(node) {
+/**
+ * 这是「提示词到底写进哪个字段」的唯一判定点。
+ *   · PrimitiveString / StringLiteral 家族 → `value`
+ *   · CLIPTextEncode 家族               → `text`
+ *   · Qwen-Image 2.1 的 TextEncodeQwenImage21 → `prompt` / `negative_prompt`
+ * ⚠️ 2026-10-03 事故：只认 `text` 时，应用会把提示词写进一个**不存在的** `text` 字段，
+ *    ComfyUI 忽略未知输入、照旧用工作流里烘焙的旧 prompt 出图 —— 全程不报错，只是「生图不听话」。
+ *
+ * @param {object} node
+ * @param {'positive'|'negative'} [branch] - 负向分支优先写 `negative_prompt`
+ */
+function getPromptInputKey(node, branch) {
   if (!node || !node.inputs) return null;
   const ct = node.class_type || '';
   if (NON_TEXT_PRIMITIVE_RE.test(ct)) return null;
@@ -488,7 +520,11 @@ function getPromptInputKey(node) {
     if (node.inputs.text !== undefined) return 'text';
     return 'value';
   }
-  if (ENCODE_NODE_RE.test(ct)) return 'text';
+  const hasPromptField = typeof node.inputs.prompt === 'string';
+  const hasNegPromptField = typeof node.inputs.negative_prompt === 'string';
+  if (branch === 'negative' && hasNegPromptField) return 'negative_prompt';
+  if (ENCODE_NODE_RE.test(ct)) return hasPromptField ? 'prompt' : 'text';
+  if (hasPromptField) return 'prompt';
   if (typeof node.inputs.text === 'string') return 'text';
   if (typeof node.inputs.value === 'string') return 'value';
   return null;
@@ -529,7 +565,7 @@ function scorePromptNode(workflow, nid, negOnly) {
   if (STRING_NODE_RE.test(ct)) score += 40;
   if (ENCODE_NODE_RE.test(ct)) score += 15;
   if (negOnly) score -= 150;
-  const key = getPromptInputKey(node);
+  const key = getPromptInputKey(node, negOnly ? 'negative' : 'positive');
   const val = key ? node.inputs[key] : '';
   if (typeof val === 'string' && val.trim().length > 0) score += 5;
   if (/placeholder|PROMPT_HERE/i.test(String(val))) score += 30; // explicit placeholder slot
@@ -546,7 +582,7 @@ function scorePromptNode(workflow, nid, negOnly) {
 function resolvePromptNode(workflow, branch, preferredId) {
   // 1) Explicit configuration wins, as long as the node exists and is textual.
   if (preferredId && workflow[preferredId]) {
-    const key = getPromptInputKey(workflow[preferredId]);
+    const key = getPromptInputKey(workflow[preferredId], branch);
     if (key) return { id: preferredId, node: workflow[preferredId], key, source: 'configured' };
     console.warn(`[ImageGen] Configured ${branch} node ${preferredId} (${workflow[preferredId].class_type}) is not textual; auto-detecting.`);
   }
@@ -573,7 +609,7 @@ function resolvePromptNode(workflow, branch, preferredId) {
     if (seenCand.has(nid)) return;
     const node = workflow[nid];
     if (!node) return;
-    const key = getPromptInputKey(node);
+    const key = getPromptInputKey(node, branch);
     if (!key) return;
     const val = node.inputs ? node.inputs[key] : undefined;
     // Never write into a field that is wired to another node — that would sever
@@ -639,7 +675,7 @@ function applyNodeSettings(workflow, prompt, settings, type) {
     // treat it as two segments and draw two subjects ("left-right merged" artifacts).
     let promptNodes = 0;
     for (const [nid, node] of Object.entries(workflow)) {
-      for (const f of ['text', 'value']) {
+      for (const f of ['text', 'value', 'prompt']) {
         if (typeof node.inputs?.[f] === 'string' && node.inputs[f] === prompt) promptNodes++;
       }
     }
@@ -665,8 +701,11 @@ function applyNodeSettings(workflow, prompt, settings, type) {
 /**
  * Parse generation params stored in image_settings.custom_params (JSON string).
  * Supported: width, height, steps, cfg, sampler, scheduler, seed.
- * Empty/0 numeric values and empty strings = keep workflow defaults;
+ * Empty/0 numeric values and empty strings = keep the engine default;
  * seed '' / null / -1 = randomize each run.
+ *
+ * ⚠️ 2026-10-03 起，**只有 NovelAI 用这个**（generateViaNovelAI 的尺寸/步数/CFG/采样器/种子）。
+ * ComfyUI 的这组参数一律由工作流文件决定，应用不再覆盖（见文件上方 applyGenerationParams 的移除说明）。
  */
 function getGenerationParams(settings) {
   try {
@@ -686,32 +725,9 @@ function getGenerationParams(settings) {
   } catch { return {}; }
 }
 
-/**
- * Apply generation params onto a parsed ComfyUI workflow.
- * Called AFTER seed randomization so an explicit seed param wins.
- * Workflow-agnostic: params land on nodes that structurally expose the
- * matching input fields (any sampler class, not just KSampler).
- */
-function applyGenerationParams(workflow, params) {
-  if (!params) return;
-  for (const node of Object.values(workflow)) {
-    if (!node.inputs) continue;
-    // Latent source: any node producing width/height (EmptyLatentImage and
-    // custom variants alike).
-    if (typeof node.inputs.width === 'number' && typeof node.inputs.height === 'number') {
-      if (params.width > 0) node.inputs.width = params.width;
-      if (params.height > 0) node.inputs.height = params.height;
-    }
-    // Sampler: any node exposing the sampler tuning inputs.
-    if ('seed' in node.inputs && 'steps' in node.inputs) {
-      if (params.steps > 0) node.inputs.steps = params.steps;
-      if (params.cfg > 0 && 'cfg' in node.inputs) node.inputs.cfg = params.cfg;
-      if (params.sampler && 'sampler_name' in node.inputs) node.inputs.sampler_name = params.sampler;
-      if (params.scheduler && 'scheduler' in node.inputs) node.inputs.scheduler = params.scheduler;
-      if (params.seed >= 0) node.inputs.seed = params.seed;
-    }
-  }
-}
+// 2026-10-03 移除 `applyGenerationParams()`：ComfyUI 的 steps / cfg / sampler / scheduler /
+// 分辨率一律【由工作流文件决定】，应用不再用 image_settings.custom_params 覆盖它们。
+// （`custom_params` 现在的唯一消费者是 NovelAI 高级参数，见 generateViaNovelAI。）
 
 module.exports = (db) => {
   const router = Router();
@@ -868,6 +884,7 @@ module.exports = (db) => {
 
     const settings = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
     const genMode = (settings && settings.mode) || 'anima';
+    const isPureProseMode = isPureNaturalGenMode((settings && settings.gen_mode) || DEFAULT_GEN_MODE);
     res.json({ message: 'Regeneration queued', status: 'pending' });
 
     // --- ComfyUI URL (external instance) ---
@@ -912,7 +929,8 @@ module.exports = (db) => {
 
     // Boost 1boy weight for male characters
     let boostedPrompt = prompt;
-    if (prompt.includes('1boy') && !prompt.includes('(1boy:')) {
+    // 纯自然语言模式：散文里不该有 1boy 标签，更不该给它加 SD 权重语法
+    if (!isPureProseMode && prompt.includes('1boy') && !prompt.includes('(1boy:')) {
       boostedPrompt = prompt.replace(/\b1boy\b/, '(1boy:1.3)');
       console.log('[ImageGen-Regen] Boosted 1boy weight to (1boy:1.3)');
     }
@@ -959,13 +977,13 @@ module.exports = (db) => {
       // Normalize model names to match ComfyUI's filesystem index (case-insensitive on Windows)
       await normalizeWorkflowModels(workflow, comfyUrl);
 
-        // Randomize seed on all sampler nodes (structural: has seed+steps), then apply explicit user params (seed param wins)
+        // ComfyUI 的 steps / cfg / sampler / scheduler / 分辨率【由工作流文件决定】，此处不覆盖。
+        // 只随机种子：同一份工作流每次出图不能是同一张（工作流里的 seed 是固定数值）。
         for (const [nid, node] of Object.entries(workflow)) {
           if (node.inputs && 'seed' in node.inputs && 'steps' in node.inputs) {
             node.inputs.seed = Math.floor(Math.random() * 9999999999999);
           }
         }
-        applyGenerationParams(workflow, getGenerationParams(settings));
 
         const submitUrl = new URL('/prompt', comfyUrl.replace(/\/$/, ''));
       const promptId = await httpPost(submitUrl, { prompt: workflow });
@@ -1054,6 +1072,10 @@ module.exports = (db) => {
     const settings = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
     let comfyuiUrl = (settings && settings.comfyui_url) || DEFAULT_COMFYUI_URL;
     const genMode = (settings && settings.mode) || 'anima';
+    // 提示词格式（image_settings.gen_mode）与引擎（image_settings.mode）是两件事：
+    //   natural = 纯自然语言 → 整段散文，下面所有标签清洗都要跳过（见 normalizeProsePrompt）。
+    const promptGenMode = (settings && settings.gen_mode) || DEFAULT_GEN_MODE;
+    const isPureProseMode = isPureNaturalGenMode(promptGenMode);
 
     // Extract culture from portrait metadata
     const culture = (portrait && typeof portrait === 'object') ? (portrait.culture || '') : '';
@@ -1066,7 +1088,16 @@ module.exports = (db) => {
     // 与登场 CG 一样关闭 nsfw 自动注入，并额外：强制 SFW 分级 + no_humans、不补人物/性别标签、
     // 不套用人物兜底图（见下方 fallbackTag 与 ensureSubjectTag 的分支）。
     const isSceneOnly = type === 'cg' && req.body && req.body.scene_only === true;
-    if (type === 'portrait') {
+    if (isPureProseMode) {
+      // 纯自然语言模式：只压空白。绝不能走 cleanCGPrompt / cleanPortraitPrompt ——
+      // 它们会按逗号切分散文并在第 2 位硬插 `nsfw`，那正是动漫化提示词的来源。
+      prompt = normalizeProsePrompt(prompt);
+      if (isSceneOnly) {
+        prompt = ensureNoHumansProse(prompt);
+        console.log('[ImageGen] Scene-only CG（纯自然语言）— 保持散文，只补「画面里没有人」:', prompt.slice(0, 140));
+      }
+      console.log('[ImageGen] 纯自然语言模式 — 跳过标签清洗（nsfw 注入 / 逗号去重 / 年龄标签）');
+    } else if (type === 'portrait') {
       prompt = cleanPortraitPrompt(prompt, culture);
     } else if (type === 'cg') {
       prompt = cleanCGPrompt(prompt, { forceNsfw: !isDebutCg && !isSceneOnly });
@@ -1076,14 +1107,20 @@ module.exports = (db) => {
         console.log('[ImageGen] Scene-only CG (NSFW 流程结束图) — 强制 safe + no_humans 后的提示词:', prompt.slice(0, 140));
       }
     }
-    if (portrait && typeof portrait === 'object') {
+    if (!isPureProseMode && portrait && typeof portrait === 'object') {
       prompt = injectAgeTag(prompt, portrait, conversation_id, db);
     }
 
     // Subject/gender tag guard: every downstream model keys identity off `1girl`/`1boy`/`1futa`.
     // This is a safety net for prompts built outside the normal pipeline (or by a weak model);
     // in the normal flow the tag is already present, so nothing is injected.
-    {
+    if (isPureProseMode) {
+      // 纯散文里绝不能补 `1girl` 这种标签（那会把写实底模拉回插画域）。只做提示性日志。
+      if (!/\b(girl|boy|man|woman|male|female|lady|gentleman|person|people|figure)\b/i.test(prompt) && !isSceneOnly) {
+        console.warn('[ImageGen] 纯自然语言模式：散文里没有明显的人物性别词，请检查画师输出');
+      }
+      console.log('[ImageGen] 纯自然语言模式 — 跳过 1girl/1boy 标签兜底');
+    } else {
       const guard = isSceneOnly ? { prompt, injected: null } : ensureSubjectTag(prompt, type, portrait);
       if (guard.injected) {
         console.warn(`[ImageGen] GUARD: prompt had no subject tag — injected "${guard.injected}" (type=${type})`);
@@ -1119,7 +1156,10 @@ module.exports = (db) => {
     // Standard SD weighting: (tag:1.3) increases emphasis by 30%
     // NEVER do this for an Anima hybrid prompt: `(1boy:1.3)` is not a valid Danbooru tag and would
     // corrupt the Hard-Tags layer of a model that reads tags verbatim.
-    if (prompt.includes('1boy') && !prompt.includes('(1boy:') && !isAnimaHybridPrompt(prompt)) {
+    // 纯自然语言模式同理：散文里根本没有 `1boy` 标签，也不允许出现 SD 权重语法。
+    if (isPureProseMode) {
+      console.log('[ImageGen] 纯自然语言模式 — 跳过 (1boy:1.3) 加权');
+    } else if (prompt.includes('1boy') && !prompt.includes('(1boy:') && !isAnimaHybridPrompt(prompt)) {
       prompt = prompt.replace(/\b1boy\b/, '(1boy:1.3)');
       console.log('[ImageGen] Boosted 1boy weight to (1boy:1.3) for male character');
     } else if (prompt.includes('1boy') && isAnimaHybridPrompt(prompt)) {
@@ -1222,13 +1262,13 @@ module.exports = (db) => {
         // Normalize model names to match ComfyUI's filesystem index (case-insensitive on Windows)
         await normalizeWorkflowModels(workflow, comfyuiUrl);
 
-        // Randomize seed on all sampler nodes (structural: has seed+steps), then apply explicit user params (seed param wins)
+        // ComfyUI 的 steps / cfg / sampler / scheduler / 分辨率【由工作流文件决定】，此处不覆盖。
+        // 只随机种子：同一份工作流每次出图不能是同一张（工作流里的 seed 是固定数值）。
         for (const [nid, node] of Object.entries(workflow)) {
           if (node.inputs && 'seed' in node.inputs && 'steps' in node.inputs) {
             node.inputs.seed = Math.floor(Math.random() * 9999999999999);
           }
         }
-        applyGenerationParams(workflow, getGenerationParams(settings));
 
         const submitUrl = new URL('/prompt', comfyuiUrl.replace(/\/$/, ''));
         const promptId = await httpPost(submitUrl, { prompt: workflow });

@@ -33,6 +33,21 @@ exports.APP_KEYS = {
 //   none       — image generation disabled (profile placeholders only)
 exports.IMAGE_MODES = ['anima', 'comfyui', 'openai', 'stability', 'novelai', 'none'];
 
+// ── Image prompt formats (`image_settings.gen_mode`) ──
+// 三档（2026-10-03 拆分；旧库里的 'natural' 会在首次启动时一次性迁到 'anima'，见 db/init.js）：
+//   tag     — Danbooru 关键词标签（SD / Pony / Illustrious 等标签驱动底模）
+//   anima   — Anima 两层结构：Hard Tags 行 + 空行 + 英文自然语言层（Anima / Z-image 等混合模型）
+//   natural — 纯自然语言：整段英文散文，一个标签都不出现（Qwen-Image 2.1 等写实底模）。
+//             实测：同一底模 + 同一段场景，标签串提示词出 2.5D 动漫，纯散文出照片 —— 标签串会把这类模型推进插画域。
+exports.GEN_MODES = ['tag', 'anima', 'natural'];
+exports.DEFAULT_GEN_MODE = 'tag';
+// 主AI 与管家AI 是否输出英文散文（anima 与 natural 都要散文，差别只在下游画家AI 的收尾）
+exports.isProseGenMode = (m) => m === 'anima' || m === 'natural';
+// Anima 两层（Hard Tags + 散文）模式
+exports.isAnimaHybridGenMode = (m) => m === 'anima';
+// 纯自然语言模式（代码抽标签 → 画家AI 第二趟改写成散文）
+exports.isPureNaturalGenMode = (m) => m === 'natural';
+
 // Modes served by generateViaOpenAI() (`anima` is an OpenAI-compatible endpoint too).
 exports.OPENAI_COMPATIBLE_MODES = ['anima', 'openai'];
 // Modes that talk to a third-party endpoint instead of a local ComfyUI graph.
