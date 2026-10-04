@@ -51,6 +51,9 @@ extraResources:
   - { from: ../package.json,  to: app-payload/package.json }
   - { from: ../GALCG.json,    to: app-payload/GALCG.json }
   - { from: ../portrait_x.json, to: app-payload/portrait_x.json }
+  # 视频工作流占位（与上面两个同性质：仓库里就是 0 字节的"未配置"形态）。
+  # 缺了它，装出来的桌面版视频功能只会一直"跳过：工作流不存在" —— 用户连填的地方都没有。
+  - { from: ../Vedio.json,    to: app-payload/Vedio.json }
   - { from: ../qwen3-tts-01.json, to: app-payload/qwen3-tts-01.json }
   - { from: ../LICENSE,       to: app-payload/LICENSE }
   # 用户文档随包发一份：装完想知道某个按钮/设置怎么用，可以直接在安装目录里翻

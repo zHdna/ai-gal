@@ -182,6 +182,13 @@ function initDatabase() {
   //   复位为 0：收尾场景图已下发（或从未进入过该流程）
   // 没有这个列就无法区分「剧情仍在 NSFW 流程中（只是本回合没配图）」与「流程已结束」。
   try { db.exec(`ALTER TABLE conversations ADD COLUMN nsfw_active INTEGER DEFAULT 0`); } catch {}
+// 剧情是否「正处于 NSFW 场景」（0/1）—— **专给 Roll 点停判用**，与上面的 nsfw_active 解耦：
+//   · nsfw_active 绑定**生图流程**（只在真的下发了 NSFW CG 时置 1，用于「结束空镜」收尾）；
+//     生图总开关关闭 / 生图模式为 none 时它永远为 0，拿它当停判依据会漏。
+//   · nsfw_hold 只看**剧情**：管家判定本轮是 NSFW 场景（triggerImage）置 1，
+//     判定剧情已离开该场景（nsfwEnd）复位 0。两种生图设置下都成立。
+//     用途：NSFW 场景期间暂停成功率判定，避免 H 剧情被"行动失败/大失败"打断。
+try { db.exec(`ALTER TABLE conversations ADD COLUMN nsfw_hold INTEGER DEFAULT 0`); } catch {}
 
   // Memory-drop state (user confirmed "ignore earlier dialogue, keep the table").
   // Context-layer only: rows are NEVER deleted, this just tells buildApiMessages()
@@ -238,7 +245,16 @@ function initDatabase() {
       cg_negative_prompt        TEXT DEFAULT '',               -- CG自定义负向提示词
       api_model                 TEXT DEFAULT '${ANIMA.API_MODEL}', -- OpenAI兼容/anima 生图模型
       quality_prefix            TEXT DEFAULT '',               -- OpenAI兼容模式提示词质量前缀
-      image_size                TEXT DEFAULT '${ANIMA.IMAGE_SIZE}' -- OpenAI兼容/anima 图片尺寸
+      image_size                TEXT DEFAULT '${ANIMA.IMAGE_SIZE}', -- OpenAI兼容/anima 图片尺寸
+      -- ---- 视频生成（生图的辅助；见 D:\DSH\AI-GAL-VIDEO-GEN-PLAN.md）----
+      -- 默认关闭：视频工作流极重，且仓库里的 Vedio.json 是 0 字节占位（仅表示"未配置"）。
+      video_enabled             TEXT DEFAULT '0',              -- '1' = 开启视频生成
+      video_workflow            TEXT DEFAULT '',               -- 工作流文件，留空 = Vedio.json
+      video_trigger             TEXT DEFAULT '',               -- 触发条件 X（注入为「当 X 时，调用视频生成接口」）
+      video_positive_node       TEXT DEFAULT '',               -- 视频正向提示词节点ID
+      video_negative_node       TEXT DEFAULT '',               -- 视频负向提示词节点ID
+      video_quality_prefix      TEXT DEFAULT '',               -- 视频固定前缀
+      video_negative_prompt     TEXT DEFAULT ''                -- 视频自定义负向提示词
     )
   `);
 
@@ -253,7 +269,11 @@ function initDatabase() {
     'portrait_negative_prompt', 'cg_negative_prompt',
     'api_model', 'quality_prefix', 'image_size',
     // Workflow file selection (relative to project root); empty = built-in default
-    'cg_workflow', 'portrait_workflow'
+    'cg_workflow', 'portrait_workflow',
+    // 视频生成（生图的辅助）：整组与图像生成对称，多一条 video_trigger 触发条件
+    'video_enabled', 'video_workflow', 'video_trigger',
+    'video_positive_node', 'video_negative_node',
+    'video_quality_prefix', 'video_negative_prompt'
   ];
   for (const col of newImageCols) {
     try {

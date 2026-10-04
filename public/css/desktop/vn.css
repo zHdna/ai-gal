@@ -5563,3 +5563,484 @@ html:not(.legacy) .phone-empty {
   color: var(--text-2);
 }
 
+
+/* ===========================================================================
+   15. 视频端口（小视频窗口 · 生图的辅助）
+   ---------------------------------------------------------------------------
+   · #rightSlot 原本是「与头像框同宽的空占位列」（.bottom 的三列网格），
+     现在把视频小窗放进去 —— 与左侧 #avL 严格对称：同宽（--av）、同 1:1 比例、
+     同描边与圆角。这样主对话框宽度不变（早期注释里就是为这块 UI 留的位）。
+   · 播放器元素由 app.js 的 __videoWindow 运行时插入（.vid-media），
+     mp4/webm/mov → <video>，gif/apng/webp → <img>；一律 object-fit:contain
+     "自动缩放并保持长宽比"，不裁切、不变形。
+   =========================================================================== */
+
+.app .bottom .right-slot.has-video {
+  height: auto;
+  pointer-events: auto;
+}
+
+.app .vid-slot {
+  position: relative;
+  width: var(--av);
+  aspect-ratio: 1 / 1;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 2px solid var(--line-2);
+  background: var(--bg-2);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, .45);
+  transition: opacity .32s, border-color .32s, transform .32s;
+}
+
+.app .vid-slot[hidden] {
+  display: none;
+}
+
+/* 上缘按钮条：骑在顶边上（需求「视频小窗上缘有按钮」）。
+   平时半透明、悬停才完全显形，免得抢画面。 */
+.app .vid-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: linear-gradient(180deg, rgba(4, 8, 18, .82), rgba(4, 8, 18, 0));
+  opacity: .35;
+  transition: opacity .25s;
+}
+
+.app .vid-slot:hover .vid-bar,
+.app .vid-slot.collapsed .vid-bar {
+  opacity: 1;
+}
+
+.app .vid-bar .vb {
+  min-width: 26px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-input);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .2s, border-color .2s, background .2s;
+}
+
+.app .vid-bar .vb:hover {
+  color: var(--gold);
+  border-color: var(--gold-dim);
+}
+
+.app .vid-box {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(120% 90% at 50% 0%, rgba(126, 178, 255, .08), rgba(0, 0, 0, .35));
+}
+
+/* 播放器元素：**绝对定位铺满宿主**。
+   ⚠️ 2026-10-04 事故：以前写的是 grid 子项 + width/height:100%。在 grid 里百分比高度
+   参与内在尺寸计算时会被判为"不确定"，于是高度**回退到视频自带的宽高比**
+   （实测：全屏舞台 1600×900，播放器元素却是 1600×1200）→ 元素比屏幕还高，
+   画面被上下裁掉。绝对定位后百分比对着宿主的 padding box 解析，永远是准确的宿主尺寸，
+   再交给 object-fit: contain 在里面按比例居中留黑边 —— 这才是普通视频播放器的行为。 */
+.app .vid-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;   /* 自动缩放 + 保持长宽比（不裁切、不变形） */
+  object-position: center;
+  display: block;
+  -webkit-user-drag: none;
+}
+
+/* 还没有视频时：不要摆一个黑框，给一行字 */
+.app .vid-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0 14px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  text-align: center;
+  color: var(--text-mut);
+}
+
+.app .vid-empty[hidden] {
+  display: none;
+}
+
+/* 折叠态：只剩上缘按钮条那一小条 */
+.app .vid-slot.collapsed {
+  aspect-ratio: auto;
+  height: 34px;
+  background: var(--panel-2);
+}
+
+.app .vid-slot.collapsed .vid-box,
+.app .vid-slot.collapsed .vid-empty {
+  display: none;
+}
+
+/* 视频已经放大到舞台上：小窗退成"带着走"的缩略指示，别和背景重复播两份 */
+.app .vid-slot.on-stage {
+  opacity: .55;
+  border-color: var(--gold-dim);
+}
+
+.app .vid-slot.on-stage .vid-box {
+  visibility: hidden;
+}
+
+/* ---- 舞台上的视频层（「放大为背景」= CG 的位置） ---- */
+.app .art-frame .stage-video {
+  position: absolute;
+  inset: 0;
+  z-index: 2;                 /* 盖在 #cgImg 之上，但仍在角标 / chip 之下 */
+  display: grid;
+  place-items: center;
+  background: #05080F;
+  cursor: zoom-out;
+}
+
+.app .art-frame .stage-video[hidden] {
+  display: none;
+}
+
+.app .art-frame .stage-video .vid-media {
+  object-fit: contain;
+}
+
+/* 视频当背景时把 CG 让开（不删除，只是不显示；退出背景态立刻回来） */
+.app.vid-bg .art-frame .cg {
+  visibility: hidden;
+}
+
+/* ---- 悬浮窗（弹出播放） ---- */
+.vid-float {
+  position: fixed;
+  z-index: 60;                /* 高于 .dock（数据中心），低于模态遮罩 */
+  width: 360px;
+  padding: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  background: var(--panel-3);
+  backdrop-filter: var(--glass);
+  box-shadow: 0 28px 64px rgba(0, 0, 0, .6);
+}
+
+.vid-float[hidden] {
+  display: none;
+}
+
+.vid-float .vf-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  cursor: move;
+  user-select: none;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.vid-float .vf-title {
+  font-size: 12px;
+  letter-spacing: .08em;
+  color: var(--text-2);
+}
+
+.vid-float .vf-head .spacer {
+  flex: 1;
+}
+
+.vid-float .vf-head .vb {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-input);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.vid-float .vf-head .vb:hover {
+  color: var(--gold);
+  border-color: var(--gold-dim);
+}
+
+.vid-float .vf-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #05080F;
+  display: grid;
+  place-items: center;
+}
+
+.vid-float .vf-stage .vid-media {
+  /* 绝对定位铺满（见 .app .vid-media 的说明）—— 全屏时同理，只是宿主变成整屏 */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
+/* 全屏：只让装视频的那层占满屏幕，标题栏不跟着上去 */
+/* 全屏：舞台铺满屏幕，画面在里面 contain 居中（左右/上下留黑边），绝不裁切。
+   显式写 position/inset，不依赖 UA 的 :fullscreen 默认样式。 */
+.vid-float .vf-stage:fullscreen,
+.vid-float .vf-stage:-webkit-full-screen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: auto;
+  padding: 0;
+  border-radius: 0;
+  background: #000;
+}
+
+/* 浅色主题：悬浮窗底色换浅色玻璃 */
+html[data-theme="light"] .vid-float {
+  border-color: rgba(46, 84, 146, .3);
+  box-shadow: 0 28px 64px rgba(20, 40, 80, .28);
+}
+
+html[data-theme="light"] .app .art-frame .stage-video {
+  background: #0A1220;
+}
+
+
+/* ===========================================================================
+   16. 视频端口 · 播放控制条 / 音量 / 画廊视频条目 / 视频灯箱（2026-10-04 第三轮）
+   =========================================================================== */
+
+/* ---- 小窗下缘的播放控制条：暂停 + 声音 + 音量 ---- */
+.app .vid-ctl {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: linear-gradient(0deg, rgba(4, 8, 18, .85), rgba(4, 8, 18, 0));
+  opacity: .38;
+  transition: opacity .25s;
+}
+
+.app .vid-slot:hover .vid-ctl,
+.app .vid-slot.collapsed .vid-ctl {
+  opacity: 1;
+}
+
+/* 折叠态只留上缘那条，不再显示播放控制 */
+.app .vid-slot.collapsed .vid-ctl {
+  display: none;
+}
+
+/* ---- 音量滑块（小窗 / 悬浮窗 / 移动弹层共用一套外观） ---- */
+.vb-vol {
+  flex: 1 1 auto;
+  min-width: 46px;
+  max-width: 120px;
+  height: 18px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.vb-vol::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .28);
+}
+
+.vb-vol::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: #E8C878;
+  box-shadow: 0 0 6px rgba(232, 200, 120, .7);
+}
+
+.vb-vol::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .28);
+}
+
+.vb-vol::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: none;
+  border-radius: 50%;
+  background: #E8C878;
+}
+
+/* 悬浮窗头部的滑块压窄一点，别把按钮挤走 */
+.vid-float .vf-head .vb-vol {
+  max-width: 82px;
+}
+
+/* ---- 画廊里的视频条目：只显示首帧 + 一枚播放角标 ---- */
+.app .cg.vid::after {
+  content: "▶";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(4, 8, 18, .62);
+  border: 1px solid rgba(232, 200, 120, .7);
+  color: var(--gold);
+  font-size: 14px;
+  pointer-events: none;
+  text-shadow: 0 0 8px rgba(232, 200, 120, .8);
+}
+
+.app .cg.vid {
+  cursor: pointer;
+}
+
+.app .cg.vid .cap::before {
+  content: "🎬 ";
+}
+
+/* 首帧还没抓到时的占位（不显示空白格子） */
+.app .cg.vid.no-poster {
+  background: linear-gradient(160deg, rgba(20, 31, 58, .9), rgba(9, 15, 32, .95));
+}
+
+/* ---- 视频灯箱（画廊点一条视频 → 点开播放） ---- */
+.vid-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 480;               /* 压过 .dock / 悬浮窗，低于最高层级的模态 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4vh 3vw;
+}
+
+.vid-viewer[hidden] {
+  display: none;
+}
+
+.vid-viewer .vv-bd {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 4, 10, .92);
+  backdrop-filter: blur(4px);
+}
+
+.vid-viewer .vv-box {
+  position: relative;
+  z-index: 1;
+  width: min(1100px, 94vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  background: var(--panel-3);
+  box-shadow: 0 30px 70px rgba(0, 0, 0, .7);
+}
+
+.vid-viewer .vv-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.vid-viewer .vv-cap {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vid-viewer .vv-sp {
+  flex: 1;
+}
+
+.vid-viewer .vv-head .vb {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-input);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.vid-viewer .vv-head .vb:hover {
+  color: var(--gold);
+  border-color: var(--gold-dim);
+}
+
+/* 舞台：与全屏那边同样的做法 —— 绝对定位铺满 + object-fit:contain，保比例不裁切 */
+.vid-viewer .vv-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #04070F;
+}
+
+.vid-viewer .vv-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  display: block;
+}
+
+.vid-viewer .vv-stage:fullscreen,
+.vid-viewer .vv-stage:-webkit-full-screen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: auto;
+  background: #000;
+}

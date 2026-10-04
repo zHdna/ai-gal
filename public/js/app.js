@@ -40,6 +40,8 @@ const AppState = {
   // 画廊
   galleryImages: [],        // 当前对话的图片 URL 列表
   cgGallery: [],            // CG 图片列表 [{filename, character, prompt, timestamp}]
+  videoGallery: [],         // 视频列表（生图的辅助）[{filename, character, prompt, timestamp, trigger?}]
+  videoGallerySig: '',      // 视频列表变更签名（变了才重挂播放器，否则视频会反复从头播）
   galleryIndex: 0,          // 当前显示的图片索引
   // 状态栏
   userStatus: {},      // 角色状态变量 { key: value }
@@ -438,6 +440,12 @@ async function loadInitialData() {
     renderThemeSettings();
     renderMemoryAgentSettings();
     renderImageSettings();
+    // 视频生成设置（生图的辅助）：与图像生成并列，两个挂载点都要渲染
+    renderVideoSettings(document.getElementById('videoSettings'));
+    renderVideoSettings(document.getElementById('videoGenSettings'));
+    // 视频端口（小视频窗口）：绑定一次，再按设置同步显示/隐藏
+    initVideoWindow();
+    syncVideoWindowEnabled();
     } catch (err) {
       console.error('[Init] 加载初始数据失败:', err);
       showToast('加载数据失败，请刷新重试', 'error');
@@ -657,7 +665,7 @@ function bindEvents() {
         DOM.messageInput().value = action;
         DOM.messageInput().focus();
         // Roll 点：把该选项的成功率一并交给本轮发送（后端据此判定）。
-        // 没有 data-rate 时传 null → 后端走"默认档"（>=10 成功）。
+        // 没有 data-rate 时传 null → 后端走默认档（75%，与手动输入同档）。
         const rateAttr = btn.dataset.rate;
         const rate = (rateAttr !== undefined && rateAttr !== null && rateAttr !== '')
           ? Number(rateAttr) : null;
@@ -4946,7 +4954,7 @@ function renderRollDebugEntry(roll, timeStr, roundNum) {
     const sourceLabel = {
       main_ai: '主AI给出的成功率',
       butler: '管家补全的成功率',
-      default: '未提供成功率 → 默认档',
+      default: '未提供成功率 → 默认档 75%',
       manual: '玩家手动输入 → 75% 加成档',
     }[roll.source] || roll.source || '未知';
 
@@ -7782,6 +7790,11 @@ function startGalleryPoll(intervalMs) {
 
   _galleryPollSaveId = saveId;
   _galleryPollLastSig = cgGallerySignature(AppState.cgGallery);
+  // 视频画廊同属本存档：换档即作废签名并清掉小窗里的旧片，
+  // 否则会拿着新存档的 saveId 去拼上一局的文件名（必然 404，小窗一片黑）。
+  AppState.videoGallerySig = '';
+  AppState.videoGallery = [];
+  try { renderVideoWindow(); } catch (e) { /* 视频窗尚未初始化 */ }
   const baseInterval = Math.max(1500, Number(intervalMs) || 3000);
 
   console.log('[GalleryPoll] 常驻轮询启动, save=', saveId, 'interval=', baseInterval);
@@ -7817,6 +7830,21 @@ function startGalleryPoll(intervalMs) {
           AppState.cgGallery = resp.gallery;
           updated = true;
           console.log('[GalleryPoll] CG 更新, count=', resp.gallery.length);
+        }
+      }
+    } catch { /* 网络抖动：下个节拍再试 */ }
+
+    // 视频画廊（生图的辅助）：与 CG 同一个节拍。视频比图慢得多（分钟级），
+    // 所以它"顺路看一眼"即可 —— 不单独起定时器，也不因为没变化就漏掉。
+    try {
+      const vResp = await request('/saves/' + _galleryPollSaveId + '/video-gallery');
+      if (vResp && Array.isArray(vResp.gallery)) {
+        const vsig = videoGallerySignature(vResp.gallery);
+        if (vsig !== AppState.videoGallerySig) {
+          AppState.videoGallerySig = vsig;
+          AppState.videoGallery = vResp.gallery;
+          console.log('[GalleryPoll] 视频更新, count=', vResp.gallery.length);
+          try { renderVideoWindow(); } catch (e) { /* 视频窗未初始化时忽略 */ }
         }
       }
     } catch { /* 网络抖动：下个节拍再试 */ }
@@ -7894,6 +7922,788 @@ function stopGalleryPoll() {
   }
   _galleryPollSaveId = '';
   _galleryPollLastSig = '';
+  // 退出登录 / 离开游戏：视频小窗一并清空（文件名属于刚离开的那个存档）
+  AppState.videoGallerySig = '';
+  AppState.videoGallery = [];
+  try { renderVideoWindow(); } catch (e) { /* ignore */ }
+}
+
+
+// ============ 视频端口（小视频窗口 · 生图的辅助） ============
+
+/**
+ * 视频端口的显示态（需求 R5–R8）：
+ *   hidden    设置里关了视频生成 → 整个小窗不显示，#rightSlot 退回空占位列
+ *   small     默认：与左侧头像框 #avL 同宽（--av）、同 1:1 比例，右下角常驻
+ *   collapsed 只留上缘按钮条，再点一下展开
+ *   stage     「放大为背景」：视频铺到舞台（CG 的位置），#cgImg 让位
+ *   float     「弹出悬浮窗」：独立可拖动窗口，可恢复 / 全屏
+ *
+ * 移动端形态（手机塞不下小窗）：左上角一枚悬浮按钮 → 点开才弹层播放，见 applyVideoModeMobile()。
+ * 两种形态**共用同一个 VID 与同一个播放器元素**，不各写一套。
+ *
+ * ⚠️ 播放器元素在多个宿主之间是**搬**而不是**重建** —— 重建会让视频从 0 秒重头播。
+ * ⚠️ 容器骨架是 index.html / mobile.html 里的静态 DOM，本模块只往里塞播放器，绝不重建外壳（§34）。
+ * ⚠️ **所有控件按钮都只走一条 document 级委托**（data-vidact / data-vidvol）。
+ *    2026-10-04 事故：小窗声音按钮同时被"容器委托 + 自己直绑"处理了两遍，一次点击被切换两次，
+ *    表现就是"声音开关无效"。同按钮只允许一条处理路径，多宿主也不会重复绑定。
+ */
+const VID = {
+  mode: 'hidden',
+  enabled: false,   // 设置里的视频生成开关（由 syncVideoWindowEnabled 维护）
+  url: '',          // 当前播放地址（'' = 还没有视频）
+  ext: '',
+  sig: '',          // 「文件名@时间戳」：变了才换片源
+  node: null,       // 活的播放器元素
+  soundOn: false,   // 声音开关（false = 静音）。默认静音，避免角落里一直响
+  volume: 0.7,      // 音量 0..1（与 soundOn 独立：拖到 0 会静音，拖上去自动开声）
+  paused: false,    // 用户是否按了暂停（换片时复位）
+  floatPos: null,   // 悬浮窗拖到哪儿了
+
+  // ---- 移动端形态 ----
+  // 手机屏幕塞不下桌面那种小窗（要与头像框对称、还要三态切换），
+  // 所以移动端改成「左上角一枚悬浮按钮 → 点击弹出播放」。
+  // ⚠️ 手机**不在按钮态加载视频**：只有弹层真的打开时才创建 video 元素（关掉即卸掉），
+  //    否则一进页面就会白白下几百 KB～几 MB。
+  mobile: false,
+  mobileOpen: false,
+};
+
+/** 只播"视频容器"用 video 元素；gif / apng / webp 这类动图只能用 img。 */
+function vidIsVideoExt(ext) { return /^(mp4|webm|mov|m4v|mkv|ogv)$/i.test(String(ext || '')); }
+function vidExtOf(name) {
+  const m = String(name || '').toLowerCase().match(/\.([a-z0-9]+)(?:$|[?#])/);
+  return m ? m[1] : '';
+}
+
+/** 视频画廊的变更签名（与 cgGallerySignature 同思路：整串拼接，条数很少）。 */
+function videoGallerySignature(gallery) {
+  const g = gallery || [];
+  return g.length + '|' + g.map(x => String(x && x.filename || '') + '@' + String(x && x.timestamp || '')).join(',');
+}
+
+function vidRefs() {
+  return {
+    // 桌面形态
+    app: document.getElementById('app'),
+    slot: document.getElementById('vidSlot'),
+    bar: document.getElementById('vidBar'),
+    box: document.getElementById('vidBox'),
+    empty: document.getElementById('vidEmpty'),
+    stageHost: document.getElementById('stageVideo'),
+    float: document.getElementById('vidFloat'),
+    floatStage: document.getElementById('vidFloatStage'),
+    rightSlot: document.getElementById('rightSlot'),
+    // 移动端形态
+    mFab: document.getElementById('vnVideoFab'),
+    mOverlay: document.getElementById('vnVideoOverlay'),
+    mStage: document.getElementById('vnVideoStage'),
+  };
+}
+
+function vidEnsureNode() {
+  if (VID.node) return VID.node;
+  if (!VID.url) return null;
+  let node;
+  if (vidIsVideoExt(VID.ext)) {
+    node = document.createElement('video');
+    node.autoplay = true;
+    node.loop = true;
+    node.muted = !VID.soundOn;
+    node.playsInline = true;
+    node.setAttribute('playsinline', '');
+    node.preload = 'auto';
+    node.src = VID.url;
+    node.addEventListener('error', () => console.warn('[Video] 播放失败（文件缺失或格式不支持）:', VID.url));
+  } else {
+    // gif / apng / webp：动图靠浏览器自己循环，不需要也不支持 video 的控件
+    node = document.createElement('img');
+    node.alt = '生成的视频';
+    node.src = VID.url;
+    node.addEventListener('error', () => console.warn('[Video] 动图加载失败:', VID.url));
+  }
+  node.className = 'vid-media';
+  node.dataset.vidExt = VID.ext;
+  VID.node = node;
+  return node;
+}
+
+/**
+ * 尝试播放；被自动播放策略拒绝时退回静音再试一次（浏览器只允许静音自动播）。
+ *
+ * @param {HTMLVideoElement} node
+ * @param {boolean} [noMuteFallback] 用户**主动**开了声音时传 true：
+ *        此时被拒就只告警，绝不偷偷把它静音回去 —— 那会让"声音开关"看起来毫无作用。
+ */
+function vidTryPlay(node, noMuteFallback) {
+  if (!node || node.tagName !== 'VIDEO') return;
+  try {
+    const p = node.play();
+    if (p && p.catch) {
+      p.catch(() => {
+        if (noMuteFallback) {
+          console.warn('[Video] 浏览器拒绝在无用户手势时播放带声音的视频（点一下画面即可开始）');
+          return;
+        }
+        node.muted = true;
+        try {
+          const p2 = node.play();
+          if (p2 && p2.catch) p2.catch(() => console.warn('[Video] 浏览器拒绝自动播放'));
+        } catch (e) { /* ignore */ }
+      });
+    }
+  } catch (e) { /* ignore */ }
+}
+
+/** 把音量 / 静音 / 暂停这三件事一次性套到播放器元素上（各宿主共用）。 */
+function vidApplyMediaState(node) {
+  if (!node || node.tagName !== 'VIDEO') return;
+  try { node.volume = VID.volume; } catch (e) { /* ignore */ }
+  node.muted = !VID.soundOn || VID.volume <= 0;
+  if (VID.paused) { try { node.pause(); } catch (e) { /* ignore */ } }
+  else vidTryPlay(node, VID.soundOn && VID.volume > 0);
+}
+
+/** 所有宿主上的控件一起同步（小窗控制条 / 悬浮窗头 / 移动弹层头）。 */
+function syncVideoControlsUI() {
+  const playTxt = VID.paused ? '▶' : '⏸';
+  const playTitle = VID.paused ? '继续播放' : '暂停';
+  document.querySelectorAll('[data-vidact="play"]').forEach(b => {
+    b.textContent = playTxt; b.title = playTitle; b.setAttribute('aria-label', playTitle);
+  });
+  document.querySelectorAll('[data-vidact="sound"]').forEach(b => {
+    b.textContent = VID.soundOn ? '🔊' : '🔇';
+    b.title = VID.soundOn ? '静音' : '开启声音';
+  });
+  document.querySelectorAll('[data-vidvol]').forEach(s => {
+    const pct = String(Math.round(VID.volume * 100));
+    if (s.value !== pct) s.value = pct;
+    s.title = '音量 ' + pct + '%';
+  });
+}
+
+/** 把 VID 的状态映射到 DOM 上。所有状态切换都只走这一个出口。 */
+function applyVideoMode() {
+  const r = vidRefs();
+  // 兜底：万一在 initVideoWindow() 之前就被调到（例如设置刚保存就刷新小窗），
+  // 这里按"有没有桌面小窗挂点"自行判定形态 —— 桌面永远有 #vidSlot，判定稳定。
+  if (!VID.mobile) VID.mobile = !r.slot && !!r.mFab;
+  if (VID.mobile) return applyVideoModeMobile(r);
+  if (!r.slot || !r.box) return;
+  const m = VID.mode;
+  const shown = !!VID.enabled && m !== 'hidden';
+  const hasVideo = !!VID.url;
+
+  r.slot.hidden = !shown;
+  r.slot.classList.toggle('collapsed', m === 'collapsed');
+  r.slot.classList.toggle('on-stage', m === 'stage');
+  if (r.rightSlot) {
+    r.rightSlot.classList.toggle('has-video', shown);
+    if (shown) r.rightSlot.removeAttribute('aria-hidden');
+    else r.rightSlot.setAttribute('aria-hidden', 'true');
+  }
+  if (r.empty) r.empty.hidden = hasVideo;
+
+  const onStage = shown && m === 'stage' && hasVideo;
+  const onFloat = shown && m === 'float' && hasVideo;
+  if (r.app) r.app.classList.toggle('vid-bg', onStage);
+  if (r.stageHost) r.stageHost.hidden = !onStage;
+  if (r.float) r.float.hidden = !onFloat;
+
+  if (!hasVideo) {
+    if (VID.node) { VID.node.remove(); VID.node = null; }
+    syncVideoControlsUI();
+    return;
+  }
+  const node = vidEnsureNode();
+  const host = (m === 'stage') ? r.stageHost : (m === 'float' ? r.floatStage : r.box);
+  if (host && node.parentNode !== host) host.appendChild(node);
+  vidApplyMediaState(node);
+  if (onFloat) placeVideoFloat();
+  syncVideoControlsUI();
+}
+
+/**
+ * 移动端形态：左上角悬浮按钮 + 点开才弹层播放。
+ *
+ * 与桌面形态的差异只有"宿主在哪"：
+ *   · 按钮显隐 = 开关打开 && 这个存档真的有视频；
+ *   · 弹层开合是**独立的子状态** VID.mobileOpen，不动 VID.mode；
+ *   · **没点开就绝不创建播放器** —— 手机上"一进页面就下视频"是实打实的流量浪费；
+ *   · 弹层关闭时把播放器元素卸掉（手机内存紧张，没必要留一个暂停的解码器）。
+ */
+function applyVideoModeMobile(r) {
+  const hasVideo = !!VID.url;
+  const shown = !!VID.enabled && hasVideo;
+  if (r.mFab) r.mFab.hidden = !shown;
+  const open = shown && VID.mobileOpen;
+  if (r.mOverlay) {
+    r.mOverlay.hidden = !open;
+    r.mOverlay.classList.toggle('on', open);
+  }
+
+  if (!open) {
+    // ← 关键：这里连 vidEnsureNode() 都不会调，播放器根本不存在，自然不会发请求
+    if (VID.node) { VID.node.remove(); VID.node = null; }
+    syncVideoControlsUI();
+    return;
+  }
+  const node = vidEnsureNode();
+  if (r.mStage && node.parentNode !== r.mStage) r.mStage.appendChild(node);
+  vidApplyMediaState(node);
+  syncVideoControlsUI();
+}
+
+function setVideoMode(mode) {
+  VID.mode = mode;
+  applyVideoMode();
+}
+
+/** 移动端：开 / 关视频弹层（**只有开的时候才加载视频**）。 */
+function setVideoOverlay(on) {
+  VID.mobileOpen = !!on;
+  if (on) VID.paused = false;      // 每次点开都从头播（用户预期）
+  applyVideoMode();
+}
+
+/** 按设置开关 + 当前存档的视频画廊刷新小窗。轮询与设置保存后都会调它。 */
+function renderVideoWindow() {
+  const r = vidRefs();
+  // 桌面形态看 #vidSlot，移动端形态看 #vnVideoFab —— 哪个在就用哪套（见 applyVideoMode）
+  if (!r.slot && !r.mFab) return;
+  if (!VID.enabled) { setVideoMode('hidden'); return; }
+
+  const saveId = getCurrentSaveId();
+  const list = Array.isArray(AppState.videoGallery) ? AppState.videoGallery : [];
+  const top = list[0];
+
+  if (!saveId || !top || !top.filename) {
+    VID.sig = ''; VID.url = ''; VID.ext = '';
+    if (VID.node) { VID.node.remove(); VID.node = null; }
+    if (VID.mode === 'hidden' || VID.mode === 'float' || VID.mode === 'stage') VID.mode = 'small';
+    // 换存档 / 视频没了 → 弹层也要收起来，别停在上一个存档的片子上
+    VID.mobileOpen = false;
+    applyVideoMode();
+    return;
+  }
+
+  const sig = String(top.filename) + '@' + String(top.timestamp || '');
+  if (sig !== VID.sig) {
+    // 换片：先卸掉旧元素（video 的 src 直接改写不会释放解码器，会越切越吃显存）
+    VID.sig = sig;
+    VID.url = vidFileUrl(saveId, top.filename);
+    VID.ext = vidExtOf(top.filename);
+    VID.paused = false;                 // 新片子从头放
+    if (VID.node) { VID.node.remove(); VID.node = null; }
+    console.log('[Video] 换片:', top.filename);
+  }
+  if (VID.mode === 'hidden') VID.mode = 'small';
+  applyVideoMode();
+}
+
+/** 存档内视频/封面的取件地址（与 CG 同一个静态通路，自带 Range 支持）。 */
+function vidFileUrl(saveId, filename) {
+  return '/api/saves/' + encodeURIComponent(saveId) + '/images/' + encodeURIComponent(filename);
+}
+
+/** 从设置里同步"视频生成开关"，再刷新小窗。启动时与保存设置后各调一次。 */
+async function syncVideoWindowEnabled() {
+  try {
+    const s = await ImageAPI.get();
+    VID.enabled = String((s && s.video_enabled) || '').trim() === '1';
+  } catch (e) {
+    console.warn('[Video] 读取视频设置失败，保持当前显示态:', e && e.message);
+  }
+  renderVideoWindow();
+}
+
+/**
+ * 「重画视频」：把**上一条视频**记录下来的提示词重发一次。
+ *
+ * 与「重画CG」的差别：CG 走 /api/images/regenerate（服务端按 old_filename 覆盖原图）；
+ * 视频生成慢得多、产物也大，所以这里是**新生成一段**（追加到视频画廊最前面），
+ * 不覆盖旧的 —— 用户可以拿新版和旧版对比，觉得不好也还有旧的。
+ *
+ * 提示词用的是画廊条目里存下的原文（进服务端之前的那份），所以改了「固定前缀」再重画会生效。
+ */
+async function regenVideo() {
+  const saveId = getCurrentSaveId();
+  if (!saveId) { showToast('还没有进入任何存档', 'error'); return false; }
+
+  const list = Array.isArray(AppState.videoGallery) ? AppState.videoGallery : [];
+  const top = list[0];
+  if (!top) {
+    showToast('这个存档还没有视频 —— 先让管家 AI 按「视频生成条件」触发一次', 'error');
+    return false;
+  }
+  if (!top.prompt) {
+    showToast('这条视频没有记录提示词，无法重画', 'error');
+    return false;
+  }
+
+  const convId = (AppState.currentConversation && AppState.currentConversation.id) || '';
+  try {
+    const resp = await VideoAPI.generate({
+      prompt: top.prompt,
+      character_name: top.character || 'video',
+      conversation_id: convId,
+      source: 'regenerate',
+    });
+    // 服务端的"没开 / 工作流是空占位"是正常回包（不是 HTTP 错误），要原样讲给用户听
+    if (resp && resp.status === 'skipped') {
+      const why = resp.reason === 'disabled' ? '「设置 → 视频生成」的开关没打开'
+        : resp.reason === 'workflow_missing' ? ('视频工作流 ' + (resp.file || 'Vedio.json') + ' 不存在或是空占位文件')
+          : ('已跳过（' + resp.reason + '）');
+      showToast('没有提交：' + why, 'error');
+      return false;
+    }
+    showToast('已提交重画视频（比生图慢很多，完成后会自动换片）', 'success');
+    // 视频是异步的：把常驻画廊轮询调到最快，等它抓到新条目
+    startGalleryPoll(2000);
+    return true;
+  } catch (err) {
+    showToast('重画视频失败：' + (err && err.message ? err.message : err), 'error');
+    return false;
+  }
+}
+// 供桌面 / 移动两套外壳调用（它们各自负责按钮的忙碌态与 toast）
+window.regenVideo = regenVideo;
+
+/* ---------------------------------------------------------------------------
+ * 画廊封面（首帧）
+ * ---------------------------------------------------------------------------
+ * 需求：「数据中心的 CG 画廊里能看到视频，列表中只显示首帧」。
+ * 封面优先用**服务端存的静帧**（同一次 ComfyUI 任务的 SaveImage 产物 —— 图生视频的
+ * first_frame 接的正是它，所以它字面上就是首帧）；工作流没有静帧时，退化为在浏览器里
+ * 用 canvas 抓第一帧，抓到的结果缓存在内存里（同一条只抓一次）。
+ * 抓帧串行执行（一次只下一段视频），避免一打开画廊就把整列视频全拉下来。
+ */
+const VID_POSTERS = {};        // filename -> dataURL（浏览器抓的首帧缓存）
+const _vidPosterQueue = [];
+let _vidPosterBusy = false;
+
+/** 某条视频画廊条目在列表里该用哪张图当封面（'' = 还没有，需要现抓）。 */
+function vidPosterFor(entry, saveId) {
+  if (!entry || !entry.filename) return '';
+  if (entry.poster) return vidFileUrl(saveId, entry.poster);
+  return VID_POSTERS[entry.filename] || '';
+}
+
+/**
+ * 确保某条视频有封面。拿不到就回调空串（调用方显示占位即可）。
+ * @param {object} entry
+ * @param {string} saveId
+ * @param {(dataUrl:string)=>void} [onDone]
+ */
+function vidEnsurePoster(entry, saveId, onDone) {
+  const f = entry && entry.filename;
+  if (!f || !saveId) { if (onDone) onDone(''); return; }
+  const have = vidPosterFor(entry, saveId);
+  if (have) { if (onDone) onDone(have); return; }
+  const waiting = _vidPosterQueue.filter(q => q.f === f)[0];
+  if (waiting) { if (onDone) waiting.cbs.push(onDone); return; }
+  _vidPosterQueue.push({ f, saveId, cbs: onDone ? [onDone] : [] });
+  vidPosterPump();
+}
+
+function vidPosterPump() {
+  if (_vidPosterBusy) return;
+  const job = _vidPosterQueue.shift();
+  if (!job) return;
+  _vidPosterBusy = true;
+  const url = vidFileUrl(job.saveId, job.f);
+  const ext = vidExtOf(job.f);
+  let finished = false;
+  const finish = (dataUrl) => {
+    if (finished) return;
+    finished = true;
+    if (dataUrl) VID_POSTERS[job.f] = dataUrl;
+    _vidPosterBusy = false;
+    job.cbs.forEach(cb => { try { cb(dataUrl || ''); } catch (e) { /* ignore */ } });
+    vidPosterPump();
+  };
+  const grab = (src, w, h) => {
+    try {
+      const scale = Math.min(1, 384 / Math.max(1, Math.max(w, h)));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w * scale));
+      c.height = Math.max(1, Math.round(h * scale));
+      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+      finish(c.toDataURL('image/jpeg', 0.72));
+    } catch (e) { finish(''); }
+  };
+
+  if (vidIsVideoExt(ext)) {
+    const v = document.createElement('video');
+    v.muted = true; v.loop = false; v.playsInline = true; v.preload = 'metadata';
+    v.setAttribute('playsinline', '');
+    v.addEventListener('loadeddata', () => grab(v, v.videoWidth || 320, v.videoHeight || 180));
+    v.addEventListener('seeked', () => grab(v, v.videoWidth || 320, v.videoHeight || 180));
+    v.addEventListener('error', () => finish(''));
+    v.addEventListener('loadedmetadata', () => { try { v.currentTime = 0.001; } catch (e) { /* ignore */ } });
+    v.src = url;
+    setTimeout(() => finish(''), 10000);      // 兜底：网络太慢就别卡住队列
+  } else {
+    const img = new Image();
+    img.decoding = 'async';
+    img.addEventListener('load', () => grab(img, img.naturalWidth || 320, img.naturalHeight || 180));
+    img.addEventListener('error', () => finish(''));
+    img.src = url;
+    setTimeout(() => finish(''), 10000);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 视频灯箱（画廊里点一条视频 → 点开播放）
+ * ---------------------------------------------------------------------------
+ * 刻意用**原生 controls**：播放/暂停/进度/音量/全屏一次到位，正是"点击播放"该有的样子。
+ * 元素按需创建、挂在 body 上（两套外壳都不会重建它 —— 外壳只管自己的 DOM，见 §34）。
+ */
+let _vidViewerEl = null;
+
+function vidOpenViewer(url, caption) {
+  if (!url) return;
+  if (!_vidViewerEl) {
+    const el = document.createElement('div');
+    el.className = 'vid-viewer';
+    el.id = 'videoViewer';
+    el.hidden = true;
+    el.innerHTML =
+      '<div class="vv-bd" data-vv="close"></div>' +
+      '<div class="vv-box">' +
+        '<div class="vv-head"><span class="vv-cap"></span><span class="vv-sp"></span>' +
+          '<button class="vb" data-vv="fs" title="全屏播放">⛶ 全屏</button>' +
+          '<button class="vb" data-vv="close" title="关闭（Esc）">✕</button>' +
+        '</div>' +
+        '<div class="vv-stage"></div>' +
+      '</div>';
+    el.addEventListener('click', (e) => {
+      const b = e.target && e.target.closest ? e.target.closest('[data-vv]') : null;
+      if (!b) return;
+      e.stopPropagation();
+      if (b.dataset.vv === 'close') vidCloseViewer();
+      else if (b.dataset.vv === 'fs') vidRequestFullscreen(el.querySelector('.vv-stage'));
+    });
+    document.body.appendChild(el);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && _vidViewerEl && !_vidViewerEl.hidden) vidCloseViewer();
+    });
+    _vidViewerEl = el;
+  }
+  const stage = _vidViewerEl.querySelector('.vv-stage');
+  stage.innerHTML = '';
+  let node;
+  if (vidIsVideoExt(vidExtOf(url))) {
+    node = document.createElement('video');
+    node.src = url;
+    node.controls = true;
+    node.autoplay = true;
+    node.loop = true;
+    node.playsInline = true;
+    node.setAttribute('playsinline', '');
+    node.volume = VID.volume;
+    node.muted = false;                 // 是用户主动点开的，允许带声音
+    node.addEventListener('error', () => console.warn('[Video] 灯箱播放失败:', url));
+  } else {
+    node = document.createElement('img');
+    node.src = url;
+    node.alt = caption || '视频';
+  }
+  node.className = 'vv-media';
+  stage.appendChild(node);
+  const cap = _vidViewerEl.querySelector('.vv-cap');
+  if (cap) cap.textContent = caption || '';
+  _vidViewerEl.hidden = false;
+  console.log('[Video] 灯箱打开:', url);
+}
+window.vidOpenViewer = vidOpenViewer;
+window.vidFileUrl = vidFileUrl;
+window.vidPosterFor = vidPosterFor;
+window.vidEnsurePoster = vidEnsurePoster;
+
+function vidCloseViewer() {
+  if (!_vidViewerEl) return;
+  const v = _vidViewerEl.querySelector('video');
+  if (v) { try { v.pause(); } catch (e) { /* ignore */ } }
+  const stage = _vidViewerEl.querySelector('.vv-stage');
+  if (stage) stage.innerHTML = '';     // 立刻释放解码器
+  _vidViewerEl.hidden = true;
+}
+
+/** 悬浮窗首次弹出时给个默认位置（右下、避开数据中心），之后沿用用户拖到的地方。 */
+function placeVideoFloat() {
+  const el = document.getElementById('vidFloat');
+  if (!el) return;
+  if (VID.floatPos) {
+    el.style.left = VID.floatPos.left + 'px';
+    el.style.top = VID.floatPos.top + 'px';
+    return;
+  }
+  const w = 360, h = 300;
+  const left = Math.max(12, window.innerWidth - w - 28);
+  const top = Math.max(12, window.innerHeight - h - 90);
+  el.style.left = left + 'px';
+  el.style.top = top + 'px';
+}
+
+/** 对任意元素请求全屏（视频端口的各处共用）。 */
+function vidRequestFullscreen(el) {
+  if (!el) return;
+  if (document.fullscreenElement) {
+    if (document.exitFullscreen) document.exitFullscreen();
+    return;
+  }
+  const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+  if (!fn) { showToast('当前浏览器不支持全屏播放', 'error'); return; }
+  try { fn.call(el); } catch (e) { showToast('全屏播放失败: ' + e.message, 'error'); }
+}
+
+/** 全屏：优先对"只装视频的那层"全屏，避免标题栏也进画面。 */
+function vidToggleFullscreen() {
+  const el = (VID.mobile ? document.getElementById('vnVideoStage') : document.getElementById('vidFloatStage'))
+    || document.getElementById('vidFloat')
+    || document.getElementById('vnVideoOverlay');
+  vidRequestFullscreen(el);
+}
+
+/** 悬浮窗拖动（只拖标题栏，不干扰视频本身的点击与滑块）。 */
+function wireVideoFloatDrag() {
+  const head = document.getElementById('vidFloatHead');
+  const el = document.getElementById('vidFloat');
+  if (!head || !el) return;
+  let dragging = false, offX = 0, offY = 0;
+  head.addEventListener('pointerdown', (e) => {
+    if (e.target && e.target.closest && e.target.closest('button, input')) return;
+    dragging = true;
+    const rc = el.getBoundingClientRect();
+    offX = e.clientX - rc.left;
+    offY = e.clientY - rc.top;
+    try { head.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+  });
+  head.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const left = Math.min(Math.max(4, e.clientX - offX), window.innerWidth - 80);
+    const top = Math.min(Math.max(4, e.clientY - offY), window.innerHeight - 40);
+    el.style.left = left + 'px';
+    el.style.top = top + 'px';
+    VID.floatPos = { left, top };
+  });
+  const end = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    try { head.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+  };
+  head.addEventListener('pointerup', end);
+  head.addEventListener('pointercancel', end);
+}
+
+/**
+ * 绑定视频端口的交互。整个生命周期只绑一次。
+ *
+ * ⚠️ **唯一的控件入口**：所有按钮/滑块都靠 document 上的 **捕获阶段** 委托识别
+ * data-vidact / data-vidvol。这样：
+ *   · 多宿主（小窗 / 悬浮窗 / 移动弹层）不需要各自绑定，也就不会出现"同一按钮被处理两遍"；
+ *   · 捕获阶段先于 #dock 等祖先的冒泡处理器 → 不会被画廊的 [data-big] 之类抢走。
+ */
+let _videoWindowWired = false;
+function initVideoWindow() {
+  if (_videoWindowWired) return;
+  const r = vidRefs();
+  // 两种形态的挂点：桌面有 #vidSlot，移动端有 #vnVideoFab；都没有就什么都不做
+  if (!r.slot && !r.mFab) return;
+  _videoWindowWired = true;
+  VID.mobile = !r.slot && !!r.mFab;
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-vidact]') : null;
+    if (!btn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const act = btn.dataset.vidact;
+    if (act === 'collapse') setVideoMode(VID.mode === 'collapsed' ? 'small' : 'collapsed');
+    else if (act === 'stage') setVideoMode(VID.mode === 'stage' ? 'small' : 'stage');
+    else if (act === 'pop') setVideoMode('float');
+    else if (act === 'restore') setVideoMode('small');
+    else if (act === 'open') setVideoOverlay(true);
+    else if (act === 'close') setVideoOverlay(false);
+    else if (act === 'fs') vidToggleFullscreen();
+    else if (act === 'play') { VID.paused = !VID.paused; applyVideoMode(); }
+    else if (act === 'sound') { VID.soundOn = !VID.soundOn; applyVideoMode(); }
+  }, true);
+
+  document.addEventListener('input', (e) => {
+    const s = e.target && e.target.closest ? e.target.closest('[data-vidvol]') : null;
+    if (!s) return;
+    e.stopPropagation();
+    const pct = Math.max(0, Math.min(100, Number(s.value) || 0));
+    VID.volume = pct / 100;
+    VID.soundOn = pct > 0;          // 拖到 0 = 静音；拖上去自动开声（符合直觉）
+    applyVideoMode();
+  }, true);
+
+  wireVideoFloatDrag();
+  // 「关闭大图，回到主界面」在视频当背景时先退掉视频背景，再让外壳走它自己的流程
+  const stageX = document.getElementById('stageX');
+  if (stageX) {
+    stageX.addEventListener('click', () => {
+      if (VID.mode === 'stage') setVideoMode('small');
+    }, true);
+  }
+  window.addEventListener('resize', () => { if (VID.mode === 'float') placeVideoFloat(); });
+  console.log('[Video] 视频端口已初始化（形态：' + (VID.mobile ? '移动端悬浮按钮' : '桌面小窗') + '）');
+}
+
+// ============ 视频生成设置（设置页 与 API 预设弹窗 共用一套渲染） ============
+
+/**
+ * 渲染视频生成设置。
+ *
+ * 为什么用 data-vid 属性而不是 id：同一套设置要挂到**两个**容器上
+ * （设置弹窗的 #videoSettings、API 预设弹窗的 #videoGenSettings）。
+ * 用 id 会重演本项目的老坑 —— document.getElementById 只返回文档序最前的那一个，
+ * 第二个界面保存时读到的是第一个界面的值。
+ */
+function renderVideoSettings(container) {
+  if (!container) return;
+  ImageAPI.get().then(s => {
+    const st = s || {};
+    const on = String(st.video_enabled || '').trim() === '1';
+    const trig = String(st.video_trigger || '');
+    container.innerHTML = `
+      <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+        <label>视频生成开关</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <label class="toggle-switch">
+            <input type="checkbox" data-vid="enabled" ${on ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </label>
+          <span data-vid="enabledLabel" style="font-size:13px;color:var(--text-secondary)">${on ? '已开启' : '已关闭'}</span>
+        </div>
+        <small style="color:var(--text-muted);display:block;margin-top:4px">
+          关闭后不再调用视频生成接口，主对话框右侧的视频小窗也不显示。<br>
+          视频是<b>生图的辅助</b>：它排在 CG 之后，用的是「图像生成」里的 ComfyUI 地址，
+          并占用同一个 ComfyUI 队列。
+        </small>
+      </div>
+
+      <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+        <label>视频生成条件</label>
+        <input type="text" data-vid="trigger" value="${escapeHtml(trig)}" class="setting-input" style="width:100%"
+               placeholder="例如：NSFW场景">
+        <small style="color:var(--text-muted);display:block;margin-top:4px">
+          填一句<b>条件</b>，系统会把它包装成「<b>当<span data-vid="trigPreview">${escapeHtml(trig || '……')}</span>时，调用视频生成接口</b>」注入管家 AI 的提示词；
+          由管家按剧情判断本轮是否满足该条件，满足才真的跑一次视频生成。<br>
+          留空 = 永不触发（视频只能靠「重画」之类的手动入口产生）。<br>
+          提示词规范与图像生成**完全一致**：从角色名册提取外貌特征拼入，纯自然语言模式下同样由画家 AI
+          改写成散文；若同一轮已经出过图，则直接套用那张图的提示词。
+        </small>
+      </div>
+
+      <hr style="border-color:var(--glass-border);margin:16px 0">
+      <h5 style="margin:0 0 8px 0;color:var(--text-accent)">🧩 视频工作流文件</h5>
+      <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+        <label>工作流文件</label>
+        <input type="text" data-vid="workflow" value="${escapeHtml(st.video_workflow || '')}" class="setting-input" style="width:100%"
+               placeholder="留空=Vedio.json">
+        <small style="color:var(--text-muted);display:block;margin-top:4px">
+          放在项目根目录的工作流 JSON（如 Vedio.json）。<b>发布包里这个文件是空的占位文件</b> ——
+          要真的出视频，请在这里指向你自己的视频工作流。
+        </small>
+      </div>
+
+      <hr style="border-color:var(--glass-border);margin:16px 0">
+      <h5 style="margin:0 0 8px 0;color:var(--text-accent)">🔧 工作流节点ID设置（可选覆盖）</h5>
+      <small style="color:var(--text-muted);display:block;margin-bottom:8px">
+        留空=自动探测（从工作流图结构识别正/负提示词节点）。视频工作流的正向节点常是第三方文本输入节点，
+        自动探测认不出时再手填节点号。
+      </small>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+          <label>视频 → 正向提示词节点ID</label>
+          <input type="text" data-vid="positiveNode" value="${escapeHtml(st.video_positive_node || '')}" class="setting-input" style="width:100%" placeholder="留空=自动探测">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+          <label>视频 → 负向提示词节点ID</label>
+          <input type="text" data-vid="negativeNode" value="${escapeHtml(st.video_negative_node || '')}" class="setting-input" style="width:100%" placeholder="留空=自动探测">
+        </div>
+      </div>
+
+      <hr style="border-color:var(--glass-border);margin:16px 0">
+      <h5 style="margin:0 0 8px 0;color:var(--text-accent)">🎨 固定前缀</h5>
+      <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+        <label>视频固定前缀</label>
+        <input type="text" data-vid="prefix" value="${escapeHtml(st.video_quality_prefix || '')}" class="setting-input" style="width:100%"
+               placeholder="留空=不加前缀，例如：masterpiece, best quality">
+        <small style="color:var(--text-muted);display:block;margin-top:4px">
+          每次生成都拼在提示词最前面（逗号分隔）。<br>
+          ⚠️ <b>同一轮里已经出过图</b>时，视频会**直接套用那张图的提示词**（不再单独生成一套），
+          那时不会再叠加这个前缀 —— 免得出现两层画质词。
+        </small>
+      </div>
+
+      <div class="setting-row" style="flex-direction:column;align-items:flex-start">
+        <label>视频负向提示词</label>
+        <textarea data-vid="negativePrompt" class="setting-textarea" style="width:100%;min-height:70px"
+                  placeholder="留空使用工作流自带的负向提示词">${escapeHtml(st.video_negative_prompt || '')}</textarea>
+      </div>
+
+      <div style="margin-top:8px;display:flex;align-items:center;gap:10px">
+        <button class="btn btn-sm btn-primary" data-vid="save">保存视频设置</button>
+        <span data-vid="status" style="font-size:12px;color:var(--text-muted)"></span>
+      </div>
+    `;
+
+    // 条件输入实时预览注入的那句话
+    const trigInput = container.querySelector('[data-vid="trigger"]');
+    const trigPrev = container.querySelector('[data-vid="trigPreview"]');
+    if (trigInput && trigPrev) {
+      trigInput.addEventListener('input', () => {
+        trigPrev.textContent = trigInput.value.trim() || '……';
+      });
+    }
+    const enabledBox = container.querySelector('[data-vid="enabled"]');
+    const enabledLabel = container.querySelector('[data-vid="enabledLabel"]');
+    if (enabledBox && enabledLabel) {
+      enabledBox.addEventListener('change', () => {
+        enabledLabel.textContent = enabledBox.checked ? '已开启' : '已关闭';
+      });
+    }
+
+    const saveBtn = container.querySelector('[data-vid="save"]');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', async () => {
+        const val = (k) => {
+          const el = container.querySelector('[data-vid="' + k + '"]');
+          return el ? String(el.value || '').trim() : '';
+        };
+        const data = {
+          video_enabled: (container.querySelector('[data-vid="enabled"]') || {}).checked ? '1' : '0',
+          video_workflow: val('workflow'),
+          video_trigger: val('trigger'),
+          video_positive_node: val('positiveNode'),
+          video_negative_node: val('negativeNode'),
+          video_quality_prefix: val('prefix'),
+          video_negative_prompt: val('negativePrompt'),
+        };
+        const status = container.querySelector('[data-vid="status"]');
+        try {
+          await ImageAPI.update(data);
+          if (status) status.textContent = '已保存';
+          showToast('视频设置已保存', 'success');
+          // 两个挂载点都要重画（一个界面改了，另一个不能还显示旧值）
+          renderVideoSettings(document.getElementById('videoSettings'));
+          renderVideoSettings(document.getElementById('videoGenSettings'));
+          // 开关可能刚被改过 → 立刻同步小窗的显示/隐藏
+          syncVideoWindowEnabled();
+        } catch (err) {
+          if (status) status.textContent = '保存失败：' + err.message;
+          showToast('保存失败: ' + err.message, 'error');
+        }
+      });
+    }
+  }).catch(() => {
+    container.innerHTML = '<div class="empty-hint">加载失败</div>';
+  });
 }
 
 // ============ 头像灯箱 ============
@@ -9315,12 +10125,14 @@ async function openApiPresets() {
   DOM.apiPresetsModal().classList.remove('hidden');
   await loadChatPresets(null);
   renderImageGenSettings();
+  renderVideoSettings(document.getElementById('videoGenSettings'));
 }
 
 async function openApiPresetsWithPreset(presetId) {
   DOM.apiPresetsModal().classList.remove('hidden');
   await loadChatPresets(presetId);
   renderImageGenSettings();
+  renderVideoSettings(document.getElementById('videoGenSettings'));
 }
 
 function closeApiPresets() {

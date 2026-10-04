@@ -28,6 +28,10 @@ const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const PROFILE_DIR = require('../paths').PROFILE_DIR;
 const DEFAULT_WORKFLOW_CG = 'GALCG.json';
 const DEFAULT_WORKFLOW_PORTRAIT = 'portrait_x.json';
+// 视频生成（生图的辅助）的默认工作流。注意：仓库里的 Vedio.json 是**有意的空文件**，
+// 只表示"这个功能有坑位、尚未配置"——AI-GAL 发布形态与 GALCG.json / portrait_x.json 同性质；
+// 真实工作流在测试实例 ai-rp-tool 里。空文件按"未配置"处理，见 isUsableWorkflowFile()。
+const DEFAULT_WORKFLOW_VIDEO = 'Vedio.json';
 // NSFW 流程结束图（纯场景空镜）在 CG 画廊里的中文说明，前端直接显示在缩略图下方
 const SCENE_END_LABEL = '场景 · NSFW 流程结束';
 // ComfyUI is a distinct engine from anima-turbo-cg (which owns 8100), so it keeps 8188.
@@ -67,9 +71,31 @@ function resolveExternalEndpoint(genMode, settings) {
  * path separators are rejected, so a crafted value cannot escape the directory.
  */
 function getWorkflowFile(type, settings) {
-  const configured = String((type === 'cg' ? settings?.cg_workflow : settings?.portrait_workflow) || '').trim();
+  // 三种生成类型的"用户填了什么"与"默认值"必须成对出现，漏一种就会静默用错工作流。
+  const CONFIG = {
+    cg:       { key: 'cg_workflow',       fallback: DEFAULT_WORKFLOW_CG },
+    portrait: { key: 'portrait_workflow', fallback: DEFAULT_WORKFLOW_PORTRAIT },
+    video:    { key: 'video_workflow',    fallback: DEFAULT_WORKFLOW_VIDEO },
+  };
+  const conf = CONFIG[type] || CONFIG.cg;
+  const configured = String(settings?.[conf.key] || '').trim();
   const usable = configured && !/[/\\]/.test(configured) && configured !== '.' && configured !== '..';
-  return path.join(PROJECT_ROOT, usable ? configured : (type === 'cg' ? DEFAULT_WORKFLOW_CG : DEFAULT_WORKFLOW_PORTRAIT));
+  return path.join(PROJECT_ROOT, usable ? configured : conf.fallback);
+}
+
+/**
+ * 工作流文件是否"真的有内容"。
+ *
+ * 存在的理由：仓库里的 Vedio.json 是 **0 字节占位**（与 GALCG.json / portrait_x.json 同性质的
+ * 发布形态）。JSON.parse('') 会抛 SyntaxError，历史上这类异常会被上层 catch 成
+ * "生图失败"这种看不懂的日志。这里统一判定，让调用方可以给出"请在设置里配置工作流"
+ * 的明确提示，而不是把占位文件当成坏文件。
+ */
+function isUsableWorkflowFile(file) {
+  try {
+    const st = fs.statSync(file);
+    return st.isFile() && st.size > 0;
+  } catch { return false; }
 }
 
 // ---- Character-card name matching (shared single source of truth) ----
@@ -483,6 +509,39 @@ function pickRandomProfile(tag) {
 
 // Node classes holding a plain, user-editable string (ComfyUI primitive widgets)
 const STRING_NODE_RE = /^(PrimitiveString|StringLiteral|StringConstant|StringFunction|MultilineString|TextMultiline|ShowText|SimpleString|Text|String)$/i;
+// 第三方节点包里的"文本输入框"节点（类名各异，字段名更是五花八门）。
+// ⚠️ 2026-10-04：视频工作流 Vedio.json 的正向提示词节点是 `83 ZML_TextInput`，
+//    它的字段名是**中文 `文本`** —— 类名不在旧白名单里、字段名也不在 `value`/`text`/`prompt` 里，
+//    于是提示词被整条丢弃、ComfyUI 照旧用工作流里烘焙的旧 prompt（全程 0 报错）。
+//    这与 §40 记录的是同一类事故，所以这里把"长得像文本输入框"的节点一并纳入，
+//    字段名交给 findTextField() 探测。注意不能匹配 CLIPTextEncode（它由 ENCODE_NODE_RE 管）。
+const TEXT_WIDGET_NODE_RE = /(TextInput|TextArea|TextBox|Textfield|TextWidget|StringInput|MultilineTextInput|TextInputBox)/i;
+// 文本控件里"最像提示词"的字段名（按优先级），含中文节点包的常见写法
+const TEXT_FIELD_NAMES = ['value', 'text', 'prompt', 'string', 'content', 'str', '文本', '文字', '提示词', '内容'];
+
+/**
+ * 找出一个"文本控件"节点上真正承载用户输入的那个字段名。
+ * 只返回**已存在**的字段，绝不凭空新增（新增一个不存在的字段 = ComfyUI 静默忽略 = §40 事故）。
+ * @returns {string|null}
+ */
+function findTextField(node) {
+  if (!node || !node.inputs) return null;
+  const inputs = node.inputs;
+  for (const k of TEXT_FIELD_NAMES) {
+    if (typeof inputs[k] === 'string') return k;
+  }
+  // 字段名不在已知名单里（自定义节点包）：仅当"类名判定为文本控件"时才做兜底猜测，
+  // 否则 KSampler 的 sampler_name / scheduler 这类字符串控件会被误当成提示词字段。
+  if (!TEXT_WIDGET_NODE_RE.test(node.class_type || '')) return null;
+  const strKeys = Object.keys(inputs).filter(k => typeof inputs[k] === 'string');
+  if (strKeys.length === 1) return strKeys[0];
+  const named = strKeys.filter(k => /text|prompt|提示|文本|内容/i.test(k));
+  if (named.length) return named[0];
+  if (strKeys.length) {
+    return strKeys.sort((a, b) => String(inputs[b]).length - String(inputs[a]).length)[0];
+  }
+  return null;
+}
 // Node classes that encode text into conditioning
 const ENCODE_NODE_RE = /(CLIPTextEncode|TextEncode|WildcardEncode|PromptStyler|PromptEncode)/i;
 // Boolean/int/float primitives also carry `value`, but are NOT prompt sinks
@@ -515,15 +574,19 @@ function getPromptInputKey(node, branch) {
   if (!node || !node.inputs) return null;
   const ct = node.class_type || '';
   if (NON_TEXT_PRIMITIVE_RE.test(ct)) return null;
-  if (STRING_NODE_RE.test(ct)) {
-    if (node.inputs.value !== undefined) return 'value';
-    if (node.inputs.text !== undefined) return 'text';
-    return 'value';
-  }
   const hasPromptField = typeof node.inputs.prompt === 'string';
   const hasNegPromptField = typeof node.inputs.negative_prompt === 'string';
   if (branch === 'negative' && hasNegPromptField) return 'negative_prompt';
   if (ENCODE_NODE_RE.test(ct)) return hasPromptField ? 'prompt' : 'text';
+  if (STRING_NODE_RE.test(ct)) {
+    // Primitive 家族：标准字段是 value；历史行为是"没有也照样写 value"（等价于新增控件），保留。
+    return findTextField(node) || 'value';
+  }
+  if (TEXT_WIDGET_NODE_RE.test(ct)) {
+    // 文本控件节点：字段名必须**探测出来**。探测不到就返回 null（放弃这个候选），
+    // 而不是硬写一个不存在的字段 —— 后者会让提示词静默丢失（§40）。
+    return findTextField(node);
+  }
   if (hasPromptField) return 'prompt';
   if (typeof node.inputs.text === 'string') return 'text';
   if (typeof node.inputs.value === 'string') return 'value';
@@ -563,6 +626,7 @@ function scorePromptNode(workflow, nid, negOnly) {
   if (/system[\s_\-\(]*prompt|系统提示/i.test(title)) score -= 90;
   if (/negative|负面|负向|反向|bad[\s_\-]*prompt|unwanted/i.test(title)) score -= 200;
   if (STRING_NODE_RE.test(ct)) score += 40;
+  if (TEXT_WIDGET_NODE_RE.test(ct)) score += 40;
   if (ENCODE_NODE_RE.test(ct)) score += 15;
   if (negOnly) score -= 150;
   const key = getPromptInputKey(node, negOnly ? 'negative' : 'positive');
@@ -646,15 +710,17 @@ function resolvePromptNode(workflow, branch, preferredId) {
 function applyNodeSettings(workflow, prompt, settings, type) {
   // Node ids are resolved from the graph, never hard-coded: the configured id is
   // only a manual override (leave it empty for auto-detection).
-  const configuredPosId = type === 'portrait'
-    ? (settings?.portrait_positive_node || '')
-    : (settings?.cg_positive_node || '');
-  const configuredNegId = type === 'portrait'
-    ? (settings?.portrait_negative_node || '')
-    : (settings?.cg_negative_node || '');
-  const customNegPrompt = type === 'portrait'
-    ? (settings?.portrait_negative_prompt || '')
-    : (settings?.cg_negative_prompt || '');
+  // 三种类型（头像 / CG / 视频）各有一套节点号与负向提示词，用查表避免"加了第三种类型
+  // 却忘了改其中一处"的典型漏改（三元表达式写两遍的写法最容易漏）。
+  const NODE_FIELDS = {
+    portrait: { pos: 'portrait_positive_node', neg: 'portrait_negative_node', negPrompt: 'portrait_negative_prompt' },
+    cg:       { pos: 'cg_positive_node',       neg: 'cg_negative_node',       negPrompt: 'cg_negative_prompt' },
+    video:    { pos: 'video_positive_node',    neg: 'video_negative_node',    negPrompt: 'video_negative_prompt' },
+  };
+  const nf = NODE_FIELDS[type] || NODE_FIELDS.cg;
+  const configuredPosId = settings?.[nf.pos] || '';
+  const configuredNegId = settings?.[nf.neg] || '';
+  const customNegPrompt = settings?.[nf.negPrompt] || '';
 
   // --- Positive prompt node ---
   const pos = resolvePromptNode(workflow, 'positive', configuredPosId);
@@ -825,6 +891,9 @@ module.exports = (db) => {
       cg_positive_node, cg_negative_node,
       portrait_negative_prompt, cg_negative_prompt,
       cg_workflow, portrait_workflow,
+      video_enabled, video_workflow, video_trigger,
+      video_positive_node, video_negative_node,
+      video_quality_prefix, video_negative_prompt,
       api_model, quality_prefix, image_size, custom_params } = req.body;
     // custom_params: JSON string of generation params (width/height/steps/cfg/sampler/scheduler/seed)
     if (custom_params !== undefined && custom_params !== null && typeof custom_params !== 'string') {
@@ -837,6 +906,17 @@ module.exports = (db) => {
     // 工作流文件名：仅接受项目根目录下的裸文件名（后端 getWorkflowFile 会再校验）
     if (typeof cg_workflow === 'string') cg_workflow = cg_workflow.trim();
     if (typeof portrait_workflow === 'string') portrait_workflow = portrait_workflow.trim();
+    if (typeof video_workflow === 'string') video_workflow = video_workflow.trim();
+    // 视频开关归一化成 '0'/'1'。前端可能传 true/false、'true'/'false'、'on'，
+    // 老库 ALTER 出来的又是空串 —— 统一收敛，避免"设置里明明开了却不动"。
+    if (video_enabled !== undefined && video_enabled !== null) {
+      const on = video_enabled === true || video_enabled === 1 ||
+        String(video_enabled).trim().toLowerCase() === 'true' ||
+        String(video_enabled).trim() === '1';
+      video_enabled = on ? '1' : '0';
+    } else {
+      video_enabled = undefined; // COALESCE：不传就不动
+    }
     // 尺寸落库前规范化（前端已经是「宽/高两个格子」，这里是给 API 调用方与历史值兜底）：
     // `1536X1024` → `1536x1024`。anima/sd.cpp 只认小写 x，别的写法会被静默忽略。
     if (image_size !== undefined && image_size !== null) {
@@ -862,6 +942,13 @@ module.exports = (db) => {
       cg_negative_prompt=COALESCE(?,cg_negative_prompt),
       cg_workflow=COALESCE(?,cg_workflow),
       portrait_workflow=COALESCE(?,portrait_workflow),
+      video_enabled=COALESCE(?,video_enabled),
+      video_workflow=COALESCE(?,video_workflow),
+      video_trigger=COALESCE(?,video_trigger),
+      video_positive_node=COALESCE(?,video_positive_node),
+      video_negative_node=COALESCE(?,video_negative_node),
+      video_quality_prefix=COALESCE(?,video_quality_prefix),
+      video_negative_prompt=COALESCE(?,video_negative_prompt),
       api_model=COALESCE(?,api_model),
       quality_prefix=COALESCE(?,quality_prefix),
       image_size=COALESCE(?,image_size),
@@ -873,6 +960,9 @@ module.exports = (db) => {
         cg_positive_node, cg_negative_node,
         portrait_negative_prompt, cg_negative_prompt,
         cg_workflow, portrait_workflow,
+        video_enabled, video_workflow, video_trigger,
+        video_positive_node, video_negative_node,
+        video_quality_prefix, video_negative_prompt,
         api_model, quality_prefix, image_size, custom_params, SETTINGS_ID);
     res.json({ message: 'Saved' });
   });
@@ -1324,8 +1414,227 @@ module.exports = (db) => {
     }
   });
 
+  // =========================================================================
+  // 视频生成（生图的辅助）
+  // -------------------------------------------------------------------------
+  // 设计要点（详见 D:\DSH\AI-GAL-VIDEO-GEN-PLAN.md）：
+  //   · 与生图同源：读同一张 image_settings 行，视频自己的 7 个字段带 video_ 前缀。
+  //   · 即发即忘：立刻回 {status:'pending'}，真正的成败只出现在服务端日志里
+  //     （视频要跑几分钟，绝不能让 HTTP 挂着，也绝不能拖住本轮对话）。
+  //   · 失败一律只记日志：视频是"辅助"，不能因为它把主线对话搞挂。
+  // =========================================================================
+  router.post('/generate-video', async (req, res) => {
+    const body = req.body || {};
+    const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
+    // prefixed:true = 调用方（chat.js）已经把提示词加工完毕（名册外貌拼接 / 纯自然语言第二趟 /
+    // 画质前缀都做过了），服务端**不能再叠一次** video_quality_prefix，否则会出现两层前缀。
+    // 直接打这个接口（调试 / 外部脚本）时不传这个标记，仍按老行为自动补前缀。
+    const prefixed = body.prefixed === true;
+    const readiness = videoGenReadiness(
+      db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID) || {});
+
+    if (!readiness.enabled) {
+      console.log('[VideoGen] 跳过：设置里未开启「视频生成」');
+      return res.json({ status: 'skipped', reason: 'disabled' });
+    }
+    if (!readiness.usable) {
+      console.warn('[VideoGen] 跳过：视频工作流 %s 不存在或为空。' +
+        '（AI-GAL 仓库里的 Vedio.json 是**有意的 0 字节占位文件**，' +
+        '请到「设置 → 视频生成」指定真实工作流）', path.basename(readiness.file));
+      return res.json({ status: 'skipped', reason: 'workflow_missing', file: path.basename(readiness.file) });
+    }
+    if (!prompt) {
+      return res.status(400).json({ error: 'prompt required' });
+    }
+
+    // 先回包再干活：调用方（chat.js）是即发即忘，不该等视频。
+    res.json({ status: 'pending' });
+    runVideoGeneration({
+      db,
+      prompt,
+      prefixed,
+      conversation_id: body.conversation_id,
+      character_name: body.character_name,
+      source: body.source || '',
+    }).catch(e => console.error('[VideoGen] 生成任务异常:', e && e.message));
+  });
+
   return router;
 };
+
+// ---------------------------------------------------------------------------
+// 视频生成辅助（模块作用域：db 由调用方注入，见 §14 的坑 3）
+// ---------------------------------------------------------------------------
+
+/** 视频画廊最多保留多少条索引（文件本身留在磁盘上，不随索引裁剪删除）。 */
+const MAX_VIDEO_GALLERY = 10;
+/** 视频超时：默认等 30 分钟（视频工作流通常是"文生图 + 图生视频"，比单张 CG 慢一个数量级）。 */
+const VIDEO_WAIT_SEC = Math.max(60, parseInt(process.env.AI_GAL_VIDEO_WAIT_SEC, 10) || 900);
+
+/**
+ * 视频生成的就绪状态。
+ * @returns {{enabled:boolean, trigger:string, file:string, usable:boolean, ready:boolean}}
+ */
+function videoGenReadiness(settings) {
+  const enabled = String(settings?.video_enabled || '').trim() === '1';
+  const trigger = String(settings?.video_trigger || '').trim();
+  const file = getWorkflowFile('video', settings);
+  const usable = isUsableWorkflowFile(file);
+  return { enabled, trigger, file, usable, ready: enabled && usable };
+}
+
+/** 复制进存档并把索引写进 video_gallery.json（原子替换，读失败先备份再重建）。 */
+function addToVideoGallery(savePath, filename, character_name, prompt, extra) {
+  const galleryPath = path.join(savePath, 'video_gallery.json');
+  let gallery = [];
+  try {
+    gallery = JSON.parse(fs.readFileSync(galleryPath, 'utf-8'));
+    if (!Array.isArray(gallery)) throw new Error('not an array');
+  } catch (e) {
+    if (fs.existsSync(galleryPath)) {
+      const bad = galleryPath + '.bad-' + new Date().toISOString().replace(/[:.]/g, '-');
+      try { fs.copyFileSync(galleryPath, bad); } catch { /* 备份失败也要继续 */ }
+      console.error('[VideoGen] video_gallery.json 读取失败（已备份为 %s）：%s —— 将以空画廊重建',
+        path.basename(bad), e.message);
+    }
+    gallery = [];
+  }
+  const entry = {
+    filename,
+    character: character_name || 'unknown',
+    prompt: prompt || '',
+    timestamp: new Date().toISOString(),
+  };
+  if (extra && extra.trigger) entry.trigger = extra.trigger;
+  // 封面（首帧图）：数据中心 CG 画廊里"列表只显示首帧"就靠它。
+  // 来自同一次 ComfyUI 任务的静帧（工作流里图生视频的 first_frame 接的正是那张），
+  // 拿不到时留空，前端会退化为在浏览器里抓首帧。
+  if (extra && extra.poster) entry.poster = extra.poster;
+  gallery.unshift(entry);
+  if (gallery.length > MAX_VIDEO_GALLERY) gallery = gallery.slice(0, MAX_VIDEO_GALLERY);
+  try {
+    const tmp = galleryPath + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(gallery, null, 2), 'utf-8');
+    fs.renameSync(tmp, galleryPath);
+  } catch (e) {
+    console.error('[VideoGen] 写 video_gallery.json 失败:', e.message, { savePath, filename });
+    return false;
+  }
+  console.log('[VideoGen] 视频画廊已更新:', filename);
+  return true;
+}
+
+/** 把 generated_images/ 里的视频复制进存档目录并登记。 */
+function saveVideoToConversation(db, conversation_id, filename, savePath, prompt, character_name, extra) {
+  if (!conversation_id) return false;
+  try {
+    const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(conversation_id);
+    if (!save) {
+      console.warn('[VideoGen] 找不到 conversation %s 对应的存档，视频只留在 generated_images/', conversation_id);
+      return false;
+    }
+    const destDir = path.join(save.save_path, 'images');
+    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+    const destPath = path.join(destDir, filename);
+    fs.copyFileSync(savePath, destPath);
+    // 封面也要一起搬进存档（画廊是从存档目录取图的）
+    if (extra && extra.poster) {
+      try { fs.copyFileSync(path.join(IMAGES_DIR, extra.poster), path.join(destDir, extra.poster)); }
+      catch (e) { console.warn('[VideoGen] 封面复制失败（不影响视频本身）:', e.message); }
+    }
+    const ok = addToVideoGallery(save.save_path, filename, character_name, prompt, extra);
+    if (!ok) {
+      console.error('[VideoGen] 视频已复制进存档但【未能写进 video_gallery.json】（save=%s, file=%s）—— 视频小窗里不会出现它',
+        save.id, filename);
+    }
+    return true;
+  } catch (e) {
+    console.error('[VideoGen] 保存到存档失败:', e.message);
+    return false;
+  }
+}
+
+/**
+ * 真正跑一次视频生成。只由 /generate-video 的即发即忘调用。
+ * 所有失败路径都只记日志，不抛给调用方。
+ */
+async function runVideoGeneration({ db, prompt, prefixed, conversation_id, character_name, source }) {
+  const settings = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID) || {};
+  const readiness = videoGenReadiness(settings);
+  if (!readiness.ready) {
+    console.log('[VideoGen] 任务放弃：enabled=%s workflow=%s', readiness.enabled, path.basename(readiness.file));
+    return;
+  }
+
+  const comfyuiUrl = String(settings.comfyui_url || DEFAULT_COMFYUI_URL).replace(/\/+$/, '');
+  const trigger = readiness.trigger;
+  const prefix = String(settings.video_quality_prefix || '').trim();
+  // prefixed 时提示词已含前缀（且可能与其他前缀合并过），再拼一次就是重复 token。
+  const text = (prefix && !prefixed) ? (prefix + ', ' + prompt) : prompt;
+
+  console.log('[VideoGen] 开始生成 | 工作流=%s | 触发条件="%s" | 来源=%s | 提示词 %d 字 | prefixed=%s',
+    path.basename(readiness.file), trigger, source || '-', text.length, prefixed ? '是（调用方已加工）' : '否（此处补前缀）');
+
+  let workflow;
+  try {
+    workflow = JSON.parse(fs.readFileSync(readiness.file, 'utf-8'));
+  } catch (e) {
+    console.error('[VideoGen] 工作流 JSON 解析失败（%s）：%s', path.basename(readiness.file), e.message);
+    return;
+  }
+
+  applyNodeSettings(workflow, text, settings, 'video');
+  await normalizeWorkflowModels(workflow, comfyuiUrl);
+
+  const submitUrl = new URL('/prompt', comfyuiUrl + '/');
+  const promptId = await httpPost(submitUrl, { prompt: workflow });
+  console.log('[VideoGen] 已提交 ComfyUI，prompt_id=%s（超时上限 %d 秒）', promptId, VIDEO_WAIT_SEC * 2);
+
+  const all = await waitForComfyUIOutputs(comfyuiUrl, promptId, VIDEO_WAIT_SEC);
+  if (!all) {
+    console.error('[VideoGen] 等待 ComfyUI 超时或没有任何输出（prompt_id=%s）', promptId);
+    return;
+  }
+  console.log('[VideoGen] ComfyUI 完成：共 %d 个输出（视频 %d / 静帧 %d）',
+    all.files.length, all.videos.length, all.images.length);
+  if (!all.videos.length) {
+    console.error('[VideoGen] 工作流没有产出任何视频文件（扩展名需为 mp4/webm/mkv/mov，或带 animated 标记的 gif/apng/webp）：%s',
+      all.files.map(f => f.filename).join(', '));
+    return;
+  }
+
+  const pick = all.videos[0];
+  const ext = (path.extname(pick.filename).replace(/^\./, '') || 'mp4').toLowerCase();
+  const safeExt = /^(mp4|webm|mkv|mov|gif|apng|webp)$/.test(ext) ? ext : 'mp4';
+  const charName = (character_name || 'video').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase() || 'video';
+  const filename = `${charName}_video_${Date.now()}.${safeExt}`;
+  const savePath = path.join(IMAGES_DIR, filename);
+
+  await downloadImage(comfyuiUrl, pick, savePath);
+  console.log('[VideoGen] 已下载:', filename, '（来自 ComfyUI 节点', pick.nodeId, '/', pick.filename, '）');
+
+  // ── 封面（首帧）──
+  // 同一个 ComfyUI 任务通常还产出一张静帧，而它正是视频的第一帧
+  // （测试工作流里 MiniMaxH3ImageToVideo 的 first_frame 就是接的 SaveImage 那张）。
+  // 拿它当封面比在浏览器里逐条抓帧便宜得多，也准得多；拿不到就留空，前端兜底。
+  let poster = '';
+  const still = all.images.find(f => !ANIMATED_IMAGE_RE.test(f.filename)) || all.images[0];
+  if (still) {
+    try {
+      const pExt = (path.extname(still.filename).replace(/^\./, '') || 'png').toLowerCase();
+      poster = filename.replace(/\.[^.]+$/, '') + '_poster.' + pExt;
+      await downloadImage(comfyuiUrl, still, path.join(IMAGES_DIR, poster));
+      console.log('[VideoGen] 封面已保存:', poster, '（来自静帧', still.filename, '）');
+    } catch (e) {
+      console.warn('[VideoGen] 封面下载失败（视频照常可用，前端会自己抓首帧）:', e.message);
+      poster = '';
+    }
+  } else {
+    console.warn('[VideoGen] 本次任务没有静帧产出，封面留空（前端会自己抓首帧）');
+  }
+
+  saveVideoToConversation(db, conversation_id, filename, savePath, prompt, character_name, { trigger, poster });
+}
 
 // --- Save helpers ---
 
@@ -1582,24 +1891,79 @@ async function httpPost(urlObj, body) {
   });
 }
 
-async function waitForComfyUI(baseUrl, promptId, maxWait = 60) {
+// 视频容器扩展名 / 动图扩展名。区分二者是因为 gif·apng·webp 既可能是"静图"也可能是"动图"，
+// 只有 ComfyUI 在 history 里标了 animated 的才算视频产物（见 isVideoOutput）。
+const VIDEO_CONTAINER_RE = /\.(mp4|webm|mkv|mov)$/i;
+const ANIMATED_IMAGE_RE = /\.(gif|apng|webp)$/i;
+
+/** 这条输出算不算"视频产物"。 */
+function isVideoOutput(f) {
+  return VIDEO_CONTAINER_RE.test(f.filename) || (!!f.animated && ANIMATED_IMAGE_RE.test(f.filename));
+}
+
+/**
+ * 等一个 ComfyUI 任务跑完，并把它的**全部**输出分类拿回来。
+ *
+ * 为什么需要它：一个工作流可以同时产出静帧和视频（测试用的 Vedio.json 就是
+ * 节点 9 SaveImage 出静帧 → 节点 59 图生视频 → 节点 67 SaveVideo 出 mp4）。
+ * 旧实现只返回"遍历到的第一个 images[0]"，既分不清是图还是视频，也会让
+ * 视频通路把 mp4 当 jpg 存下来。
+ *
+ * 形状（已按本机 ComfyUI 核对）：SaveImage 与 SaveVideo 的 history 输出**同形**，
+ * 都是 outputs[node].images = [{filename, subfolder, type}]，
+ * 视频额外的标记是 outputs[node].animated = [true]（comfy_api/latest/_ui.py PreviewVideo）。
+ *
+ * @returns {Promise<{files:Array,images:Array,videos:Array}|null>} null = 超时/任务没有输出
+ */
+async function waitForComfyUIOutputs(baseUrl, promptId, maxWait = 60) {
   const historyUrl = new URL('/history/' + promptId, baseUrl.replace(/\/$/, ''));
   for (let i = 0; i < maxWait; i++) {
     await sleep(2000);
     try {
       const result = await httpGet(historyUrl);
-      if (result && result[promptId] && result[promptId].outputs) {
-        const outputs = result[promptId].outputs;
-        for (const nodeId of Object.keys(outputs)) {
-          const imgs = outputs[nodeId].images;
-          if (imgs && imgs.length > 0) {
-            return { filename: imgs[0].filename, subfolder: imgs[0].subfolder || '', type: imgs[0].type || 'output' };
+      const entry = result && result[promptId];
+      if (entry && entry.outputs) {
+        const files = [];
+        for (const [nodeId, out] of Object.entries(entry.outputs)) {
+          const animated = Array.isArray(out.animated) ? !!out.animated[0] : !!out.animated;
+          const push = (f, isAnim) => {
+            if (!f || !f.filename) return;
+            files.push({
+              nodeId,
+              filename: f.filename,
+              subfolder: f.subfolder || '',
+              type: f.type || 'output',
+              animated: isAnim,
+            });
+          };
+          for (const f of (out.images || [])) push(f, animated);
+          // 少数节点包把视频放在 gifs / videos 键下，一并兼容
+          for (const key of ['gifs', 'videos']) {
+            for (const f of (out[key] || [])) push(f, true);
           }
+        }
+        if (files.length) {
+          return {
+            files,
+            videos: files.filter(isVideoOutput),
+            images: files.filter(f => !isVideoOutput(f)),
+          };
         }
       }
     } catch (e) { /* retry */ }
   }
   return null;
+}
+
+/**
+ * 等一张静帧（CG / 头像通路的老接口，行为保持不变）。
+ * 内部优先取静态图：若工作流里同时有 SaveVideo，绝不能让 mp4 顶替 jpg 落盘。
+ */
+async function waitForComfyUI(baseUrl, promptId, maxWait = 60) {
+  const all = await waitForComfyUIOutputs(baseUrl, promptId, maxWait);
+  if (!all) return null;
+  const pick = all.images.find(f => !ANIMATED_IMAGE_RE.test(f.filename)) || all.images[0] || all.files[0];
+  return pick ? { filename: pick.filename, subfolder: pick.subfolder, type: pick.type } : null;
 }
 
 async function httpGet(urlObj) {

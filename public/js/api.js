@@ -768,6 +768,36 @@ const ImageAPI = {
   },
 };
 
+// ============ Video Generation（生图的辅助） ============
+
+const VideoAPI = {
+  /**
+   * 某存档的视频画廊（**新的在前**）。
+   * 每条形如 { filename, character, prompt, timestamp, trigger? }，
+   * 文件本身走 /api/saves/<id>/images/<filename>（与 CG 同一个静态通路）。
+   */
+  gallery(saveId) {
+    return request('/saves/' + encodeURIComponent(saveId) + '/video-gallery');
+  },
+
+  /** 清空视频画廊索引（重启游戏时与 CG 画廊一起清；视频文件保留） */
+  clearGallery(saveId) {
+    return request('/saves/' + encodeURIComponent(saveId) + '/video-gallery', { method: 'DELETE' });
+  },
+
+  /**
+   * 手动下发一次视频生成（正常流程由管家 AI 按「视频生成条件」触发，
+   * 这个接口留给"重画视频"/调试用）。服务端**立刻**回 {status:'pending'}，
+   * 真正的产物要靠轮询 gallery() 才看得到。
+   */
+  generate(data) {
+    return request('/images/generate-video', {
+      method: 'POST',
+      body: data,
+    });
+  },
+};
+
 // ============ STscript Variables (persistence) ============
 
 const ScriptVarsAPI = {

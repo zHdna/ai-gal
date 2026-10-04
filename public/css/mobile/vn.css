@@ -2706,3 +2706,312 @@ button {
     margin-right: auto;
   }
 }
+
+
+/* ===================== 14. 视频端口（移动端形态 · 生图的辅助） =====================
+   手机屏幕塞不下桌面那种「与头像框对称、三态切换」的小窗，所以移动端改成
+   左上角一枚悬浮按钮 → 点击弹出播放。状态机与播放器元素都与桌面版共用
+   （app.js 的 VID / applyVideoModeMobile），这里只负责外观。
+
+   位置说明：左上角的 .vn-loc（地点胶囊）在 top:10px，所以按钮排在它下面（top:46px），
+   两者不会叠在一起；只在「设置 → 视频生成」开启且本存档真的有视频时才出现。 */
+
+#vnRoot .vn-vid-fab {
+  position: absolute;
+  left: 12px;
+  top: 46px;
+  z-index: 6;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  border-radius: 50%;
+  border: 1px solid var(--gold-dim);
+  background: var(--chip-bg);
+  backdrop-filter: blur(10px);
+  color: var(--gold);
+  cursor: pointer;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .42);
+  animation: vnVidFabIn .26s ease-out;
+}
+
+#vnRoot .vn-vid-fab[hidden] {
+  display: none;
+}
+
+#vnRoot .vn-vid-fab:active {
+  transform: scale(.94);
+}
+
+/* 新视频到了给个提示性脉冲（一次性，不常驻闪） */
+@keyframes vnVidFabIn {
+  from { opacity: 0; transform: scale(.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* 隐藏 UI（看 CG）时一并让位（与 .vn-loc / .vn-cast 同待遇） */
+#vnRoot.ui-hidden .vn-vid-fab {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .28s;
+}
+
+/* ---- 播放弹层 ---- */
+#vnRoot .vn-vid-ov {
+  position: fixed;
+  inset: 0;
+  z-index: 80;            /* 高于 .modal(60) 与抽屉(24)，低于控制台/更大弹窗(90+) */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(16px + var(--safe-t)) 12px calc(16px + var(--safe-b));
+}
+
+#vnRoot .vn-vid-ov[hidden] {
+  display: none;
+}
+
+#vnRoot .vn-vid-ov-bd {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 6, 14, .82);
+  backdrop-filter: blur(6px);
+}
+
+#vnRoot .vn-vid-box {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 560px;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--dlg-bg);
+  box-shadow: 0 26px 60px rgba(0, 0, 0, .62);
+}
+
+#vnRoot .vn-vid-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-hi);
+}
+
+#vnRoot .vn-vid-title {
+  font-size: 12px;
+  letter-spacing: .1em;
+  color: var(--text-2);
+}
+
+#vnRoot .vn-vid-head .sp {
+  flex: 1;
+}
+
+#vnRoot .vn-vid-btn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--chip-bg);
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#vnRoot .vn-vid-btn:active {
+  color: var(--gold);
+  border-color: var(--gold-dim);
+}
+
+#vnRoot .vn-vid-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #04070F;
+  display: grid;
+  place-items: center;
+}
+
+/* app.js 插入的播放器元素（桌面/移动共用同一个 class）—— **绝对定位铺满宿主**。
+   ⚠️ 与桌面同因同治：grid 子项的百分比高度参与内在尺寸计算时会被判为"不确定"，
+   高度于是回退到视频自带的宽高比 → 元素比容器还大 → 画面被上下裁掉。
+   绝对定位后百分比对着宿主 padding box 解析，再交给 object-fit: contain 按比例居中留黑边。 */
+#vnRoot .vn-vid-stage .vid-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;    /* 自动缩放 + 保持长宽比 */
+  object-position: center;
+  display: block;
+  -webkit-user-drag: none;
+}
+
+/* 全屏：舞台铺满屏幕，画面在里面 contain 居中（保持比例、留黑边），绝不裁切。
+   显式写 position/inset，不依赖 UA 的 :fullscreen 默认样式。 */
+#vnRoot .vn-vid-stage:fullscreen,
+#vnRoot .vn-vid-stage:-webkit-full-screen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: auto;
+  padding: 0;
+  border-radius: 0;
+  background: #000;
+}
+
+
+/* ===========================================================================
+   15. 视频端口 · 播放控制 / 画廊视频条目 / 视频灯箱（2026-10-04 第三轮）
+   =========================================================================== */
+
+/* 移动弹层头部的音量滑块（与桌面 .vb-vol 同一套外观，深色底更明显） */
+#vnRoot .vn-vid-head .vb-vol {
+  flex: 0 1 96px;
+  min-width: 54px;
+}
+
+#vnRoot .vn-vid-head .vb-vol::-webkit-slider-runnable-track {
+  background: rgba(255, 255, 255, .3);
+}
+
+/* 移动端画廊里的视频条目：首帧 + 播放角标 */
+#vnRoot .vn-cg.vid {
+  position: relative;
+  cursor: pointer;
+}
+
+#vnRoot .vn-cg.vid::after {
+  content: "▶";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(4, 8, 18, .62);
+  border: 1px solid rgba(232, 200, 120, .7);
+  color: var(--gold);
+  font-size: 15px;
+  pointer-events: none;
+}
+
+#vnRoot .vn-cg.vid .cap::before {
+  content: "🎬 ";
+}
+
+#vnRoot .vn-cg.vid.no-poster {
+  background: linear-gradient(160deg, rgba(20, 31, 58, .9), rgba(9, 15, 32, .95));
+}
+
+/* 视频灯箱（与桌面同构，尺寸贴合手机） */
+.vid-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 96;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(14px + var(--safe-t)) 10px calc(14px + var(--safe-b));
+}
+
+.vid-viewer[hidden] {
+  display: none;
+}
+
+.vid-viewer .vv-bd {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 4, 10, .92);
+  backdrop-filter: blur(4px);
+}
+
+.vid-viewer .vv-box {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 620px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel-hi);
+  box-shadow: 0 26px 60px rgba(0, 0, 0, .66);
+}
+
+.vid-viewer .vv-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.vid-viewer .vv-cap {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vid-viewer .vv-sp {
+  flex: 1;
+}
+
+.vid-viewer .vv-head .vb {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--chip-bg);
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.vid-viewer .vv-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #04070F;
+}
+
+.vid-viewer .vv-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;      /* 保比例居中，不裁切 */
+  object-position: center;
+  display: block;
+}
+
+.vid-viewer .vv-stage:fullscreen,
+.vid-viewer .vv-stage:-webkit-full-screen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: auto;
+  background: #000;
+}

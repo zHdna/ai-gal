@@ -1601,21 +1601,32 @@
     // 先用内存里的列表画一版（避免闪"空"），随后一律再从接口取一次：
     // 面板过去只读 AppState.cgGallery 且**只渲染一次**，后台生图（管家 CG / 登场 CG / 空镜）
     // 落地后它不会自更新 —— 图在存档文件夹里、舞台背景也换了，菜单里却没有（实测复现）。
-    renderGalleryPane(el, App.cgGallery || []);
+    renderGalleryPane(el, App.cgGallery || [], App.videoGallery || []);
     var sid = saveId();
     if (!sid) return;
-    fetch('/api/saves/' + encodeURIComponent(sid) + '/cg-gallery')
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) {
-        if (!j || !Array.isArray(j.gallery)) return;
-        try { if (window.AppState) window.AppState.cgGallery = j.gallery; } catch (e) { }
-        renderGalleryPane(el, j.gallery);
-      })
-      .catch(function () { /* 网络抖动：保留先用内存列表画的那一版 */ });
+    // CG 与视频**并行**取：视频要慢得多（几 MB 的 mp4 不进列表，只取索引 + 首帧），
+    // 串行会让画廊先空一会儿再补上，观感是"抖一下"。
+    Promise.all([
+      fetch('/api/saves/' + encodeURIComponent(sid) + '/cg-gallery')
+        .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }),
+      fetch('/api/saves/' + encodeURIComponent(sid) + '/video-gallery')
+        .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }),
+    ]).then(function (res) {
+      var cg = res[0], vd = res[1];
+      var cgList = (cg && Array.isArray(cg.gallery)) ? cg.gallery : (App.cgGallery || []);
+      var vdList = (vd && Array.isArray(vd.gallery)) ? vd.gallery : (App.videoGallery || []);
+      try {
+        if (window.AppState) {
+          if (cg && Array.isArray(cg.gallery)) window.AppState.cgGallery = cg.gallery;
+          if (vd && Array.isArray(vd.gallery)) window.AppState.videoGallery = vd.gallery;
+        }
+      } catch (e) { }
+      renderGalleryPane(el, cgList, vdList);
+    }).catch(function () { /* 网络抖动：保留先用内存列表画的那一版 */ });
   }
 
-  /** 把 CG 列表画进「数据中心 → CG 画廊」面板 */
-  function renderGalleryPane(el, gal) {
+  /** 把 CG + 视频列表画进「数据中心 → CG 画廊」面板（视频只显示首帧，点开才播） */
+  function renderGalleryPane(el, gal, vids) {
     var list = gal || [];
     /* 画廊只放 CG：头像 / 卡面一个都不进（旧存档的 cg_gallery.json 里可能混过立绘，
        所以除了「不渲染头像卡片」之外，这里再按名册头像文件名过滤一道）。 */
@@ -1641,9 +1652,47 @@
       return '<div class="cg" data-big="' + escapeHtml(url) + '" data-name="' + escapeHtml(cap) + '"' +
         (thumb ? ' style="background-image:url(' + escapeHtml(thumb) + ')"' : '') + '><span class="cap">' + escapeHtml(cap) + '</span></div>';
     });
-    el.innerHTML = items.length
-      ? '<div class="card"><h5>CG 画廊<span>' + onlyCg.length + ' 张</span></h5><div class="cg-grid">' + items.join('') + '</div></div>'
-      : '<div class="card"><h5>CG 画廊<span>空</span></h5><div class="empty-state">画廊还是空的（生成 CG 后出现）</div></div>';
+
+    /* ── 视频条目（生成的视频也算画廊内容）──
+       列表里**只显示首帧**：优先用服务端存的静帧（同一次 ComfyUI 任务产出、就是首帧），
+       没有就现抓一张（app.js 的 vidEnsurePoster，串行抓、结果进内存缓存）。
+       点开才播：tile 带 data-vid-play，由 dock 的点击委托交给 vidOpenViewer（原生 controls）。 */
+    var sid = saveId();
+    var vidEntries = [];
+    var vidItems = (vids || []).map(function (v) {
+      var file = v.filename || v.file || '';
+      if (!file) return '';
+      var url = window.vidFileUrl ? window.vidFileUrl(sid, file) : '';
+      var cap = v.trigger ? ('视频 · ' + v.trigger) : '视频';
+      var poster = window.vidPosterFor ? window.vidPosterFor(v, sid) : '';
+      vidEntries.push({ entry: v, file: file });
+      return '<div class="cg vid' + (poster ? '' : ' no-poster') + '" data-vid-play="' + escapeHtml(url) + '"' +
+        ' data-name="' + escapeHtml(cap) + '"' +
+        (poster ? ' style="background-image:url(' + escapeHtml(poster) + ')"' : '') +
+        '><span class="cap">' + escapeHtml(cap) + '</span></div>';
+    }).filter(Boolean);
+
+    var total = onlyCg.length + vidItems.length;
+    el.innerHTML = total
+      ? '<div class="card"><h5>CG 画廊<span>' + onlyCg.length + ' 张' +
+        (vidItems.length ? ' · 视频 ' + vidItems.length + ' 段' : '') + '</span></h5><div class="cg-grid">' +
+        vidItems.join('') + items.join('') + '</div></div>'
+      : '<div class="card"><h5>CG 画廊<span>空</span></h5><div class="empty-state">画廊还是空的（生成 CG / 视频后出现）</div></div>';
+
+    /* 没有服务端封面的视频：现抓首帧，抓到后回填背景（串行，不会一次拉一堆） */
+    if (window.vidEnsurePoster && sid) {
+      var tiles = $$('.cg.vid', el);
+      vidEntries.forEach(function (rec, i) {
+        var tile = tiles[i];
+        if (!tile || tile.style.backgroundImage) return;
+        window.vidEnsurePoster(rec.entry, sid, function (dataUrl) {
+          if (dataUrl) {
+            tile.style.backgroundImage = 'url(' + dataUrl + ')';
+            tile.classList.remove('no-poster');
+          }
+        });
+      });
+    }
   }
 
   /* ── 记忆表格：外壳自己拉 /api/saves/<id>/memory ──
@@ -2378,8 +2427,14 @@
   /* 画面中央上方的 CG 切换器：自由翻看，不与文本对应（Shift + ←/→ 同效） */
   on(byId('cgPrev'), 'click', function (e) { e.stopPropagation(); stepCg(-1); });
   on(byId('cgNext'), 'click', function (e) { e.stopPropagation(); stepCg(1); });
-  /* 数据中心里任何带 data-big 的图（CG / 立绘 / 头像）点开大图 */
+  /* 数据中心里任何带 data-big 的图（CG / 立绘 / 头像）点开大图；
+     带 data-vid-play 的视频条目则交给视频灯箱（**先判视频**，两者不会同时出现在一个元素上）。 */
   on($('.dock-body'), 'click', function (e) {
+    var v = e.target.closest ? e.target.closest('[data-vid-play]') : null;
+    if (v && v.dataset.vidPlay) {
+      if (typeof window.vidOpenViewer === 'function') window.vidOpenViewer(v.dataset.vidPlay, v.dataset.name || '');
+      return;
+    }
     var el = e.target.closest ? e.target.closest('[data-big]') : null;
     if (el && el.dataset.big) openViewer(el.dataset.big, el.dataset.name || '');
   });
@@ -2581,6 +2636,26 @@
       startGalleryPoll(2000);
     }).catch(function (err) {
       toast('重画失败：' + (err && err.message ? err.message : err));
+    }).then(function () {
+      btn.disabled = false;
+      btn.innerHTML = old;
+    });
+  });
+
+  /* ---- 对话框上缘：「重画视频」----
+     复用 app.js 的 regenVideo()：它读视频画廊最新一条的提示词重发 /api/images/generate-video。
+     与重画 CG 不同，视频是**追加新的一条**而不是覆盖旧图（视频慢、产物大，留旧版可对比）。
+     按钮忙碌态由外壳自己管 —— app.js 那份是给移动端外壳共用的。 */
+  on(byId('btnRegenVid'), 'click', function (e) {
+    e.stopPropagation();
+    var btn = this;
+    if (btn.disabled) return;
+    if (typeof regenVideo !== 'function') { toast('当前界面不支持重画视频'); return; }
+    btn.disabled = true;
+    var old = btn.innerHTML;
+    btn.innerHTML = '⟳ 提交中';
+    Promise.resolve(regenVideo()).catch(function (err) {
+      toast('重画视频失败：' + (err && err.message ? err.message : err));
     }).then(function () {
       btn.disabled = false;
       btn.innerHTML = old;

@@ -311,43 +311,85 @@
     box.innerHTML = '<div class="vn-empty">正在读取画廊…</div>';
 
     resolveSaveRecordId().then(function (sid) {
-      // 与原版一致：CG 列表来自 cg_gallery.json
-      return api('/saves/' + encodeURIComponent(sid) + '/cg-gallery')
-        .catch(function () { return null; })
-        .then(function (res) {
-          var list = (res && Array.isArray(res.gallery)) ? res.gallery : [];
-          if (!list.length) {
-            box.innerHTML = '<div class="vn-empty">本存档还没有 CG。<br>让管家 AI 触发生图后，这里会出现画面。</div>';
-            P._latestCG = '';
-            return;
-          }
-          var html = '<div class="vn-grid2">';
-          list.forEach(function (cg) {
-            var file = cg.filename || cg.file || cg.name || '';
-            if (!file) return;
-            var url = /^(\/|https?:)/.test(file)
-              ? file
-              : ('/api/saves/' + encodeURIComponent(sid) + '/images/' + encodeURIComponent(file));
-            var cap = cg.sceneEnd
-              ? (cg.description || '场景 · NSFW 流程结束')
-              : (cg.character ? (cg.character + ' · NSFW场景') : (/^\d+$/.test(String(cg.index)) ? ('CG ' + cg.index) : 'CG'));
-            html += '<div class="vn-cg" data-url="' + esc(url) + '" data-cap="' + esc(cap) + '">' +
-              '<img src="' + esc(url) + '" alt="' + esc(cap) + '" loading="lazy" ' +
-              'onerror="this.style.display=\'none\';this.parentNode.classList.add(\'missing\')">' +
-              '<span class="cap">' + esc(cap) + '</span></div>';
-          });
-          html += '</div>';
-          box.innerHTML = html;
-          // 最新一张作为舞台背景（单张图：新 CG 取代原背景）
-          var first = $('.vn-cg', box);
-          P._latestCG = first ? (first.dataset.url || '') : '';
+      // CG 来自 cg_gallery.json；视频来自 video_gallery.json（2026-10-04 起视频也进画廊）。
+      // 两个接口并行取：视频索引本身很小（不含 mp4 本体），但串行会让画廊先空一下再补上。
+      return Promise.all([
+        api('/saves/' + encodeURIComponent(sid) + '/cg-gallery').catch(function () { return null; }),
+        api('/saves/' + encodeURIComponent(sid) + '/video-gallery').catch(function () { return null; }),
+      ]).then(function (res) {
+        var list = (res[0] && Array.isArray(res[0].gallery)) ? res[0].gallery : [];
+        var vids = (res[1] && Array.isArray(res[1].gallery)) ? res[1].gallery : [];
+        if (!list.length && !vids.length) {
+          box.innerHTML = '<div class="vn-empty">本存档还没有 CG 与视频。<br>让管家 AI 触发生图后，这里会出现画面。</div>';
+          P._latestCG = '';
+          return;
+        }
+        var html = '<div class="vn-grid2">';
 
-          $$('.vn-cg', box).forEach(function (el) {
-            el.addEventListener('click', function () {
-              VN.openViewer(el.dataset.url, '', 'CG · 轻点任意处关闭');
-            });
+        /* ── 视频条目 ──
+           列表里**只显示首帧**：优先用服务端存的静帧（同一次 ComfyUI 任务的产出，就是首帧），
+           没有就现抓一张（app.js 的 vidEnsurePoster，串行抓、结果进内存缓存）。
+           点开才播：tile 带 data-vid-play，点击交给 app.js 的 vidOpenViewer（原生 controls）。 */
+        var vidRecs = [];
+        vids.forEach(function (v) {
+          var file = v.filename || v.file || '';
+          if (!file) return;
+          var url = window.vidFileUrl
+            ? window.vidFileUrl(sid, file)
+            : ('/api/saves/' + encodeURIComponent(sid) + '/images/' + encodeURIComponent(file));
+          var cap = v.trigger ? ('视频 · ' + v.trigger) : '视频';
+          var poster = window.vidPosterFor ? window.vidPosterFor(v, sid) : '';
+          vidRecs.push({ entry: v });
+          html += '<div class="vn-cg vid' + (poster ? '' : ' no-poster') + '" data-vid-play="' + esc(url) + '" data-cap="' + esc(cap) + '">' +
+            (poster ? '<img src="' + esc(poster) + '" alt="' + esc(cap) + '" loading="lazy">' : '') +
+            '<span class="cap">' + esc(cap) + '</span></div>';
+        });
+
+        list.forEach(function (cg) {
+          var file = cg.filename || cg.file || cg.name || '';
+          if (!file) return;
+          var url = /^(\/|https?:)/.test(file)
+            ? file
+            : ('/api/saves/' + encodeURIComponent(sid) + '/images/' + encodeURIComponent(file));
+          var cap = cg.sceneEnd
+            ? (cg.description || '场景 · NSFW 流程结束')
+            : (cg.character ? (cg.character + ' · NSFW场景') : (/^\d+$/.test(String(cg.index)) ? ('CG ' + cg.index) : 'CG'));
+          html += '<div class="vn-cg" data-url="' + esc(url) + '" data-cap="' + esc(cap) + '">' +
+            '<img src="' + esc(url) + '" alt="' + esc(cap) + '" loading="lazy" ' +
+            'onerror="this.style.display=&quot;none&quot;;this.parentNode.classList.add(&quot;missing&quot;)">' +
+            '<span class="cap">' + esc(cap) + '</span></div>';
+        });
+        html += '</div>';
+        box.innerHTML = html;
+
+        // 最新一张 CG 作为舞台背景（视频不参与：舞台要的是一张静态背景）
+        var firstImg = $('.vn-cg:not(.vid)', box);
+        P._latestCG = firstImg ? (firstImg.dataset.url || '') : '';
+
+        // 没封面的视频：现抓首帧回填（串行；移动端尤其不能一次拉一堆视频）
+        var vidTiles = $$('.vn-cg.vid', box);
+        vidRecs.forEach(function (rec, i) {
+          var tile = vidTiles[i];
+          if (!tile || $('img', tile) || !window.vidEnsurePoster || !sid) return;
+          window.vidEnsurePoster(rec.entry, sid, function (dataUrl) {
+            if (!dataUrl || !tile.parentNode) return;
+            var img = document.createElement('img');
+            img.src = dataUrl; img.alt = tile.dataset.cap || '视频'; img.loading = 'lazy';
+            tile.insertBefore(img, tile.firstChild);
+            tile.classList.remove('no-poster');
           });
         });
+
+        $$('.vn-cg', box).forEach(function (el) {
+          el.addEventListener('click', function () {
+            if (el.dataset.vidPlay) {
+              if (typeof window.vidOpenViewer === 'function') window.vidOpenViewer(el.dataset.vidPlay, el.dataset.cap || '');
+              return;
+            }
+            VN.openViewer(el.dataset.url, '', 'CG · 轻点任意处关闭');
+          });
+        });
+      });
     });
   }
 

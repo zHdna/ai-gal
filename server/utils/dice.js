@@ -2,9 +2,9 @@
  * Roll 点判定内核 —— 行动的成败由代码裁定，不由 AI 自述。
  *
  * 骰制：**D100**（1-100）
- *   · **1-5**   = 大失败（critical failure）
+ *   · **1-3**   = 大失败（critical failure）　← 2026-10-04 由 1-5 收窄，降低挫败感
  *   · **96-100** = 大成功（critical success）
- *   · 两者**绝对优先**：成功率再高也挡不住 1-5 的大失败，再低也挡不住 96-100 的大成功。
+ *   · 两者**绝对优先**：成功率再高也挡不住 1-3 的大失败，再低也挡不住 96-100 的大成功。
  *   · 其余点数按成功率判定：**点数 > (100 - 成功率)** 即成功。
  *       例：75% → 点数 > 25 成功（26-100，恰好 75 个点 = 75%）
  *           10% → 点数 > 90 成功（91-100，10 个点 = 10%）
@@ -13,8 +13,16 @@
  *       拿 D20 点数直接跟 75 比 → 恒真 → 所有选项成功率都一样）。
  *
  * 成功率来源：
- *   ① 主 AI 在选项行尾写【成功率 65%】② 管家补全 ③ 都没写 → 默认档
+ *   ① 主 AI 在选项行尾写【成功率 65%】② 管家补全 ③ 都没写 → 默认档（**75%**）
  *   ④ 玩家手动输入（不点选项）→ 75% 加成档
+ *       ※ 2026-10-04 起默认档由 50% 上调为 75%，与"手动输入"同档 —— 选项写漏成功率
+ *         不该等于把这件事变难，宁可宽松（选项本身仍是玩家权衡难度用的信息）。
+ *
+ * 另外两条与判定直接相关的产品规则（不在本模块实现，但改这里必须同步）：
+ *   · 行动选项里**至少保留一项"绿色行动"**（成功率 ≥ GREEN_RATE_MIN）—— 由提示词约束，
+ *     见 chat.js 的 ### actions 规则与管家补全规则；
+ *   · 剧情处于 **NSFW 场景**期间**整套判定暂停**（不掷骰、不注入结果），退出场景后自动恢复
+ *     —— 判据是 conversations.nsfw_active，见 chat.js resolveTurnJudgement()。
  *
  * 可见性（三档受众）：
  *   · 骰值 / 成功率 / 判定线 → **对 AI 可见**（AI 要知道难度与掷点才能把
@@ -45,14 +53,18 @@ const SOURCE = {
 // ── 骰制常量（D100）──────────────────────────────────────────────────────────
 const DIE_MIN = 1;
 const DIE_MAX = 100;
-/** 大失败区间：1-5（含） */
-const CRIT_FAIL_MAX = 5;
+/** 大失败区间：1-3（含）—— 2026-10-04 由 1-5 收窄（用户要求：降低挫败感） */
+const CRIT_FAIL_MAX = 3;
 /** 大成功区间：96-100（含） */
 const CRIT_SUCCESS_MIN = 96;
-/** 无成功率时的默认档：50%（即点数 > 50 成功，51-100 共 50 个点） */
-const DEFAULT_RATE = 50;
+/** 无成功率时的默认档：75%（即点数 ≥ 26 成功，26-100 共 75 个点）
+ *  2026-10-04 由 50% 上调为 75%，与「玩家手动输入」同档（用户要求：两边一致） */
+const DEFAULT_RATE = 75;
 /** 玩家手动输入的加成档位 */
 const MANUAL_RATE = 75;
+/** 「绿色行动」下限：成功率 ≥ 80 即为绿灯（与前端 rateTierClass 的 rate-high 门槛一致）。
+ *  产品规则：每轮 2-4 个行动选项里**至少要有一项**是绿灯，给玩家一条稳妥的路。 */
+const GREEN_RATE_MIN = 80;
 /** 成功率夹取范围：防止 AI 写 100% / 0% 让骰子彻底失去意义 */
 const RATE_MIN = 5;
 const RATE_MAX = 95;
@@ -126,7 +138,7 @@ function judge(die, rate, source) {
 
 /**
  * 掷骰 + 判定一步到位。
- * @param {number|null} rate 成功率；null → 默认档(50%)
+ * @param {number|null} rate 成功率；null → 默认档(75%)
  * @param {string} [source] 来源标记
  */
 function rollAndJudge(rate, source) {
@@ -236,6 +248,27 @@ function coerceActions(list) {
   return list.map(coerceAction).filter(a => a.text);
 }
 
+/**
+ * 「至少一项绿色行动」规则的自检（**只做诊断，绝不改写**）。
+ *
+ * 规则：每轮 2-4 个选项里**至少要有一项**成功率 ≥ GREEN_RATE_MIN（绿灯），
+ * 给玩家留一条稳妥的路。这条规则靠**提示词**约束（主 AI 先给，管家兜底纠偏）——
+ * 代码不擅自改数值：成功率是 AI 对剧情难度的判断，偷偷改等于骗玩家。
+ * 这里只回答"这轮有没有绿灯"，供调用方记一条日志，便于日后发现提示词失效。
+ *
+ * @param {Array<{rate?:number|null}|number|null>} actions 选项数组（结构体或裸数值）
+ * @returns {boolean}
+ */
+function hasGreenOption(actions) {
+  if (!Array.isArray(actions)) return false;
+  return actions.some(a => {
+    const r = (a && typeof a === 'object') ? a.rate : a;
+    if (r === null || r === undefined || r === '') return false;
+    const n = Number(r);
+    return Number.isFinite(n) && clampRate(n) >= GREEN_RATE_MIN;
+  });
+}
+
 // ── 违规校验（"阳奉阴违"检测）───────────────────────────────────────────────
 /**
  * 判定为"成功"时，正文若出现下列**高置信度**否定措辞 ⇒ 认为 AI 违背了系统裁定。
@@ -338,15 +371,17 @@ function buildJudgementBlock(judgement, actionText) {
   let head = '【行动判定·系统已裁定，不得更改】\n';
   head += '玩家选择：' + String(actionText || '').trim() + '\n';
   head += '掷骰：D100 = ' + die + '\n';
-  if (rate !== null && rate !== undefined) {
+  if (judgement.isCritical) {
+    // 天然大成功 / 大失败：判定根本没参考成功率 —— 有没有数值都要把这一点说清楚。
+    // （旧写法在 rate 为 null 时会退化成"成功率：未提供"，把"天然 5 点大失败"说成"没给难度"，误导 AI。）
+    head += '成功率：' + ((rate !== null && rate !== undefined) ? rate + '%' : '未提供')
+      + '（天然 ' + die + ' → ' + label + '，大小成功/失败优先，不参考成功率）\n';
+  } else if (rate !== null && rate !== undefined) {
     const line = successLine(rate);
-    head += '成功率：' + rate + '%';
-    if (judgement.isCritical) {
-      head += '（天然 ' + die + ' → ' + label + '，大小成功/失败优先，不参考成功率）';
-    } else {
-      head += '（判定线：点数 ≥ ' + line + ' 成功，即 ' + die + (die >= line ? ' ≥ ' : ' < ') + line + '）';
-    }
-    head += '\n';
+    // 来源注解：AI 没标成功率时，让它知道这条走的是**默认档**（而不是以为谁给过难度）
+    const srcNote = (judgement.source === SOURCE.DEFAULT) ? '选项未标注 → 默认档；' : '';
+    head += '成功率：' + rate + '%（' + srcNote + '判定线：点数 ≥ ' + line + ' 成功，即 '
+      + die + (die >= line ? ' ≥ ' : ' < ') + line + '）\n';
   } else {
     head += '成功率：未提供（走默认档 ' + DEFAULT_RATE + '%）\n';
   }
@@ -391,9 +426,9 @@ function buildJudgementBlock(judgement, actionText) {
 module.exports = {
   OUTCOME, SOURCE,
   DIE_MIN, DIE_MAX, CRIT_FAIL_MAX, CRIT_SUCCESS_MIN,
-  DEFAULT_RATE, MANUAL_RATE, RATE_MIN, RATE_MAX,
+  DEFAULT_RATE, MANUAL_RATE, RATE_MIN, RATE_MAX, GREEN_RATE_MIN,
   roll, clampRate, successLine, judge, rollAndJudge, rollManual,
-  parseRate, coerceAction, coerceActions,
+  parseRate, coerceAction, coerceActions, hasGreenOption,
   checkContradiction,
   outcomeLabel, outcomeBadgeText, judgementLine, buildJudgementBlock,
 };

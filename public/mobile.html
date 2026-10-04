@@ -28,7 +28,7 @@
     })();
   </script>
   -->
-  <link rel="stylesheet" href="css/ai-gal-redesign.css?v=20261004a">
+  <link rel="stylesheet" href="css/ai-gal-redesign.css?v=20261004x">
   <link rel="stylesheet" href="css/theater-enhance.css">
   <style>
     #btnTTSStop {
@@ -226,7 +226,7 @@
   </style>
 
   <!-- ===== 移动端（GAL）样式：置于桌面样式之后以覆盖 ===== -->
-  <link rel="stylesheet" href="css/mobile/vn.css?v=20261004a">
+  <link rel="stylesheet" href="css/mobile/vn.css?v=20261004x">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#060B18">
@@ -284,6 +284,11 @@
           <div class="vn-loc" id="vnLoc"><i></i>等待开始</div>
           <div class="vn-cast" id="vnCast"></div>
 
+          <!-- 视频端口（移动端形态）：手机屏幕塞不下桌面那种小窗，
+               改成左上角一枚悬浮按钮，点它弹出播放（关闭 / 全屏在弹层里）。
+               「设置 → 视频生成」关闭、或这个存档还没有视频时，按钮整枚隐藏。 -->
+          <button class="vn-vid-fab" id="vnVideoFab" data-vidact="open" hidden title="播放视频" aria-label="播放视频">🎬</button>
+
           <!-- 未选择角色时的欢迎引导 -->
           <div class="vn-welcome" id="vnWelcome">
             <div class="emblem">🎬</div>
@@ -315,6 +320,7 @@
           <span class="vn-dlg-actions">
             <button class="vn-tool" id="vnBtnRegen" title="重新生成本轮剧情">↻ 重生成</button>
             <button class="vn-tool" id="vnBtnRegenCg" title="重新生成当前 CG">↻ 重画CG</button>
+            <button class="vn-tool" id="vnBtnRegenVid" title="重新生成视频（较慢，约数分钟）">↻ 重画视频</button>
           </span>
 
           <!-- 说话者头像：与桌面版一致，固定只留左侧一个槽位（右侧槽已去掉）。
@@ -988,6 +994,7 @@
           <nav class="settings-nav" id="settingsNav">
             <button class="settings-nav-btn on" data-pane="ai"><span class="sn-ic">🔌</span><span class="sn-tx"><b>AI 与供应商</b><small>主 / 管家 / 画家 · 接口</small></span></button>
             <button class="settings-nav-btn" data-pane="image"><span class="sn-ic">🎨</span><span class="sn-tx"><b>图像生成</b><small>画风 · 供应商 · 参数</small></span></button>
+            <button class="settings-nav-btn" data-pane="video"><span class="sn-ic">🎬</span><span class="sn-tx"><b>视频生成</b><small>生图的辅助 · 触发条件</small></span></button>
             <button class="settings-nav-btn" data-pane="look"><span class="sn-ic">🎛</span><span class="sn-tx"><b>外观与界面</b><small>主题 · 移动端</small></span></button>
             <button class="settings-nav-btn" data-pane="memory"><span class="sn-ic">🧠</span><span class="sn-tx"><b>记忆表格</b><small>注入间隔 · 忽略提示</small></span></button>
           </nav>
@@ -1054,9 +1061,11 @@
               </div>
               <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
                 开启后行动选项会显示成功率，由<strong>系统掷骰裁定成败</strong>再生成剧情。
-                D100（1-100）：<strong>1-5 大失败、96-100 大成功</strong>；
+                D100（1-100）：<strong>1-3 大失败、96-100 大成功</strong>；
                 其余按选项成功率判定（如 75% → 掷出 26~100 即成功）；
-                未标成功率的选项按默认档 50%；<strong>手动输入的行动按 75% 加成判定</strong>。
+                未标成功率的选项按默认档 <strong>75%</strong>（与手动输入同档）。
+                每轮选项里<strong>至少一项是绿色（≥80%）</strong>；
+                剧情进入 <strong>NSFW 场景</strong>期间<strong>暂停判定</strong>，退出后自动恢复。
               </div>
             </div>
             <div class="form-group">
@@ -1131,6 +1140,16 @@
           <section class="settings-section">
             <h4>图像生成</h4>
             <div id="imageSettings"></div>
+          </section>
+        </section>
+
+        <!-- ============ 视频生成（生图的辅助） ============ -->
+        <!-- 与桌面版共用同一份渲染函数 renderVideoSettings()（app.js），
+             表单控件用 data-vid 定位，所以两端的 id 不会打架。 -->
+        <section class="settings-pane" data-pane="video">
+          <section class="settings-section">
+            <h4>视频生成</h4>
+            <div id="videoSettings"></div>
           </section>
         </section>
 
@@ -1777,16 +1796,36 @@
         </div>
       </div>
     </div>
+    <!-- ===================== 视频播放弹层（移动端视频端口） ===================== -->
+    <!-- 由 app.js 统一管理：与桌面小窗共用同一个 VID 状态机，
+         播放器元素在两端都只存在一份（见 applyVideoMode 的"搬而不建"）。
+         ⚠️ 手机**不点开就不加载视频**：播放器元素只在弹层打开时才被创建，关掉立刻卸掉。
+         按钮：暂停 / 声音 / 音量 / 全屏 / 关闭（统一走 data-vidact 委托）。 -->
+    <div class="vn-vid-ov" id="vnVideoOverlay" hidden>
+      <div class="vn-vid-ov-bd" id="vnVideoBackdrop" data-vidact="close"></div>
+      <div class="vn-vid-box">
+        <div class="vn-vid-head">
+          <span class="vn-vid-title">视频</span>
+          <button class="vn-vid-btn" data-vidact="play" title="暂停" aria-label="暂停">⏸</button>
+          <button class="vn-vid-btn" data-vidact="sound" title="开启声音" aria-label="声音开关">🔇</button>
+          <input class="vb-vol" type="range" min="0" max="100" value="70" data-vidvol aria-label="音量">
+          <span class="sp"></span>
+          <button class="vn-vid-btn" data-vidact="fs" title="全屏播放">⛶ 全屏</button>
+          <button class="vn-vid-btn" data-vidact="close" title="关闭">✕</button>
+        </div>
+        <div class="vn-vid-stage" id="vnVideoStage"></div>
+      </div>
+    </div>
   </div>
 
   <input type="file" id="characterFileInput" accept=".json,.png" style="display:none">
 
-  <script src="js/api.js?v=20260923c"></script>
+  <script src="js/api.js?v=20261004x"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20261004a"></script>
+  <script src="js/app.js?v=20261004x"></script>
   <script src="js/mobile/vn-shell.js?v=20260923e"></script>
-  <script src="js/mobile/vn-pages.js?v=20260923c"></script>
-  <script src="js/mobile/vn-stage.js?v=20261004a"></script>
+  <script src="js/mobile/vn-pages.js?v=20261004x"></script>
+  <script src="js/mobile/vn-stage.js?v=20261004x"></script>
 </body>
 
 </html>

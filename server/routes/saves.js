@@ -401,6 +401,40 @@ module.exports = (db) => {
     }
   });
 
+  // Video gallery（视频生成 / 生图的辅助）
+  // 索引文件 video_gallery.json 与 cg_gallery.json 平级，**新建在前**。
+  // 视频文件本身存在存档的 images/ 目录里（复用 GET /:id/images/:filename 提供，
+  // express 的 res.sendFile 会按扩展名给 video/mp4 并支持 Range，<video> 可拖动进度）。
+  router.get('/:id/video-gallery', (req, res) => {
+    const save = db.prepare('SELECT * FROM saves WHERE id = ?').get(req.params.id);
+    if (!save) return res.status(404).json({ error: 'Save not found' });
+    try {
+      const gallery = JSON.parse(fs.readFileSync(path.join(save.save_path, 'video_gallery.json'), 'utf-8'));
+      res.json({ gallery: Array.isArray(gallery) ? gallery : [] });
+    } catch {
+      // 没有文件 / 文件坏了都当空画廊：视频小窗据此隐藏，绝不 500。
+      res.json({ gallery: [] });
+    }
+  });
+
+  // 清空视频画廊索引（重启游戏时与 CG 画廊一起清）；视频文件保留在磁盘上。
+  router.delete('/:id/video-gallery', (req, res) => {
+    const save = db.prepare('SELECT * FROM saves WHERE id = ?').get(req.params.id);
+    if (!save) return res.status(404).json({ error: 'Save not found' });
+    const gp = path.join(save.save_path, 'video_gallery.json');
+    let removed = 0;
+    try {
+      const gallery = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      removed = Array.isArray(gallery) ? gallery.length : 0;
+    } catch { /* 还没有画廊文件 —— 没什么可清的 */ }
+    try {
+      fs.writeFileSync(gp, '[]', 'utf-8');
+      res.json({ message: 'Video gallery cleared', removed, filesKept: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to clear video gallery' });
+    }
+  });
+
   // Clear the whole CG gallery of a save — used when a game is restarted, so the
   // stage returns to its initial state instead of the previous run's last CG.
   // Only the gallery index is reset; the generated image files are kept on disk.

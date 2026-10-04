@@ -518,6 +518,28 @@ function getCGQualityPrefix(db) {
   }
   return '';
 }
+
+/**
+ * 视频生成（生图的辅助）的开关与触发条件。
+ *
+ * 触发条件是**一句话**的自然语言（例如「NSFW场景」），系统把它包装成
+ * 「当<X>时，调用视频生成接口」注入管家提示词 —— 判不判定由管家 AI 说了算，
+ * 代码不猜语义（条件本来就是给模型看的，不是给正则看的）。
+ */
+function getVideoSettings(db) {
+  const s = getImageSettings(db);
+  return {
+    enabled: String(s.video_enabled || '').trim() === '1',
+    trigger: String(s.video_trigger || '').trim(),
+    qualityPrefix: String(s.video_quality_prefix || '').trim(),
+  };
+}
+
+/** 是否要在管家提示词里注入「视频生成条件」块（开启 + 填了条件）。 */
+function isVideoTriggerActive(db) {
+  const v = getVideoSettings(db);
+  return v.enabled && !!v.trigger;
+}
 // Fields to extract, in order (种族性别 is race_gender format, e.g. human_girl)
 const PORTRAIT_TAG_FIELDS = ['种族性别', '年龄', '发色', '发长', '发型', '刘海', '瞳色', '身高', '身材', '罩杯', '上衣'];
 // Special mapping: gender part of 种族性别 → danbooru tag (1girl/1boy/1futa)
@@ -2952,269 +2974,33 @@ module.exports = (db) => {
               // 同一回合既在 NSFW 场景内配图、又宣布该流程结束是自相矛盾的，代码层面直接判为
               // 「仍在场景内」（宁可下一轮再出空镜，也不要同轮多出一张图）。
               let cgFiredThisTurn = false;
+              // 本轮最终的生图提示词（buildSpecImagePrompt 的产物）。视频用它做"套用"的来源。
+              let cgFinalPrompt = '';
               if (imageEnabled && cgTrigger && cgPrompt && cgPrompt.length > 20) {
                 console.log('[Image] CG check - triggerImage:', cgTrigger, 'imagePrompt len:', cgPrompt.length,
                   'source:', painterResult?.imagePrompt ? 'painter (enriched)' : 'butler');
                 const imgSettings = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
                 console.log('[Image] CG imgSettings mode:', imgSettings?.mode, 'exists:', !!imgSettings);
                 if (imgSettings && imgSettings.mode !== 'none') {
-                  // ── Step A: Resolve ALL participating characters from roster (new + old format) ──
-                  // A CG scene typically has TWO participants (e.g. female + male). We must resolve
-                  // BOTH and pull each one's appearance tags from the roster. We must NEVER inject
-                  // the character-card name (character?.name) into the image tags.
-                  // NOTE: cgRosterEntry (single) is intentionally replaced by cgParticipants (array).
-                  let ip = cgPrompt; // working copy of imagePrompt
-                  const cgParticipants = []; // resolved roster entries (deduped), ≤2 typical
-                  try {
-                    const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(conversation_id);
-                    const fr = save ? JSON.parse(fs.readFileSync(safeSavePath(save.save_path, ROSTER_FILE), 'utf-8')) : {};
-                    const cardName = (character?.name || '').trim();
-                    // Add a roster entry as a participant, skipping the card itself and duplicates.
-                    const addParticipant = (entry, via) => {
-                      if (!entry || typeof entry !== 'object') return;
-                      if (entry.name === cardName) { console.log('[Butler] CG skip card-name entry:', entry.name); return; }
-                      // 安全网登记的占位角色（avatar = NPCF）只有一套**硬编码体貌**
-                      //（黑长直 / 棕瞳 / medium_breasts / casual，见 registerMissingSpeakers），
-                      // 拿它去拼 CG 提示词会画出一个与角色设定无关的人。
-                      // 判据用「简要介绍」是否为空 —— 管家后来真补过 portrait 的条目会填上它。
-                      if (entry.avatar === NPC_PLACEHOLDER_AVATAR && !entry.简要介绍) {
-                        console.log('[Butler] CG: 跳过安全网占位角色（尚无真实体貌，等管家补全）:', entry.name);
-                        return;
-                      }
-                      if (cgParticipants.some(e => e === entry || e.name === entry.name)) return;
-                      cgParticipants.push(entry);
-                      console.log('[Butler] CG participant resolved via', via, ':', entry.name,
-                        '| has english_name:', !!(entry.english_name && /^[\x00-\x7F]+$/.test((entry.english_name || '').toString().trim())));
-                    };
-
-                    // 1) Main subject from `character:` field (exact/fuzzy match in roster)
-                    const cgCharRaw = (ip.match(/character:\s*([^;\n]+)/)?.[1]?.trim()) || '';
-                    if (cgCharRaw) {
-                      let rosterEntry = fr[cgCharRaw];
-                      if (!rosterEntry) {
-                        for (const name of Object.keys(fr)) {
-                          if (name.includes(cgCharRaw) || cgCharRaw.includes(name)) { rosterEntry = fr[name]; break; }
-                        }
-                      }
-                      if (rosterEntry) addParticipant(rosterEntry, 'character-field');
-                      else console.log('[Butler] CG character not found in roster:', cgCharRaw, '| available:', Object.keys(fr).join(', '));
-                    }
-
-                    // 2) Second participant from `participant:` race_gender (e.g. human_boy)
-                    const participantMatch = ip.match(/participant:\s*([^;]+)/);
-                    const rgVal = participantMatch ? participantMatch[1].trim().toLowerCase() : '';
-                    if (rgVal) {
-                      const genderPart = GENDER_WORDS.find(g => rgVal.endsWith('_' + g));
-                      const racePart = genderPart ? rgVal.slice(0, rgVal.length - genderPart.length - 1) : '';
-                      for (const name of Object.keys(fr)) {
-                        const re = fr[name];
-                        const rg = (re['种族性别'] || '').toLowerCase();
-                        if (rg && (rg === rgVal || (racePart && rg.startsWith(racePart) && (!genderPart || rg.endsWith('_' + genderPart))))) {
-                          addParticipant(re, 'participant-race_gender'); break;
-                        }
-                      }
-                    }
-
-                    // 3) Scene-prose match: any roster entry (excluding the card) whose name or
-                    //    clean-ASCII english_name appears in the scene description is a participant.
-                    const sceneNorm = ip
-                      .replace(/character:\s*[^;\n]*/gi, '')
-                      .replace(/participant:\s*[^;\n]*;?\s*/gi, '')
-                      .replace(/\b\w+\s*[:：]\s*/g, '')
-                      .replace(/;/g, ',')
-                      .toLowerCase().replace(/\s+/g, '');
-                    for (const name of Object.keys(fr)) {
-                      if (name === cardName) continue;
-                      const re = fr[name];
-                      const cand = [];
-                      const en = (re.english_name || '').toString().trim();
-                      if (en && /^[\x00-\x7F]+$/.test(en)) cand.push(en.toLowerCase().replace(/\s+/g, ''));
-                      cand.push(name.toLowerCase().replace(/\s+/g, ''));
-                      if (cand.some(c => c && sceneNorm.includes(c))) addParticipant(re, 'scene-prose');
-                    }
-
-                    if (cgParticipants.length === 0) {
-                      console.warn('[Butler] ⚠️ CG: NO participants resolved from roster — prompt will carry features only if present in scene text.');
-                    } else {
-                      console.log('[Butler] CG participants:', cgParticipants.map(p => p.name).join(', '));
-                    }
-                  } catch (e) { console.log('[Butler] CG roster error:', e.message); }
-
-                  // ── Step B: Build final prompt based on gen_mode ──
-                  const customCGPrefix = getCGQualityPrefix(db);
-                  // NOTE: `imgSettings` from the enclosing block is out of scope here
-                  // (declared inside the `if (imgSettings && …)` at the call site), so read
-                  // the settings again for the mode-specific assembly below.
-                  const cgSettings = getImageSettings(db) || {};
-                  const cgGenMode = cgSettings.gen_mode || 'tag';
-
-                  // Anima 两层探测：anima 与 natural 两个散文模式里，画家第一趟都被要求产出
-                  //   line 1 = 逗号分隔 Hard Tags，空行，然后是英文自然语言层。
-                  //   · anima：两层就是最终提示词；
-                  //   · natural（纯自然语言）：代码只取 Hard Tags 行当标签源，再由第二趟改写成散文。
-                  // `cgPrompt` 本身在散文模式里已优先取画家的输出（见上方 usePainterCg）。
-                  const cgHasHybridLayers = isProseGenMode(cgGenMode) && hasAnimaHybridLayers(cgPrompt);
-
-                  // Composites actually present in this roster (`human_girl`, `elf_girl`, …). Used to
-                  // repair a painter that echoed the roster's composite token verbatim into the
-                  // Hard-Tags layer, where Anima needs `1girl` + separate race tags instead.
-                  const raceGenderTagMap = buildRaceGenderTagMap(cgParticipants);
-
-                  // Convert the `participant:` race_gender into danbooru gender/race tags as a
-                  // FALLBACK marker, used only when we could not resolve a second roster entry for it.
-                  const participantMatch2 = ip.match(/participant:\s*([^;]+)/);
-                  let participantTags = '';
-                  if (participantMatch2) {
-                    const rgVal = participantMatch2[1].trim().toLowerCase(); // e.g. "human_boy", "elf_girl"
-                    // Same decomposition rule as the portrait path: composite in, separate tags out.
-                    const parts = splitRaceGender(rgVal);
-                    // participantTags is only a fallback marker, so keep the tag when the gender
-                    // token is unknown (raw fallback) instead of forcing the 1girl portrait default.
-                    const genderPart = GENDER_WORDS.find(g => rgVal === g || rgVal.endsWith('_' + g));
-                    const genderTag = genderPart ? (GENDER_TAG_MAP[genderPart] || genderPart) : '';
-                    participantTags = [genderTag, ...parts.raceTags].filter(Boolean).join(', ');
-                    // Strip participant field from ip (it is handled via roster resolution above)
-                    ip = ip.replace(/participant:\s*[^;\n]*;?\s*/, '').trim();
-                    console.log('[Butler] CG participant:', rgVal, '→ danbooru:', participantTags);
-                  }
-
-                  // Build per-participant "tags" (tag mode) or "appearance (Name)" (natural mode).
-                  // The name is included ONLY when the entry has a clean-ASCII english_name; otherwise
-                  // we emit FEATURES ONLY (no name) — e.g. the protagonist may lack english_name, so we
-                  // must not inject its (Chinese) name into the prompt where the image model can't use it.
-                  const participantUnits = [];
-                  for (const re of cgParticipants) {
-                    if (isAnimaHybridGenMode(cgGenMode)) {
-                      const appearance = buildPortraitPromptNatural(re).replace(/^A portrait of\s+/i, '');
-                      const en = (re.english_name || '').toString().trim();
-                      const enName = (en && /^[\x00-\x7F]+$/.test(en)) ? en : '';
-                      if (appearance) participantUnits.push(enName ? `${appearance} (${enName})` : appearance);
-                      else if (enName) participantUnits.push(enName);
-                    } else {
-                      const tags = extractCGCharacterTags(re);
-                      if (tags.length) participantUnits.push(tags.join(', '));
-                    }
-                  }
-
-                  // 纯自然语言模式的中间产物：代码抽出的标签包（Hard Tags 行）与散文层。
-                  // anima 模式下始终为空，第二趟只在 pure 模式触发。
-                  let pureHardLine = '';
-                  let pureCaption = '';
-                  let cgTags;
-                  if (isProseGenMode(cgGenMode)) {   // anima 与 natural 共用画家第一趟的 Anima 两层
-                    const hybrid = cgHasHybridLayers
-                      ? splitAnimaHybrid(cgPrompt)
-                      : { hardTags: [], caption: '', hybrid: false };
-                    if (hybrid.hybrid && hybrid.hardTags.length) {
-                      // ── Anima standard hybrid assembly ──
-                      // The painter already produced the two required layers, so we must NOT
-                      // re-append the roster appearance unit (it would duplicate the character
-                      // tags the painter wrote) and must NOT let the configured quality prefix
-                      // overwrite the head of the painter's Hard-Tag line.
-                      cgTags = composeAnimaHybrid(hybrid.hardTags, hybrid.caption);
-                      // Collapse duplicates that survive the split (shared attributes across
-                      // characters, roster-derived repeats). Only the Hard-Tags line is touched;
-                      // the caption and the blank-line boundary are preserved.
-                      const hybridParts = cgTags.split(/\n\n/);
-                      if (hybridParts.length > 1) {
-                        cgTags = dedupeHardTagLine(hybridParts[0]) + '\n\n' + hybridParts.slice(1).join('\n\n');
-                      } else {
-                        cgTags = dedupeHardTagLine(cgTags);
-                      }
-                      // Roster compatibility: a painter may copy `种族性别` verbatim (`elf_girl`)
-                      // into the Hard-Tags line. Anima needs `1girl, elf, pointy_ears`, so decompose
-                      // only tokens that actually came from this roster.
-                      const beforeDecompose = cgTags;
-                      const hp2 = cgTags.split(/\n\n/);
-                      if (hp2.length > 1) {
-                        cgTags = decomposeRaceGenderTags(hp2[0], raceGenderTagMap) + '\n\n' + hp2.slice(1).join('\n\n');
-                      } else {
-                        cgTags = decomposeRaceGenderTags(cgTags, raceGenderTagMap);
-                      }
-                      if (cgTags !== beforeDecompose) {
-                        console.log('[Butler] CG natural mode — decomposed composite race_gender tags');
-                      }
-                      console.log('[Butler] CG hybrid layers: hardTags=',
-                        hybrid.hardTags.length, '| caption chars=', hybrid.caption.length,
-                        '| custom quality prefix skipped (kept painter hard tags)');
-                      if (isPureNaturalGenMode(cgGenMode)) {
-                        // 纯模式：代码在这里「抽取标签」——只留 Hard Tags 行，散文层另存给第二趟
-                        const pureParts = cgTags.split(/\n\n/);
-                        pureHardLine = pureParts[0].trim();
-                        pureCaption = pureParts.slice(1).join(' ').trim();
-                        console.log('[Butler] 纯自然语言：已从画家两层中抽出标签包（', pureHardLine.length, 'chars）');
-                      }
-                    } else {
-                      // Legacy / fallback: no hard-tag layer survived (butler prose, or a painter
-                      // that failed to emit the hybrid shape) → assemble prose as before.
-                      let nlText = ip
-                        .replace(/character:\s*[^;\n]*/gi, '')
-                        .replace(/participant:\s*[^;\n]*;?\s*/gi, '')
-                        .replace(/\b\w+\s*[:：]\s*/g, '')
-                        .replace(/;/g, ',')
-                        .replace(/\s+/g, ' ')
-                        .trim();
-                      const unitsStr = participantUnits.join(', ');
-                      console.log('[Butler] CG prose fallback - participant units:', unitsStr.slice(0, 160), '| cleaned NL:', nlText.slice(0, 120));
-                      if (isPureNaturalGenMode(cgGenMode)) {
-                        // 纯模式：这里正是「代码抽标签并拼接」——participantUnits 是名册体貌标签
-                        // （见上方 loop：纯模式走 else 分支按 Tag 抽取），participantTags 是兜底性别/种族；
-                        // 场景散文留给第二趟改写，绝不能混进标签包。
-                        const unitTags2 = unitsStr ? unitsStr.split(',').map(t => t.trim()).filter(Boolean) : [];
-                        const fbTags2 = participantTags ? participantTags.split(',').map(t => t.trim()).filter(Boolean) : [];
-                        const qualityTags = customCGPrefix ? customCGPrefix.split(',').map(t => t.trim()).filter(Boolean) : [];
-                        pureHardLine = ['nsfw', ...qualityTags, ...unitTags2, ...fbTags2].join(', ');
-                        pureCaption = nlText;
-                        cgTags = '';
-                      } else {
-                        // Assemble: nsfw + quality prefix + participant units + natural-language scene
-                        cgTags = 'nsfw, ' + (customCGPrefix ? customCGPrefix + ', ' : 'masterpiece, best+quality, ')
-                          + (unitsStr ? unitsStr + ', ' : '')
-                          + nlText;
-                      }
-                    }
-                  } else {
-                    // Tag mode (default): strip field-name prefixes, build tag list.
-                    // Participant features (from roster) are injected via participantUnits; the
-                    // residual scene CSV (camera/pose/etc.) is appended, plus a gender fallback marker.
-                    const stripped = ip
-                      .replace(/character:\s*[^;\n]*/gi, '')
-                      .replace(/\b\w+\s*[:：]\s*/g, '')   // strip "field: "
-                      .replace(/;/g, ',')                  // ; → ,
-                      .replace(/\s+/g, ' ')                // collapse whitespace
-                      .trim();
-                    const unitTags = participantUnits.length
-                      ? participantUnits.join(', ').split(',').map(t => t.trim().replace(/\s+/g, '_')).filter(Boolean)
-                      : [];
-                    const sceneTags = stripped.split(',').map(t => t.trim().replace(/\s+/g, '_')).filter(Boolean);
-                    const fbTags = participantTags ? participantTags.split(',').map(t => t.trim()).filter(Boolean) : [];
-                    const allTags = [...unitTags, ...sceneTags, ...fbTags];
-                    cgTags = 'nsfw, ' + (customCGPrefix ? customCGPrefix + ', ' : 'masterpiece, best+quality, ') + allTags.join(', ');
-                  }
-
-                  // ── 纯自然语言模式：代码抽标签拼接 → 画家AI 第二趟改写成纯英文散文 ──
-                  // 到这里 cgTags 在 anima 下就是最终两层提示词；在 pure 下只是中间产物，
-                  // 真正发出去的是第二趟的散文（失败才退回画家散文层，最后才退标签包）。
-                  if (isPureNaturalGenMode(cgGenMode)) {
-                    const bundle = (pureHardLine || cgTags.split(/\n\n/)[0] || '').trim();
-                    const proseCaption = (pureCaption || cgTags.split(/\n\n/).slice(1).join(' ') || '').trim();
-                    const prose = await callPainterProsePass(resolvePainterProvider(), {
-                      tags: bundle,
-                      caption: proseCaption,
-                      kind: 'cg',
-                    });
-                    if (prose) {
-                      cgTags = prose;
-                      console.log('[Painter] 纯自然语言：标签包已改写为散文（bundle', bundle.length, 'chars → prose', prose.length, 'chars）');
-                    } else {
-                      cgTags = proseCaption || bundle;
-                      console.warn('[Painter] ⚠️ 纯自然语言第二趟失败：退回', proseCaption ? '画家/管家散文层' : '标签包');
-                    }
-                  }
+                  // ── Step A/B：从名册解析出场角色 + 组装最终提示词 ──
+                  // 整段加工（名册外貌拼接 / 模式化组装 / 纯自然语言画家的第二趟）已抽成
+                  // buildSpecImagePrompt()，**图片与视频共用同一份实现** —— 视频提示词因此
+                  // 天然与生图规范一致，不会再出现"视频不认名册、不按纯自然语言规范"的问题。
+                  const spec = await buildSpecImagePrompt({
+                    imagePrompt: cgPrompt,
+                    genMode: cgPromptMode,
+                    qualityPrefix: getCGQualityPrefix(db),
+                    conversationId: conversation_id,
+                    cardName: (character?.name || '').trim(),
+                    kind: 'cg',
+                  });
+                  let cgTags = spec.prompt;
+                  // 本轮最终的**生图提示词**：视频若同轮触发，直接套用它（用户拍板：不必再生成一套）
+                  cgFinalPrompt = cgTags;
                   console.log('[Image] CG imagePrompt RAW:', cgPrompt.slice(0, 200));
                   console.log('[Butler] CG stripped tags HEAD:', cgTags.slice(0, 150));
                   console.log('[Butler] CG stripped tags TAIL:', cgTags.slice(-120));
-                  if (isProseGenMode(cgGenMode)) {
+                  if (isProseGenMode(cgPromptMode)) {
                     // Safety net: 散文模式必须是纯英文。Warn loudly if Chinese slips through
                     // (the butler/painter prompts above already require translation; this catches model failures).
                     if (/[一-龥]/.test(cgTags)) {
@@ -3274,6 +3060,46 @@ module.exports = (db) => {
                 console.log('[Image] NSFW 结束空镜 skipped — 服务端状态并非「NSFW 流程中」(nsfw_active=0)，忽略管家的 nsfwEnd');
               }
 
+              // 5b. NSFW 场景状态（**Roll 点停判专用**：conversations.nsfw_hold）。
+              //
+              // 为什么不用 nsfw_active：那一列绑定**生图流程**（只有真的下发了 NSFW CG 才置 1，
+              // 供「结束空镜」收尾）。生图总开关关闭、或生图模式为 none 时它永远是 0 ——
+              // 拿它当停判依据就会漏掉"没配图的 H 场景"，正是用户要求避免的打断。
+              // 这里只看**剧情**：管家说本轮在 NSFW 场景（triggerImage）→ 置 1；
+              // 管家说剧情已离开该场景（nsfwEnd）→ 复位 0。与生图设置完全无关，
+              // 也不碰 nsfw_active，图片流程与空镜护栏语义一字不动。
+              if (butlerResult?.nsfwEnd) {
+                try { db.prepare('UPDATE conversations SET nsfw_hold = 0 WHERE id = ?').run(conversation_id); } catch { }
+                console.log('[Roll] 管家判定剧情已离开 NSFW 场景 → 复位 nsfw_hold，下一轮恢复成功率判定');
+              } else if (butlerResult?.triggerImage) {
+                try { db.prepare('UPDATE conversations SET nsfw_hold = 1 WHERE id = ?').run(conversation_id); } catch { }
+                console.log('[Roll] 管家判定剧情处于 NSFW 场景 → 置 nsfw_hold=1，期间暂停成功率判定');
+              }
+
+              // 6. 视频生成（生图的辅助）—— 排在 CG 与 NSFW 结束空镜【之后】。
+              //    要不要出视频 = 管家按注入的【视频生成条件】判定的 triggerVideo
+              //    （画家只做 tag 级修正、无权改这个布尔值，见 callPainterAI 的契约）。
+              //    代码不在这里做任何语义猜测；只做"开关 + 提示词非空"这两道硬护栏。
+              const videoWanted = !!(painterResult?.triggerVideo || butlerResult?.triggerVideo);
+              if (videoWanted) {
+                if (imageEnabled) {
+                  try {
+                    triggerVideoGeneration({
+                      conversation_id,
+                      // 本轮已经出图的最终提示词 → 视频**直接套用**它（不再生成一套）
+                      cgPrompt: cgFinalPrompt,
+                      // 本轮没出图时的来源：管家/画家为视频单独写的描述
+                      videoPrompt: painterResult?.videoPrompt || butlerResult?.videoPrompt || '',
+                      character_name: character?.name || 'video',
+                      card_name: (character?.name || '').trim(),
+                      source: 'butler',
+                    });
+                  } catch (e) { console.warn('[VideoGen] trigger error:', e.message); }
+                } else {
+                  console.log('[VideoGen] skipped — 生图总开关关闭（视频依附于生图）');
+                }
+              }
+
               // ── MVU 世界状态已在“交给管家AI之前”拦截处理（见 butler 调用前）：
               // 变量块已从 fullText 剥离并落入 conversations.world_state，result.worldState 已下发。
               // 此处 fullText 已为干净叙事文本，无需再次处理变量。
@@ -3294,6 +3120,15 @@ module.exports = (db) => {
                 result.formatted.status = butlerResult.status;
               }
               if (butlerResult.summarize) result.formatted.summarize = butlerResult.summarize;
+              // 「至少一项绿灯」规则自检：只记一条日志，**绝不改写** AI 给的成功率
+              // （成功率是 AI 对剧情难度的判断，代码偷偷改等于骗玩家 —— 见 dice.hasGreenOption）。
+              try {
+                const acts = dice.coerceActions(result.formatted.actions || []);
+                if (acts.length && !dice.hasGreenOption(acts)) {
+                  console.warn('[Roll] ⚠️ 本轮行动选项里没有绿色行动（成功率 ≥' + dice.GREEN_RATE_MIN + '%）：'
+                    + acts.map(a => (a.rate === null ? '未标(默认档)' : a.rate + '%')).join(' / '));
+                }
+              } catch { /* 诊断失败不影响主流程 */ }
               // 已删除：`if (butlerResult.memory) result.memorySummary = butlerResult.memory;`
               // 理由：`memory` 从不在管家 JSON schema 里（synthesize 的字段），
               // 且 `memorySummary` 全仓只有那一处引用 —— 服务端与前端都没有消费者。
@@ -3888,8 +3723,12 @@ ${ui.requiresStatus ? '### status\n（末尾输出{{user}}状态，属性名: �
 - ⚠️【成功率是必填项】每个行动选项都必须在行尾标注【成功率 N%】，N 取 5-95 的整数：
   · 按**该行动在当前情境下的合理难度**给值，不要都给同一个数；
   · 顺手的小事（拿杯水、走两步）75~95%；需要技巧/运气的事 45~75%；冒险、硬闯、以弱敌强 5~40%。
+- ⚠️【每轮至少要留一条「绿色行动」】2-4 个选项里**必须至少有一项成功率 ≥ 80%**：
+  给{{user}}留一条**稳妥、低风险、符合当前处境**的路（顺势而为、说句软话、先观察再动手、
+  从最自然的那个角度切入……）。**禁止**整轮都是高风险选项 —— 玩家需要至少一个"大概率能成"的选择。
+  绿色行动必须是**真的稳妥**，不是把一件难事硬写成 90% 来凑数。
 - ⚠️ 成功率由**系统掷骰判定**，不是你的判断依据：你只负责给出"这件事有多难"，
-  真正成不成功由系统掷 D100（1-100）决定并把结果告诉你：1-5 恒为大失败、96-100 恒为大成功，
+  真正成不成功由系统掷 D100（1-100）决定并把结果告诉你：1-3 恒为大失败、96-100 恒为大成功，
   其余按你给的成功率判定。**不要**在剧情里预先写好这个行动的结果。
 - 示例：
   --1、悄悄撬开窗户潜入【成功率 55%】
@@ -5325,6 +5164,9 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
 — ⚠️【成功率是必填项】每个选项都必须在行尾带【成功率 N%】（N 取 5-95 整数），
   按该行动在当前情境下的合理难度给值，**不要都给同一个数**。
   若主AI原文的选项缺少成功率，你必须补上；若已有则保留原值，不要改动。
+— ⚠️【每轮至少要留一条「绿色行动」】补全后必须保证 2-4 个选项里**至少有一项成功率 ≥ 80%**。
+  若主AI给的选项**全部都低于 80%**，把其中**最稳妥、风险最低的那一项**提到 80~95%（**只调这一项**，
+  其余保持原值不动），让玩家至少有一个"大概率能成"的选择。
 
 6. 【### mood 补全检查】
 — 缺失时从 nomal/battle/blue/ceremony/relaxed/suspense 中选择最匹配的
@@ -5463,12 +5305,14 @@ portrait处理逻辑：
 
 === 输出一行JSON（绝对不允许输出其他内容） ===
 ⚠️ 你只输出这一行JSON。不要在JSON前后添加任何文字、解释、剧情、对话或代码块标记。
-{"mood":"nomal","actions":["选项1"],"portrait":null,"status":{},"fixedText":"","triggerImage":false,"imagePrompt":"","nsfwEnd":false,"sceneImagePrompt":"","summarize":""}
+{"mood":"nomal","actions":["选项1"],"portrait":null,"status":{},"fixedText":"","triggerImage":false,"imagePrompt":"","nsfwEnd":false,"sceneImagePrompt":"","triggerVideo":false,"videoPrompt":"","summarize":""}
 - portrait格式（单角色对象/多角色数组）
 - 不要输出prompt字段
 - portrait生图通过portrait字段自动触发，不需要设置triggerImage
 - triggerImage和imagePrompt仅用于CG生图
 - nsfwEnd和sceneImagePrompt仅用于【NSFW 流程结束】的纯场景空镜（画面中不得有任何人），平时恒为 false / ""
+- triggerVideo和videoPrompt仅用于【视频生成】：⚠️ 只有系统在下方注入了「【视频生成条件】」块时才可能为 true；
+  没有注入该块时 triggerVideo 一律 false、videoPrompt 一律 ""。注入了则严格按该块的判定规则执行。
 - summarize: 当主AI缺失 ### summarize 时，根据剧情内容生成一句话总结（格式：时间 | 地点 | 人物 | 当前事件摘要）。主AI已有 ### summarize 时填 ""
 - fixedText: ⚠️ 当检查清单中【任何一项】需要修复时（缺###标题、缺『』、缺portrait段、姓名不符、冒号前语气词、弯引号等），你必须在 fixedText 输出【完整修复后的全文】（用 \\n 转义换行）。fixedText 不是片段，是替换主AI输出的【完整文本】。仅当文本【完全正确无需任何修改】时 fixedText 才填 ""
 - fixedText 范围限定：⚠️ fixedText 只能包含【主AI输出开始】到【主AI输出结束】之间修复后的正文。【当前角色名册】、【本轮需强制登记的新角色】、【场景卡名/剧本标题】、【用户发言】等后台参考信息块是系统发给你的指令，【绝对禁止】抄入 fixedText——它们会直接显示给玩家，抄入属于严重错误
@@ -5559,11 +5403,13 @@ portrait处理逻辑：
 - 如果某字段缺失但场景描述中暗示了相应信息，从标签库中补全
 
 === 输出一行JSON ===
-{"portrait":null,"triggerImage":false,"imagePrompt":"","debutImagePrompt":null}
+{"portrait":null,"triggerImage":false,"imagePrompt":"","debutImagePrompt":null,"triggerVideo":false,"videoPrompt":""}
 - portrait: 复制管家AI的portrait数据，仅修正其中不准确的字段（不要改变角色名、不要新增角色）
 - triggerImage: 复制管家AI的值（不要改变）
 - imagePrompt: 复制管家AI的imagePrompt，仅修正/补全其中不准确的tag；⚠️ 必须保持【当前生图模式】规定的格式（Tag模式=字段化标签；自然语言/Anima模式=Hard Tags + 空行 + 自然语言两层结构，见下），且不得包含任何中文字符
 - debutImagePrompt: 只有【本轮首次登场角色】不为空时才写，见上文【角色登场判定（DEBUT）】；没有首次登场角色时必须是 null
+- triggerVideo: 复制管家AI的值（不要改变）——视频要不要生成由管家AI按【视频生成条件】判定，你无权决定
+- videoPrompt: 复制管家AI的videoPrompt，仅修正/补全其中的tag（描述运动/运镜，不是静图）；管家给了空串就保持空串
 - ⚠️ 你的输出应该与输入高度相似，只修正tag层面的问题（debutImagePrompt 例外：它是新增产出）
 `;
 
@@ -5749,6 +5595,292 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
 `;
 
   /**
+   * 把一条「生图指令文本」加工成【最终提示词】。
+   *
+   * ⚠️ 图片（CG）与视频**共用这一份实现** —— 用户明确要求「视频提示词要和图片生成提示词一样：
+   *    从角色名册里提取角色外貌特征拼进去，并按纯自然语言的规范产出」。
+   *    抄一份副本出来迟早会漂移（本项目已经吃过「两处 fallback 不对称 → 静默失效」的亏），
+   *    所以这里是**唯一实现**：改一处，图片和视频同时生效。
+   *
+   * 做的事（按顺序）：
+   *   1) 从本存档的 character_roster.json 解析出**所有出场角色**（角色名 / english_name /
+   *      种族性别 / 场景散文 四条线索），跳过角色卡自己与无体貌的安全网占位角色；
+   *   2) 按生图模式把每个角色的**外貌特征**拼进提示词：
+   *      · tag 模式 → extractCGCharacterTags() 的 danbooru 标签；
+   *      · 散文模式 → buildPortraitPromptNatural() 的自然语言外貌句；
+   *   3) 纯自然语言模式：代码先抽标签包，再由**画家第二趟**改写成纯英文散文（不夹标签）；
+   *   4) 画质前缀由调用方决定（CG 用 cg_quality_prefix，视频回落到它）。
+   *
+   * @param {object} o
+   * @param {string} o.imagePrompt   生图指令原文（管家的 imagePrompt / 视频的 videoPrompt）
+   * @param {string} o.genMode       image_settings.gen_mode（tag | anima | natural）
+   * @param {string} [o.qualityPrefix] 画质前缀
+   * @param {string} o.conversationId 用于定位存档目录（拿名册）
+   * @param {string} [o.cardName]    角色卡名 —— 绝不允许被拼进提示词
+   * @param {string} [o.kind]        painter 第二趟的任务标签（'cg' | 'video'）
+   * @returns {Promise<{prompt:string, participants:string[], genMode:string}>}
+   */
+  async function buildSpecImagePrompt(o) {
+    const opts = o || {};
+    const imagePrompt = String(opts.imagePrompt || '');
+    const genMode = opts.genMode || 'tag';
+    const qualityPrefix = opts.qualityPrefix || '';
+    const conversationId = opts.conversationId || '';
+    const cardNameIn = String(opts.cardName || '').trim();
+    const kind = opts.kind || 'cg';
+    // 与调用方的门槛一致：太短的指令不值得拼（也避免把一句废话变成一张图）
+    if (!imagePrompt || imagePrompt.trim().length <= 20) {
+      return { prompt: '', participants: [], genMode };
+    }
+let ip = imagePrompt; // working copy of imagePrompt
+const cgParticipants = []; // resolved roster entries (deduped), ≤2 typical
+try {
+  const save = db.prepare('SELECT * FROM saves WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(conversationId);
+  const fr = save ? JSON.parse(fs.readFileSync(safeSavePath(save.save_path, ROSTER_FILE), 'utf-8')) : {};
+  // 卡片名由调用方传入（本函数要同时服务 CG 与视频两条通路）
+  const cardName = cardNameIn;
+  // Add a roster entry as a participant, skipping the card itself and duplicates.
+  const addParticipant = (entry, via) => {
+    if (!entry || typeof entry !== 'object') return;
+    if (entry.name === cardName) { console.log('[Butler] CG skip card-name entry:', entry.name); return; }
+    // 安全网登记的占位角色（avatar = NPCF）只有一套**硬编码体貌**
+    //（黑长直 / 棕瞳 / medium_breasts / casual，见 registerMissingSpeakers），
+    // 拿它去拼 CG 提示词会画出一个与角色设定无关的人。
+    // 判据用「简要介绍」是否为空 —— 管家后来真补过 portrait 的条目会填上它。
+    if (entry.avatar === NPC_PLACEHOLDER_AVATAR && !entry.简要介绍) {
+      console.log('[Butler] CG: 跳过安全网占位角色（尚无真实体貌，等管家补全）:', entry.name);
+      return;
+    }
+    if (cgParticipants.some(e => e === entry || e.name === entry.name)) return;
+    cgParticipants.push(entry);
+    console.log('[Butler] CG participant resolved via', via, ':', entry.name,
+      '| has english_name:', !!(entry.english_name && /^[\x00-\x7F]+$/.test((entry.english_name || '').toString().trim())));
+  };
+
+  // 1) Main subject from `character:` field (exact/fuzzy match in roster)
+  const cgCharRaw = (ip.match(/character:\s*([^;\n]+)/)?.[1]?.trim()) || '';
+  if (cgCharRaw) {
+    let rosterEntry = fr[cgCharRaw];
+    if (!rosterEntry) {
+      for (const name of Object.keys(fr)) {
+        if (name.includes(cgCharRaw) || cgCharRaw.includes(name)) { rosterEntry = fr[name]; break; }
+      }
+    }
+    if (rosterEntry) addParticipant(rosterEntry, 'character-field');
+    else console.log('[Butler] CG character not found in roster:', cgCharRaw, '| available:', Object.keys(fr).join(', '));
+  }
+
+  // 2) Second participant from `participant:` race_gender (e.g. human_boy)
+  const participantMatch = ip.match(/participant:\s*([^;]+)/);
+  const rgVal = participantMatch ? participantMatch[1].trim().toLowerCase() : '';
+  if (rgVal) {
+    const genderPart = GENDER_WORDS.find(g => rgVal.endsWith('_' + g));
+    const racePart = genderPart ? rgVal.slice(0, rgVal.length - genderPart.length - 1) : '';
+    for (const name of Object.keys(fr)) {
+      const re = fr[name];
+      const rg = (re['种族性别'] || '').toLowerCase();
+      if (rg && (rg === rgVal || (racePart && rg.startsWith(racePart) && (!genderPart || rg.endsWith('_' + genderPart))))) {
+        addParticipant(re, 'participant-race_gender'); break;
+      }
+    }
+  }
+
+  // 3) Scene-prose match: any roster entry (excluding the card) whose name or
+  //    clean-ASCII english_name appears in the scene description is a participant.
+  const sceneNorm = ip
+    .replace(/character:\s*[^;\n]*/gi, '')
+    .replace(/participant:\s*[^;\n]*;?\s*/gi, '')
+    .replace(/\b\w+\s*[:：]\s*/g, '')
+    .replace(/;/g, ',')
+    .toLowerCase().replace(/\s+/g, '');
+  for (const name of Object.keys(fr)) {
+    if (name === cardName) continue;
+    const re = fr[name];
+    const cand = [];
+    const en = (re.english_name || '').toString().trim();
+    if (en && /^[\x00-\x7F]+$/.test(en)) cand.push(en.toLowerCase().replace(/\s+/g, ''));
+    cand.push(name.toLowerCase().replace(/\s+/g, ''));
+    if (cand.some(c => c && sceneNorm.includes(c))) addParticipant(re, 'scene-prose');
+  }
+
+  if (cgParticipants.length === 0) {
+    console.warn('[Butler] ⚠️ CG: NO participants resolved from roster — prompt will carry features only if present in scene text.');
+  } else {
+    console.log('[Butler] CG participants:', cgParticipants.map(p => p.name).join(', '));
+  }
+} catch (e) { console.log('[Butler] CG roster error:', e.message); }
+
+// ── Step B: Build final prompt based on gen_mode ──
+// 画质前缀与生图模式由调用方传入：CG 用 cg_quality_prefix，视频用 video_quality_prefix（回落到 CG）
+const customCGPrefix = qualityPrefix || '';
+const cgGenMode = genMode || 'tag';
+// Anima 两层探测：anima 与 natural 两个散文模式里，画家第一趟都被要求产出
+//   line 1 = 逗号分隔 Hard Tags，空行，然后是英文自然语言层。
+//   · anima：两层就是最终提示词；
+//   · natural（纯自然语言）：代码只取 Hard Tags 行当标签源，再由第二趟改写成散文。
+// `imagePrompt` 本身在散文模式里已优先取画家的输出（见调用方的 usePainterCg）。
+const cgHasHybridLayers = isProseGenMode(cgGenMode) && hasAnimaHybridLayers(imagePrompt);
+
+// Composites actually present in this roster (`human_girl`, `elf_girl`, …). Used to
+// repair a painter that echoed the roster's composite token verbatim into the
+// Hard-Tags layer, where Anima needs `1girl` + separate race tags instead.
+const raceGenderTagMap = buildRaceGenderTagMap(cgParticipants);
+
+// Convert the `participant:` race_gender into danbooru gender/race tags as a
+// FALLBACK marker, used only when we could not resolve a second roster entry for it.
+const participantMatch2 = ip.match(/participant:\s*([^;]+)/);
+let participantTags = '';
+if (participantMatch2) {
+  const rgVal = participantMatch2[1].trim().toLowerCase(); // e.g. "human_boy", "elf_girl"
+  // Same decomposition rule as the portrait path: composite in, separate tags out.
+  const parts = splitRaceGender(rgVal);
+  // participantTags is only a fallback marker, so keep the tag when the gender
+  // token is unknown (raw fallback) instead of forcing the 1girl portrait default.
+  const genderPart = GENDER_WORDS.find(g => rgVal === g || rgVal.endsWith('_' + g));
+  const genderTag = genderPart ? (GENDER_TAG_MAP[genderPart] || genderPart) : '';
+  participantTags = [genderTag, ...parts.raceTags].filter(Boolean).join(', ');
+  // Strip participant field from ip (it is handled via roster resolution above)
+  ip = ip.replace(/participant:\s*[^;\n]*;?\s*/, '').trim();
+  console.log('[Butler] CG participant:', rgVal, '→ danbooru:', participantTags);
+}
+
+// Build per-participant "tags" (tag mode) or "appearance (Name)" (natural mode).
+// The name is included ONLY when the entry has a clean-ASCII english_name; otherwise
+// we emit FEATURES ONLY (no name) — e.g. the protagonist may lack english_name, so we
+// must not inject its (Chinese) name into the prompt where the image model can't use it.
+const participantUnits = [];
+for (const re of cgParticipants) {
+  if (isAnimaHybridGenMode(cgGenMode)) {
+    const appearance = buildPortraitPromptNatural(re).replace(/^A portrait of\s+/i, '');
+    const en = (re.english_name || '').toString().trim();
+    const enName = (en && /^[\x00-\x7F]+$/.test(en)) ? en : '';
+    if (appearance) participantUnits.push(enName ? `${appearance} (${enName})` : appearance);
+    else if (enName) participantUnits.push(enName);
+  } else {
+    const tags = extractCGCharacterTags(re);
+    if (tags.length) participantUnits.push(tags.join(', '));
+  }
+}
+
+// 纯自然语言模式的中间产物：代码抽出的标签包（Hard Tags 行）与散文层。
+// anima 模式下始终为空，第二趟只在 pure 模式触发。
+let pureHardLine = '';
+let pureCaption = '';
+let cgTags;
+if (isProseGenMode(cgGenMode)) {   // anima 与 natural 共用画家第一趟的 Anima 两层
+  const hybrid = cgHasHybridLayers
+    ? splitAnimaHybrid(imagePrompt)
+    : { hardTags: [], caption: '', hybrid: false };
+  if (hybrid.hybrid && hybrid.hardTags.length) {
+    // ── Anima standard hybrid assembly ──
+    // The painter already produced the two required layers, so we must NOT
+    // re-append the roster appearance unit (it would duplicate the character
+    // tags the painter wrote) and must NOT let the configured quality prefix
+    // overwrite the head of the painter's Hard-Tag line.
+    cgTags = composeAnimaHybrid(hybrid.hardTags, hybrid.caption);
+    // Collapse duplicates that survive the split (shared attributes across
+    // characters, roster-derived repeats). Only the Hard-Tags line is touched;
+    // the caption and the blank-line boundary are preserved.
+    const hybridParts = cgTags.split(/\n\n/);
+    if (hybridParts.length > 1) {
+      cgTags = dedupeHardTagLine(hybridParts[0]) + '\n\n' + hybridParts.slice(1).join('\n\n');
+    } else {
+      cgTags = dedupeHardTagLine(cgTags);
+    }
+    // Roster compatibility: a painter may copy `种族性别` verbatim (`elf_girl`)
+    // into the Hard-Tags line. Anima needs `1girl, elf, pointy_ears`, so decompose
+    // only tokens that actually came from this roster.
+    const beforeDecompose = cgTags;
+    const hp2 = cgTags.split(/\n\n/);
+    if (hp2.length > 1) {
+      cgTags = decomposeRaceGenderTags(hp2[0], raceGenderTagMap) + '\n\n' + hp2.slice(1).join('\n\n');
+    } else {
+      cgTags = decomposeRaceGenderTags(cgTags, raceGenderTagMap);
+    }
+    if (cgTags !== beforeDecompose) {
+      console.log('[Butler] CG natural mode — decomposed composite race_gender tags');
+    }
+    console.log('[Butler] CG hybrid layers: hardTags=',
+      hybrid.hardTags.length, '| caption chars=', hybrid.caption.length,
+      '| custom quality prefix skipped (kept painter hard tags)');
+    if (isPureNaturalGenMode(cgGenMode)) {
+      // 纯模式：代码在这里「抽取标签」——只留 Hard Tags 行，散文层另存给第二趟
+      const pureParts = cgTags.split(/\n\n/);
+      pureHardLine = pureParts[0].trim();
+      pureCaption = pureParts.slice(1).join(' ').trim();
+      console.log('[Butler] 纯自然语言：已从画家两层中抽出标签包（', pureHardLine.length, 'chars）');
+    }
+  } else {
+    // Legacy / fallback: no hard-tag layer survived (butler prose, or a painter
+    // that failed to emit the hybrid shape) → assemble prose as before.
+    let nlText = ip
+      .replace(/character:\s*[^;\n]*/gi, '')
+      .replace(/participant:\s*[^;\n]*;?\s*/gi, '')
+      .replace(/\b\w+\s*[:：]\s*/g, '')
+      .replace(/;/g, ',')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const unitsStr = participantUnits.join(', ');
+    console.log('[Butler] CG prose fallback - participant units:', unitsStr.slice(0, 160), '| cleaned NL:', nlText.slice(0, 120));
+    if (isPureNaturalGenMode(cgGenMode)) {
+      // 纯模式：这里正是「代码抽标签并拼接」——participantUnits 是名册体貌标签
+      // （见上方 loop：纯模式走 else 分支按 Tag 抽取），participantTags 是兜底性别/种族；
+      // 场景散文留给第二趟改写，绝不能混进标签包。
+      const unitTags2 = unitsStr ? unitsStr.split(',').map(t => t.trim()).filter(Boolean) : [];
+      const fbTags2 = participantTags ? participantTags.split(',').map(t => t.trim()).filter(Boolean) : [];
+      const qualityTags = customCGPrefix ? customCGPrefix.split(',').map(t => t.trim()).filter(Boolean) : [];
+      pureHardLine = ['nsfw', ...qualityTags, ...unitTags2, ...fbTags2].join(', ');
+      pureCaption = nlText;
+      cgTags = '';
+    } else {
+      // Assemble: nsfw + quality prefix + participant units + natural-language scene
+      cgTags = 'nsfw, ' + (customCGPrefix ? customCGPrefix + ', ' : 'masterpiece, best+quality, ')
+        + (unitsStr ? unitsStr + ', ' : '')
+        + nlText;
+    }
+  }
+} else {
+  // Tag mode (default): strip field-name prefixes, build tag list.
+  // Participant features (from roster) are injected via participantUnits; the
+  // residual scene CSV (camera/pose/etc.) is appended, plus a gender fallback marker.
+  const stripped = ip
+    .replace(/character:\s*[^;\n]*/gi, '')
+    .replace(/\b\w+\s*[:：]\s*/g, '')   // strip "field: "
+    .replace(/;/g, ',')                  // ; → ,
+    .replace(/\s+/g, ' ')                // collapse whitespace
+    .trim();
+  const unitTags = participantUnits.length
+    ? participantUnits.join(', ').split(',').map(t => t.trim().replace(/\s+/g, '_')).filter(Boolean)
+    : [];
+  const sceneTags = stripped.split(',').map(t => t.trim().replace(/\s+/g, '_')).filter(Boolean);
+  const fbTags = participantTags ? participantTags.split(',').map(t => t.trim()).filter(Boolean) : [];
+  const allTags = [...unitTags, ...sceneTags, ...fbTags];
+  cgTags = 'nsfw, ' + (customCGPrefix ? customCGPrefix + ', ' : 'masterpiece, best+quality, ') + allTags.join(', ');
+}
+
+// ── 纯自然语言模式：代码抽标签拼接 → 画家AI 第二趟改写成纯英文散文 ──
+// 到这里 cgTags 在 anima 下就是最终两层提示词；在 pure 下只是中间产物，
+// 真正发出去的是第二趟的散文（失败才退回画家散文层，最后才退标签包）。
+if (isPureNaturalGenMode(cgGenMode)) {
+  const bundle = (pureHardLine || cgTags.split(/\n\n/)[0] || '').trim();
+  const proseCaption = (pureCaption || cgTags.split(/\n\n/).slice(1).join(' ') || '').trim();
+  const prose = await callPainterProsePass(resolvePainterProvider(), {
+    tags: bundle,
+    caption: proseCaption,
+    kind: kind || 'cg',
+  });
+  if (prose) {
+    cgTags = prose;
+    console.log('[Painter] 纯自然语言：标签包已改写为散文（bundle', bundle.length, 'chars → prose', prose.length, 'chars）');
+  } else {
+    cgTags = proseCaption || bundle;
+    console.warn('[Painter] ⚠️ 纯自然语言第二趟失败：退回', proseCaption ? '画家/管家散文层' : '标签包');
+  }
+}
+    return { prompt: String(cgTags || '').trim(), participants: cgParticipants.map(x => x && x.name).filter(Boolean), genMode };
+  }
+
+  /**
    * 取画家AI 的 provider（没单独配置画家时复用管家）。
    *
    * ⚠️ 2026-10-03 事故：纯自然语言的第二趟要在多个作用域被调用（立绘循环 / 名册补图 / CG / 登场 CG），
@@ -5782,7 +5914,13 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
     const p = payload || {};
     const tags = String(p.tags || '').trim();
     const caption = String(p.caption || '').trim();
-    if (!provider || (!tags && !caption)) return '';
+    if (!provider || (!tags && !caption)) {
+      // 静默 return 会让"纯自然语言模式没生效"变成一条查不出来的怪现象，所以这里必须留痕。
+      console.warn('[Painter] 纯自然语言第二趟跳过：provider=%s tags=%d chars caption=%d chars',
+        provider ? (provider.name || provider.id || '有') : '(null)',
+        tags.length, caption.length);
+      return '';
+    }
     const task = p.kind === 'portrait' ? 'portrait' : (p.kind === 'debut' ? 'debut' : 'cg');
     const userMsg = [
       `【本轮任务】${task}`,
@@ -5869,6 +6007,23 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
    *
    * @returns {{die,rate,outcome,source,isCritical,actionText}|null}
    */
+  /**
+   * 当前对话是否「正处于 NSFW 场景」—— Roll 点判定据此整轮暂停。
+   *
+   * 真源 = 落库列 conversations.nsfw_hold（**专为停判新增**，与生图流程的 nsfw_active 解耦）：
+   *   · 管家判定本轮是 NSFW 场景（triggerImage）→ 置 1；
+   *   · 管家判定剧情已离开该场景（nsfwEnd）→ 复位 0。两种生图设置下都成立。
+   * 另外把 nsfw_active 也当兜底（图片流程中 / 结束空镜待收尾时同样算"在场景里"），
+   * 于是"正在补结束空镜"的这几轮不会突然恢复掷骰。
+   * 读不到（旧库尚未迁移该列 / 任何异常）一律视为 false —— 绝不因为读库失败就误停判定。
+   */
+  function isNsfwSceneActive(conversationId) {
+    try {
+      const row = db.prepare('SELECT nsfw_hold, nsfw_active FROM conversations WHERE id = ?').get(conversationId);
+      return !!(row && (row.nsfw_hold || row.nsfw_active));
+    } catch { return false; }
+  }
+
   function resolveTurnJudgement(o) {
     if (!o || !o.rollEnabled) return null;
 
@@ -5906,6 +6061,19 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
       } catch (e) {
         console.warn('[Roll] 复用原判定失败，改为重掷:', e.message);
       }
+    }
+
+    // ①.5 NSFW 场景期间**整套判定暂停**：不掷骰、不注入结果、不写 formatted.roll。
+    //
+    // 为什么：H 场景里剧情本就该顺着走，掷出"失败/大失败"会把这段气氛写歪、甚至被打断
+    // （用户明确要求：避免 NSFW 剧情被莫名打断）。
+    // 判据用落库列 conversations.nsfw_active —— 它同时是「NSFW 结束空镜」的收尾依据，
+    // 管家判定剧情离开场景后会复位，因此**退出场景的下一轮会自动恢复判定**。
+    // ⚠️ 位置刻意放在「重新生成复用原判定」之后：重生成旧楼层仍复用当初的结果，
+    //    既不重掷、也不把已有判定吞掉。
+    if (isNsfwSceneActive(o.conversation_id)) {
+      console.log('[Roll] 当前处于 NSFW 场景 → 本轮跳过成功率判定（退出场景后自动恢复）');
+      return null;
     }
 
     // ② 点选项：优先用前端传来的成功率
@@ -6275,7 +6443,7 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
     //（这正是 AGENTS.md §7.1 记录的那次假 mood 事故）。
     // 其余字段（actions:[] / portrait:null / triggerImage:false / 空串）语义恰好是"无操作"，可以保留。
     // 失败由下面的 parseFailed 显式标记，并由 /stream 如实告知用户。
-    let formatResult = { mood: '', actions: [], portrait: null, cg: null, triggerImage: false, imagePrompt: '', fixedText: '', status: {} };
+    let formatResult = { mood: '', actions: [], portrait: null, cg: null, triggerImage: false, imagePrompt: '', fixedText: '', status: {}, triggerVideo: false, videoPrompt: '' };
     const ui = getCharUIHints(character);
     let butlerSystemContent = buildButlerFormatSys(ui.requiresStatus);
     try {
@@ -6331,11 +6499,13 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
       // ——所以由服务端把状态显式告诉它，它只负责判断本轮剧情有没有走出该场景。
       let nsfwFlowActive = false;
       try {
-        const nsfwRow = db.prepare('SELECT nsfw_active FROM conversations WHERE id = ?').get(conversation_id);
-        nsfwFlowActive = !!(nsfwRow && nsfwRow.nsfw_active);
+        // nsfw_hold = 剧情处于 NSFW 场景（Roll 停判用）；nsfw_active = 生图流程中（结束空镜用）。
+        // 两者**任一**为真都说明"此刻还在 H 剧情里"，管家据此判断本轮有没有走出去。
+        const nsfwRow = db.prepare('SELECT nsfw_hold, nsfw_active FROM conversations WHERE id = ?').get(conversation_id);
+        nsfwFlowActive = !!(nsfwRow && (nsfwRow.nsfw_hold || nsfwRow.nsfw_active));
       } catch { /* 旧库尚未迁移该列 → 视为不在流程中 */ }
       const nsfwStateBlock = nsfwFlowActive
-        ? `\n\n【NSFW 流程状态】⚠️ 当前正处于 NSFW 流程中（之前回合已经生成了 NSFW 插画）。\n`
+        ? `\n\n【NSFW 流程状态】⚠️ 当前正处于 NSFW 场景/流程中（此前回合已判定为 NSFW 剧情）。\n`
           + `- 若本轮剧情【仍在 NSFW 场景内】→ 按原规则：triggerImage: true + imagePrompt，nsfwEnd: false、sceneImagePrompt: ""。\n`
           + `- 若本轮剧情【已经离开 NSFW 场景】（收尾温存/收拾离开/回到日常/场景转换/时间跳跃/一觉醒来）→ 判定为流程结束：`
           + `triggerImage: false、imagePrompt: ""、nsfwEnd: true，并在 sceneImagePrompt 输出一张【不含任何人物】的纯场景空镜提示词。`
@@ -6343,9 +6513,27 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
           + `（triggerImage 是否触发仍按上面「NSFW 场景」规则独立判断，与本状态无关）。`;
       console.log('[Butler] NSFW 流程状态注入:', nsfwFlowActive ? '处于流程中' : '不在流程中');
 
+      // ── 视频生成条件（生图的辅助）──
+      // 用户在「设置 → 视频生成」里填的是一句话 X，这里**按需求原样**包装成
+      // 「当 X 时，调用视频生成接口」注入提示词。管家据此判定本轮要不要出视频。
+      let videoBlock = '';
+      if (isVideoTriggerActive(db)) {
+        const vTrigger = getVideoSettings(db).trigger;
+        videoBlock = `\n\n【视频生成条件】\n`
+          + `当${vTrigger}时，调用视频生成接口。\n`
+          + `- 判定权在你：看本轮剧情/场景是否满足上面这个条件。\n`
+          + `  · 满足 → "triggerVideo": true，并在 "videoPrompt" 写出该镜头的【英文】提示词。\n`
+          + `  · 不满足 → "triggerVideo": false、"videoPrompt": ""。\n`
+          + `- ⚠️ triggerVideo 每次为 true 都会真的跑一次完整的视频生成（很慢、很占显存），\n`
+          + `  所以只在条件确实成立时才置 true，不要"顺手"或"试探性"地开。\n`
+          + `- videoPrompt 描述的是【运动/运镜】而不是一张静图：主体的动作与姿态变化、\n`
+          + `  镜头推进/摇移、光线与氛围的流动。格式与 imagePrompt 一致（沿用当前生图模式）。`;
+        console.log('[Butler] 视频生成条件注入: 当%s时，调用视频生成接口', vTrigger);
+      }
+
       const butlerMessages = [
         { role: 'system', content: butlerSystemContent },
-        { role: 'user', content: `⚠️ 以下文字需要格式检查，不是让你续写剧情。请分析主AI的格式问题并输出JSON。\n\n【用户发言】\n${userMsg}\n\n【主AI输出开始】\n${mainText}\n【主AI输出结束】${nsfwStateBlock}\n\n═══ 以下是系统后台参考信息（仅供你比对名册与登记角色，【绝对禁止】将这些内容抄入 fixedText——fixedText 只能包含【主AI输出开始】到【主AI输出结束】之间修复后的正文）═══${charInfo}${rosterNames}` }
+        { role: 'user', content: `⚠️ 以下文字需要格式检查，不是让你续写剧情。请分析主AI的格式问题并输出JSON。\n\n【用户发言】\n${userMsg}\n\n【主AI输出开始】\n${mainText}\n【主AI输出结束】${nsfwStateBlock}${videoBlock}\n\n═══ 以下是系统后台参考信息（仅供你比对名册与登记角色，【绝对禁止】将这些内容抄入 fixedText——fixedText 只能包含【主AI输出开始】到【主AI输出结束】之间修复后的正文）═══${charInfo}${rosterNames}` }
       ];
 
       let fmtContent = null;
@@ -6504,6 +6692,7 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
           if (formatResult.summarize) formatResult.summarize = unescapeStringField(formatResult.summarize);
           if (formatResult.imagePrompt) formatResult.imagePrompt = unescapeStringField(formatResult.imagePrompt);
           if (formatResult.sceneImagePrompt) formatResult.sceneImagePrompt = unescapeStringField(formatResult.sceneImagePrompt);
+          if (formatResult.videoPrompt) formatResult.videoPrompt = unescapeStringField(formatResult.videoPrompt);
           // ── Hard filter: strip leaked backstage instruction blocks from fixedText ──
           // Weak models echo the roster / forced-registration checklist back into
           // fixedText, which would otherwise be rendered in the main story window.
@@ -6517,6 +6706,7 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
       console.log('[Butler] Parsed portrait:', formatResult.portrait ? JSON.stringify(formatResult.portrait).slice(0, 120) : 'null');
       console.log('[Butler] Parsed triggerImage:', formatResult.triggerImage);
       console.log('[Butler] Parsed nsfwEnd:', formatResult.nsfwEnd, '| sceneImagePrompt len:', (formatResult.sceneImagePrompt || '').length);
+      console.log('[Butler] Parsed triggerVideo:', formatResult.triggerVideo, '| videoPrompt len:', (formatResult.videoPrompt || '').length);
 
       // === Code-level filter: remove protagonist from butler's portrait output ===
       // Butler AI may still output protagonist portrait despite prompt instructions.
@@ -6772,6 +6962,93 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
   }
 
   /**
+   * 视频生成（生图的辅助）。
+   *
+   * 位置：生图流程的**下游** —— 排在 CG 与 NSFW 结束空镜之后。
+   * 判定：管家 AI 按注入的【视频生成条件】（「当 X 时，调用视频生成接口」）自行判断，
+   *      代码**不猜语义**（条件本来就是自然语言）。
+   *
+   * 三条代码级护栏（缺一条就会出现"视频小窗里莫名多出一段"）：
+   *   1) 生图总开关 image_enabled 关着 → 不发（视频依附于生图）；
+   *   2) 「设置 → 视频生成」的总开关关着 / 没填触发条件 → 不发；
+   *   3) 提示词为空 → 不发。
+   * 失败路径全部只记日志：视频是辅助，绝不能因为它把主线对话搞挂。
+   *
+   * 提示词从哪来（用户 2026-10-04 拍板）：
+   *   · 本轮**同时有生图**时 → 直接**套用**这份生图提示词（cgPrompt），不再生成一套；
+   *   · 本轮**只有视频**时 → 把 videoPrompt 送进**同一份** buildSpecImagePrompt()，
+   *     即「从角色名册提取外貌特征并拼入 + 按生图模式（含纯自然语言画家第二趟）产出」。
+   *   两条路的结果都带上 prefixed:true，服务端不再重复叠视频固定前缀。
+   */
+  function triggerVideoGeneration(opts) {
+    const o = opts || {};
+    const conversation_id = o.conversation_id;
+    if (!conversation_id) return false;
+
+    try {
+      const enabledRow = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(APP_KEYS.IMAGE_ENABLED);
+      if (enabledRow && enabledRow.value === 'false') {
+        console.log('[VideoGen] skipped - 生图总开关关闭（视频依附于生图）');
+        return false;
+      }
+    } catch (e) { console.warn('[VideoGen] gate check error:', e.message); }
+
+    const v = getVideoSettings(db);
+    if (!v.enabled) { console.log('[VideoGen] skipped - 「视频生成」开关未开启'); return false; }
+    if (!v.trigger) { console.log('[VideoGen] skipped - 未填写视频生成条件'); return false; }
+
+    const rawVideoPrompt = String(o.videoPrompt || '').trim();
+    const cgReady = String(o.cgPrompt || '').trim();
+    if (!cgReady && !rawVideoPrompt) { console.log('[VideoGen] skipped - 提示词为空'); return false; }
+
+    // 提示词加工（可能要跑画家第二趟）是异步的 → 整体异步化，但**立刻返回**：
+    // 视频本来就要跑几分钟，绝不能把本轮对话卡在这里。
+    (async () => {
+      let prompt = '';
+      let source = '';
+      if (cgReady) {
+        // ① 本轮已经出图 → **直接套用生图提示词**（用户拍板：不必再生成一套）。
+        //    它已经过 buildSpecImagePrompt 的全套加工（名册外貌拼接 / 纯自然语言第二趟 / 画质前缀），
+        //    所以标记 prefixed，避免服务端再叠一次视频前缀。
+        prompt = cgReady;
+        source = 'reuse-cg';
+      } else {
+        // ② 本轮只有视频、没有图 → 走**同一份** buildSpecImagePrompt 加工。
+        //    画质前缀按需求用「视频固定前缀」；没填就回落到 CG 的前缀（保证与生图一致的手感）。
+        const videoPrefix = v.qualityPrefix || getCGQualityPrefix(db) || '';
+        const built = await buildSpecImagePrompt({
+          imagePrompt: rawVideoPrompt,
+          genMode: (getImageSettings(db) || {}).gen_mode || DEFAULT_GEN_MODE,
+          qualityPrefix: videoPrefix,
+          conversationId: conversation_id,
+          cardName: o.card_name || '',
+          kind: 'video',
+        });
+        prompt = built.prompt;
+        source = 'video-prompt';
+      }
+      if (!prompt) { console.log('[VideoGen] skipped - 加工后提示词为空'); return; }
+
+      console.log('[VideoGen] 下发 → /api/images/generate-video | 条件="%s" | 提示词来源=%s | len=%d | HEAD: %s',
+        v.trigger, source, prompt.length, prompt.slice(0, 120).replace(/\n/g, '\\n'));
+
+      const r = await fetch(`${BASE_URL}/api/images/generate-video`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          prefixed: true,   // 提示词已由上面加工完毕（含画质前缀），服务端别再叠一层
+          character_name: o.character_name || 'video',
+          conversation_id,
+          source: o.source || source,
+        })
+      });
+      if (!r.ok) console.error('[VideoGen] HTTP', r.status);
+      else console.log('[VideoGen] 已下发（服务端异步生成，完成后写进 video_gallery.json，前端轮询到就会播）');
+    })().catch(e => console.error('[VideoGen] trigger failed:', e && e.message));
+    return true;
+  }
+
+  /**
    * NSFW 流程结束空镜（scene_only）。
    *
    * 管家判定「本轮剧情已经离开 NSFW 场景」时，在 CG 生图流程【之后】补一张
@@ -6866,7 +7143,9 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
         return;
       }
       console.log('[Image] NSFW 结束空镜已下发 — 复位 nsfw_active');
-      try { db.prepare('UPDATE conversations SET nsfw_active = 0 WHERE id = ?').run(conversation_id); } catch { }
+      // 顺手把 Roll 停判用的 nsfw_hold 也复位：图片流程都收尾了，剧情显然已离开该场景
+      // （正常路径上管家的 nsfwEnd 已复位过，这里是双保险，避免停判卡住）。
+      try { db.prepare('UPDATE conversations SET nsfw_active = 0, nsfw_hold = 0 WHERE id = ?').run(conversation_id); } catch { }
     }).catch(e => {
       console.error('[Image] NSFW 结束空镜 failed:', e.message, '— 保持 nsfw_active=1，下一轮可重试');
     });
@@ -6910,6 +7189,9 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
     }
     if (hasCG) {
       painterInput += `【管家AI的CG指令】\ntriggerImage: ${butlerResult.triggerImage}\nimagePrompt: ${butlerResult.imagePrompt}\n\n`;
+      // 视频指令一并交给画家（画家只做 tag 级修正，无权改变要不要生成）。
+      // 管家没开视频时也照样带一行，让画家的 JSON 契约保持恒定形状（缺字段比错字段更难查）。
+      painterInput += `【管家AI的视频指令】\ntriggerVideo: ${butlerResult.triggerVideo || false}\nvideoPrompt: ${butlerResult.videoPrompt || ''}\n\n`;
     }
     // === 角色登场判定：首次登场的角色要额外产出一张登场 CG（half_body + 当前场景） ===
     // 判定由代码算出（当前存档名册没有真实头像 = 首次登场），画家只负责把提示词写出来。
@@ -6997,11 +7279,11 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
     if (!painterContent) {
       console.error('[Painter] All retries failed:', lastError?.message);
       // Fallback: return butler's data as-is
-      return { portrait: butlerResult.portrait || null, triggerImage: butlerResult.triggerImage || false, imagePrompt: butlerResult.imagePrompt || '', debutImagePrompt: null };
+      return { portrait: butlerResult.portrait || null, triggerImage: butlerResult.triggerImage || false, imagePrompt: butlerResult.imagePrompt || '', debutImagePrompt: null, triggerVideo: butlerResult.triggerVideo || false, videoPrompt: butlerResult.videoPrompt || '' };
     }
 
     // Parse JSON result
-    let painterResult = { portrait: null, triggerImage: false, imagePrompt: '', debutImagePrompt: null };
+    let painterResult = { portrait: null, triggerImage: false, imagePrompt: '', debutImagePrompt: null, triggerVideo: false, videoPrompt: '' };
     try {
       const jm = painterContent.match(/\{[\s\S]*\}/);
       if (jm) {
@@ -7042,7 +7324,9 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
     // (a debut-only painter answer — no portrait/triggerImage but a debutImagePrompt — must survive)
     if (!painterResult.portrait && !painterResult.triggerImage && !painterResult.debutImagePrompt) {
       console.log('[Painter] Painter returned no data, using butler result as-is');
-      return { portrait: butlerResult.portrait || null, triggerImage: butlerResult.triggerImage || false, imagePrompt: butlerResult.imagePrompt || '', debutImagePrompt: null };
+      // ⚠️ 这里的 fallback 必须与上面那处**完全对称**：少带一个字段，
+      //    画家的输出就会把管家的决定静默抹掉（§42 的教训：漏一处 = 功能无声失效）。
+      return { portrait: butlerResult.portrait || null, triggerImage: butlerResult.triggerImage || false, imagePrompt: butlerResult.imagePrompt || '', debutImagePrompt: null, triggerVideo: butlerResult.triggerVideo || false, videoPrompt: butlerResult.videoPrompt || '' };
     }
 
     // === Code-level filter: remove protagonist from painter's portrait output ===
@@ -7064,7 +7348,8 @@ A close-up scene in a candlelit bedroom, the girl filling most of the frame whil
     } catch (filterErr) { console.warn('[Painter] Protagonist filter error:', filterErr.message); }
 
     console.log('[Painter] Done: portrait=', !!painterResult.portrait, 'triggerImage=', painterResult.triggerImage,
-      'imagePrompt len:', painterResult.imagePrompt?.length || 0);
+      'imagePrompt len:', painterResult.imagePrompt?.length || 0,
+      '| triggerVideo=', painterResult.triggerVideo, 'videoPrompt len:', (painterResult.videoPrompt || '').length);
 
     return painterResult;
   }

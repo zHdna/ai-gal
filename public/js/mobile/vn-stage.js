@@ -702,6 +702,29 @@
         regenCg.innerHTML = old;
       });
     });
+
+    /* ③ 重新生成视频：复用 app.js 的 regenVideo()（读视频画廊最新一条的提示词重发）。
+          视频是**追加**不是覆盖，所以提示语与重画 CG 不同。 */
+    var regenVid = $('#vnBtnRegenVid');
+    if (regenVid) regenVid.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (typeof window.regenVideo !== 'function') {
+        VN.shell && VN.shell.toast && VN.shell.toast('当前界面不支持重画视频');
+        return;
+      }
+      if (regenVid.disabled) return;
+      regenVid.disabled = true;
+      var old = regenVid.innerHTML;
+      regenVid.innerHTML = '⟳ 提交中';
+      Promise.resolve(window.regenVideo()).then(function () {
+        /* 提示与轮询节拍都由 regenVideo() 内部处理 */
+      }).catch(function (err) {
+        VN.shell && VN.shell.toast && VN.shell.toast('重画视频失败：' + (err && err.message ? err.message : err));
+      }).then(function () {
+        regenVid.disabled = false;
+        regenVid.innerHTML = old;
+      });
+    });
   }
 
   function setStreaming(on) {

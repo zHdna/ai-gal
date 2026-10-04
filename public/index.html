@@ -28,7 +28,7 @@
     })();
   </script>
   -->
-  <link rel="stylesheet" href="css/ai-gal-redesign.css?v=20261004a">
+  <link rel="stylesheet" href="css/ai-gal-redesign.css?v=20261004x">
   <link rel="stylesheet" href="css/theater-enhance.css">
   <style>
     #btnTTSStop {
@@ -224,7 +224,7 @@
       }
     }
   </style>
-  <link rel="stylesheet" href="css/desktop/vn.css?v=20261004a">
+  <link rel="stylesheet" href="css/desktop/vn.css?v=20261004x">
 </head>
 
 <body>
@@ -369,6 +369,9 @@
         <div class="stage" id="stage">
           <div class="art-frame" id="artFrame">
             <img class="cg" id="cgImg" data-empty="1" alt="当前画面 CG">
+            <!-- 视频「放大为背景」层：铺满舞台、盖在 CG 之上。默认 hidden，
+                 .app.vid-bg 时显形并让 #cgImg 让位（见 desktop/vn.css）。 -->
+            <div class="stage-video" id="stageVideo" data-vidact="restore" title="点一下回到小窗" hidden></div>
             <span class="corner tl"></span><span class="corner tr"></span>
             <span class="corner bl"></span><span class="corner br"></span>
             <div class="chip chip-loc"><i></i>北岭 · 观星台 · 雪线<span class="t">深夜 23:40</span></div>
@@ -413,6 +416,7 @@
                ⚠ 它只负责开关，弹窗本体 .dock 仍是右下角绝对定位，位置不随按钮走。 -->
           <span class="dlg-actions">
             <button class="tool tip" id="btnRegenCg" data-tip="重新生成当前 CG（对画面不满意时用）">↻ 重画CG</button>
+            <button class="tool tip" id="btnRegenVid" data-tip="重新生成视频（把上一条视频的提示词重发一次；视频较慢，约数分钟）">↻ 重画视频</button>
             <button class="tool tip" id="btnTtsToggle" data-tip="语音朗读">▷ 语音</button>
             <button class="tool tip" id="fabData" data-tip="数据中心（D）· 打开后可继续游戏">▤ 数据中心</button>
             <button class="tool tip" id="btnHideUI" data-tip="隐藏界面，只看画面（H）">⛶ 隐藏UI</button>
@@ -460,12 +464,49 @@
         </div>
       </div>
 
-      <!-- 右下：预留位（原玩家头像槽的位置）。
-           刻意留空，但占住同宽的一列，主对话框才不会被撑宽；
-           以后要在这块放新 UI，直接把内容塞进这个容器即可。 -->
-      <div class="right-slot" id="rightSlot" aria-hidden="true"></div>
+      <!-- 右下：视频端口（原玩家头像槽的位置）。与左侧头像框 #avL 严格对称：
+           同宽（--av）、同 1:1 比例、同描边与圆角，主对话框因此不会被撑宽。
+           小窗骨架**静态写在这里**，不交给外壳 JS 重建 DOM（§34 的系统性风险）；
+           播放器元素（<video> 或 <img>）由 app.js 的 __videoWindow 运行时插入 #vidBox。
+           「设置 → 视频生成」关闭时整个 #vidSlot 带 hidden，本列退回空占位列。 -->
+      <div class="right-slot" id="rightSlot">
+        <div class="vid-slot" id="vidSlot" hidden>
+          <!-- 上缘按钮条：折叠 / 放大为背景（CG 位置）/ 弹出悬浮窗播放。
+               全部按钮带 data-vidact，由 app.js 的**单一** document 级委托处理 ——
+               多宿主各自绑定会有"同一按钮被处理两遍"的隐患（见 app.js 的注释）。 -->
+          <div class="vid-bar" id="vidBar">
+            <button class="vb" data-vidact="collapse" title="折叠小窗" aria-label="折叠小窗">▾</button>
+            <button class="vb" data-vidact="stage" title="放大为背景（CG 位置）" aria-label="放大为背景">⛶</button>
+            <button class="vb" data-vidact="pop" title="弹出悬浮窗播放" aria-label="弹出悬浮窗播放">⧉</button>
+          </div>
+          <div class="vid-box" id="vidBox"></div>
+          <div class="vid-empty" id="vidEmpty">等待视频…</div>
+          <!-- 下缘播放控制条：暂停 / 播放 + 声音开关 + 音量 -->
+          <div class="vid-ctl" id="vidCtl">
+            <button class="vb" data-vidact="play" title="暂停" aria-label="暂停">⏸</button>
+            <button class="vb" data-vidact="sound" title="开启声音" aria-label="声音开关">🔇</button>
+            <input class="vb-vol" type="range" min="0" max="100" value="70" data-vidvol aria-label="音量">
+          </div>
+        </div>
+      </div>
     </div>
       </div>
+    </div>
+
+    <!-- ===================== 视频悬浮窗（弹出播放 · 非模态） ===================== -->
+    <!-- 与 .dock 平级：都挂在舞台之外，避免被 .bottom 的层叠上下文压住。
+         恢复 = 回到右下角小窗；全屏 = 对 #vidFloatStage 调 requestFullscreen()。 -->
+    <div class="vid-float" id="vidFloat" hidden>
+      <div class="vf-head" id="vidFloatHead">
+        <span class="vf-title">视频</span>
+        <button class="vb" data-vidact="play" title="暂停" aria-label="暂停">⏸</button>
+        <button class="vb" data-vidact="sound" title="开启声音" aria-label="声音开关">🔇</button>
+        <input class="vb-vol" type="range" min="0" max="100" value="70" data-vidvol aria-label="音量">
+        <span class="spacer"></span>
+        <button class="vb" data-vidact="restore" title="恢复到小窗" aria-label="恢复到小窗">⤡ 恢复</button>
+        <button class="vb" data-vidact="fs" title="全屏播放" aria-label="全屏播放">⛶ 全屏</button>
+      </div>
+      <div class="vf-stage" id="vidFloatStage"></div>
     </div>
 
     <!-- ===================== 数据中心（右下方悬浮窗 · 非模态） ===================== -->
@@ -1447,6 +1488,7 @@ confidence = 0.88</pre>
           <nav class="settings-nav" id="settingsNav">
             <button class="settings-nav-btn on" data-pane="ai"><span class="sn-ic">🔌</span><span class="sn-tx"><b>AI 与供应商</b><small>主 / 管家 / 画家 · 接口</small></span></button>
             <button class="settings-nav-btn" data-pane="image"><span class="sn-ic">🎨</span><span class="sn-tx"><b>图像生成</b><small>画风 · 供应商 · 参数</small></span></button>
+            <button class="settings-nav-btn" data-pane="video"><span class="sn-ic">🎬</span><span class="sn-tx"><b>视频生成</b><small>生图的辅助 · 触发条件</small></span></button>
             <button class="settings-nav-btn" data-pane="look"><span class="sn-ic">🎛</span><span class="sn-tx"><b>外观与界面</b><small>主题 · 移动端</small></span></button>
             <button class="settings-nav-btn" data-pane="memory"><span class="sn-ic">🧠</span><span class="sn-tx"><b>记忆表格</b><small>注入间隔 · 忽略提示</small></span></button>
           </nav>
@@ -1514,10 +1556,12 @@ confidence = 0.88</pre>
               <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
                 开启后，每个行动选项会显示成功率；你做出选择时由<strong>系统掷骰裁定成败</strong>，
                 再按结果生成剧情（AI 无法自行改写判定）。<br>
-                掷骰规则：D100（1-100），<strong>1-5 大失败、96-100 大成功</strong>；
+                掷骰规则：D100（1-100），<strong>1-3 大失败、96-100 大成功</strong>；
                 其余按选项的成功率判定（如 75% → 掷出 26~100 即成功）；
-                未标注成功率的选项按默认档 50%；<strong>你手动输入的行动按 75% 加成判定</strong>。<br>
-                <span style="opacity:.75">骰值不在主界面显示（保持沉浸感）—— 想核对可在「调试」面板看到真实点数。</span>
+                未标注成功率的选项按默认档 <strong>75%</strong>（与你手动输入的行动同档）。<br>
+                每轮选项里<strong>至少有一项是绿色（≥80%）</strong>，给你留一条稳妥的路。<br>
+                <span style="opacity:.75">剧情进入 <strong>NSFW 场景</strong>期间会<strong>暂停判定</strong>（不掷骰、不干预剧情），
+                退出该场景后自动恢复；骰值不在主界面显示（保持沉浸感）—— 想核对可在「调试」面板看到真实点数。</span>
               </div>
             </div>
             <div class="form-group">
@@ -1593,6 +1637,14 @@ confidence = 0.88</pre>
           <section class="settings-section">
             <h4>图像生成</h4>
             <div id="imageSettings"></div>
+          </section>
+        </section>
+
+        <!-- ============ 视频生成（生图的辅助） ============ -->
+        <section class="settings-pane" data-pane="video">
+          <section class="settings-section">
+            <h4>视频生成</h4>
+            <div id="videoSettings"></div>
           </section>
         </section>
 
@@ -1696,6 +1748,9 @@ confidence = 0.88</pre>
         <hr>
         <h4>图像生成</h4>
         <div id="imageGenSettings"></div>
+        <hr>
+        <h4>视频生成（生图的辅助）</h4>
+        <div id="videoGenSettings"></div>
       </div>
     </div>
   </div>
@@ -2245,9 +2300,9 @@ confidence = 0.88</pre>
 
   <input type="file" id="characterFileInput" accept=".json,.png" style="display:none">
 
-  <script src="js/api.js?v=20260923c"></script>
+  <script src="js/api.js?v=20261004x"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20261004a"></script>
+  <script src="js/app.js?v=20261004x"></script>
   <script>
     // === Theater Enhancement: UI Logic ===
     (function () {
@@ -2325,7 +2380,7 @@ confidence = 0.88</pre>
     <div id="ttsListPopupBody" class="tts-list-popup-body"></div>
   </div>
   <script src="js/card-studio.js?v=3"></script>
-  <script src="js/desktop/vn-shell.js?v=20261004a"></script>
+  <script src="js/desktop/vn-shell.js?v=20261004x"></script>
 </body>
 
 </html>
