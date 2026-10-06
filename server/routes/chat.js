@@ -3603,6 +3603,19 @@ module.exports = (db) => {
     const imgSettings = getImageSettings(db);
     const genMode = imgSettings.gen_mode || 'tag';
 
+    // --- Roll 点：本轮是否处于 NSFW 停判 ---
+    // ⚠️ 这段必须与 resolveTurnJudgement 的停判判据**完全一致**，否则会出现
+    //    "判定已停、提示词却仍要求按掷骰结果写" 的矛盾 —— AI 拿不到【行动判定】块，
+    //    却被要求"不要预先写好结果"，于是反复纠结（用户 2026-10-07 实测）。
+    //    停判期间改为明确告知：本场景行动一律成功，正常推进剧情即可。
+    const rollNsfwHold = (function () {
+      try {
+        const row = db.prepare("SELECT value FROM app_settings WHERE key = 'roll_enabled'").get();
+        if (row && String(row.value) === 'false') return false;   // 开关关闭时本就不该提升级说明
+      } catch (e) { /* 读不到按开启处理 */ }
+      return isNsfwSceneActive(conv && conv.id);
+    })();
+
     // 0. 主 AI 预设提示词 —— 插在最前，形成「预设提示词 → 现有系统提示词 → 角色卡」的加载顺序。
     //    预设行来自 app_settings.main_ai_preset_id → api_presets.data.system_prompts（导入 ST 预设时
     //    由前端 parseSTPresetData 提取）。只取 enabled !== false 的条目，按数组原顺序拼接。
@@ -3719,7 +3732,17 @@ ${ui.requiresStatus ? '### status\n（末尾输出{{user}}状态，属性名: �
     }
 
 ### actions
-- 在 ### summarize 之前，提供2-4个行动选项供{{user}}选择。格式为每行一个"选项内容【成功率 N%】"。你的输出在 ### summarize 后应立即停止，不要在 ### actions 后继续编写剧情或替{{user}}做出选择。
+${rollNsfwHold ? `- 在 ### summarize 之前，提供2-4个行动选项供{{user}}选择。格式为每行一个"选项内容【成功率 N%】"。你的输出在 ### summarize 后应立即停止，不要在 ### actions 后继续编写剧情或替{{user}}做出选择。
+- ⚠️【本场景为亲密/NSFW 场景 —— 行动一律成功，不做任何判定】
+  · 系统在本场景期间**不会掷骰、也不会给你任何【行动判定】结果**。
+  · 因此你**不需要**等待、猜测或推算任何判定，{{user}}的行动**全部直接成功**，顺着当下气氛自然推进即可。
+  · 仍然要标注【成功率 N%】（格式照旧，供退出场景后恢复判定使用），但**本场景内它不起作用**，
+    所以一律按"顺势、易成"来给值（建议 85~95），**不要**给出低成功率。
+  · 严格禁止在正文里写"判定失败""行动没成功""尝试未果"这类内容 —— 本场景不存在失败。
+- 示例：
+  --1、顺着她的节奏吻下去【成功率 90%】
+  --2、低声说出那句话【成功率 90%】
+  --3、先抱紧她不再多话【成功率 90%】` : `- 在 ### summarize 之前，提供2-4个行动选项供{{user}}选择。格式为每行一个"选项内容【成功率 N%】"。你的输出在 ### summarize 后应立即停止，不要在 ### actions 后继续编写剧情或替{{user}}做出选择。
 - ⚠️【成功率是必填项】每个行动选项都必须在行尾标注【成功率 N%】，N 取 5-95 的整数：
   · 按**该行动在当前情境下的合理难度**给值，不要都给同一个数；
   · 顺手的小事（拿杯水、走两步）75~95%；需要技巧/运气的事 45~75%；冒险、硬闯、以弱敌强 5~40%。
@@ -3733,7 +3756,7 @@ ${ui.requiresStatus ? '### status\n（末尾输出{{user}}状态，属性名: �
 - 示例：
   --1、悄悄撬开窗户潜入【成功率 55%】
   --2、直接正面交涉【成功率 70%】
-  --3、先观察四周动静【成功率 90%】
+  --3、先观察四周动静【成功率 90%】`}
 
 ### summarize
  每轮末尾输出一句话剧情总结：时间 | 地点 | 人物 | 当前事件摘要`);
@@ -5164,9 +5187,7 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
 — ⚠️【成功率是必填项】每个选项都必须在行尾带【成功率 N%】（N 取 5-95 整数），
   按该行动在当前情境下的合理难度给值，**不要都给同一个数**。
   若主AI原文的选项缺少成功率，你必须补上；若已有则保留原值，不要改动。
-— ⚠️【每轮至少要留一条「绿色行动」】补全后必须保证 2-4 个选项里**至少有一项成功率 ≥ 80%**。
-  若主AI给的选项**全部都低于 80%**，把其中**最稳妥、风险最低的那一项**提到 80~95%（**只调这一项**，
-  其余保持原值不动），让玩家至少有一个"大概率能成"的选择。
+__NSFW_ACTION_RULE__
 
 6. 【### mood 补全检查】
 — 缺失时从 nomal/battle/blue/ceremony/relaxed/suspense 中选择最匹配的
@@ -5338,8 +5359,29 @@ portrait处理逻辑：
 
   // Build the butler system prompt, conditionally dropping the forced ### status
   // block for MVU / non-status cards so the butler doesn't invent a status section.
-  function buildButlerFormatSys(requiresStatus) {
+  function buildButlerFormatSys(requiresStatus, conversationId) {
     let sys = BUTLER_FORMAT_SYS;
+
+    // ── NSFW 场景期间：行动一律成功，成功率不再起作用 ──────────────────────
+    // 与主 AI 提示词（buildSystemPrompt 的 ### actions 段）保持同一判据，
+    // 否则管家仍会按"难度"去压低成功率、还可能去改主AI已写好的值，
+    // 与主AI那边"建议 85~95、不必纠结难度"相互矛盾。
+    // ⚠️ BUTLER_FORMAT_SYS 是启动时求值的常量，装不下会话状态，所以用占位符在此处替换。
+    try {
+      const nsfwHold = isNsfwSceneActive(conversationId);
+      const rule = nsfwHold
+        ? '— ⚠️【当前为亲密/NSFW 场景 —— 成功率不起作用】本场景系统**不掷骰判定**，行动一律成功。\n' +
+          '  你只需保证格式合规即可：缺失就补 85~95 的整数，**不必**纠结难度、**不必**强求某一项 ≥ 80%，\n' +
+          '  也**不要**因为"想给玩家一条稳妥路"而去改主AI已经写好的数值。'
+        : '— ⚠️【每轮至少要留一条「绿色行动」】补全后必须保证 2-4 个选项里**至少有一项成功率 ≥ 80%**。\n' +
+          '  若主AI给的选项**全部都低于 80%**，把其中**最稳妥、风险最低的那一项**提到 80~95%（**只调这一项**，\n' +
+          '  其余保持原值不动），让玩家至少有一个"大概率能成"的选择。';
+      sys = sys.replace('__NSFW_ACTION_RULE__', rule);
+    } catch (e) {
+      sys = sys.replace('__NSFW_ACTION_RULE__',
+        '— ⚠️【每轮至少要留一条「绿色行动」】2-4 个选项里**至少有一项成功率 ≥ 80%**。');
+    }
+
     if (!requiresStatus) {
       sys = sys
         .replace(/、### status、/g, '、')
@@ -6445,10 +6487,10 @@ if (isPureNaturalGenMode(cgGenMode)) {
     // 失败由下面的 parseFailed 显式标记，并由 /stream 如实告知用户。
     let formatResult = { mood: '', actions: [], portrait: null, cg: null, triggerImage: false, imagePrompt: '', fixedText: '', status: {}, triggerVideo: false, videoPrompt: '' };
     const ui = getCharUIHints(character);
-    let butlerSystemContent = buildButlerFormatSys(ui.requiresStatus);
+    let butlerSystemContent = buildButlerFormatSys(ui.requiresStatus, conversation_id);
     try {
       // Build butler system prompt: base + preset system prompts (if any) + gen_mode instructions
-      butlerSystemContent = buildButlerFormatSys(ui.requiresStatus);
+      butlerSystemContent = buildButlerFormatSys(ui.requiresStatus, conversation_id);
       // Inject gen_mode-specific CG instruction (mutually exclusive — only ONE mode's
       // instructions are present, so the tag-mode CSV rules can NEVER appear alongside
       // the natural-mode prose rules, and vice-versa. Switched by image_settings.gen_mode.)
