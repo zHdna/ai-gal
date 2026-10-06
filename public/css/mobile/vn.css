@@ -3015,3 +3015,65 @@ button {
   aspect-ratio: auto;
   background: #000;
 }
+
+
+/* ── 回顾：按轮次分组 + 每轮删除（2026-10-03）───────────────────────────────
+   与桌面「回顾」一致：一轮 = 玩家发言 + AI 回复，轮头带「第 N 轮」和删除按钮。
+   删除语义 = 从该轮起截断（后端 /api/messages/truncate-from-round）。 */
+
+.vn-hist-round {
+  margin-bottom: 12px;
+  padding: 6px 6px 2px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, .02);
+}
+
+.vn-hist-round.on {
+  border-color: rgba(126, 178, 255, .35);
+  background: rgba(126, 178, 255, .06);
+}
+
+.vn-hist-rhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 6px 6px;
+}
+
+.vn-hist-rhead .rno {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: var(--gold);
+  font-family: var(--font-serif);
+}
+
+/* 删除按钮：危险操作用暖红，但不用大红色块（避免在深色主题里太刺眼） */
+.vn-hist-del {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(224, 85, 90, .45);
+  background: rgba(224, 85, 90, .10);
+  color: #e8777b;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vn-hist-del:active {
+  background: rgba(224, 85, 90, .22);
+}
+
+.vn-hist-del[disabled] {
+  opacity: .45;
+  cursor: default;
+}
+
+/* 组内的条目去掉重复的外边距（间距由 .vn-hist-round 承担） */
+.vn-hist-round .vn-hist-item {
+  margin-bottom: 6px;
+}

@@ -915,25 +915,116 @@
     if (title) title.textContent = '历史记录' + (blocks.length ? '（' + blocks.length + ' 条）' : '');
     if (!blocks.length) {
       body.innerHTML = '<div class="vn-empty">还没有历史记录。</div>';
-    } else {
-      // 最新的排在最上面，方便就近回看
-      var html = '';
-      blocks.slice().reverse().forEach(function (b) {
-        var on = S.reviewBlockId ? (S.reviewBlockId === b.id)
-          : (b.id === S.lastBlockId);
-        html += '<button class="vn-hist-item' + (b.isUser ? ' me' : '') + (on ? ' on' : '') + '" data-block="' + esc(b.id) + '">' +
+      sheet.classList.add('show');
+      $('#vnScrim').classList.add('show');
+      return;
+    }
+
+    /* 按**轮次**分组（与桌面「回顾」一致）：
+       一轮 = 玩家的发言 + AI 的回复。轮号取自 story-block 的 data-round，
+       与 /hide N 同源（app.js 在每条 user 消息上让 roundCounter +1，assistant 沿用同一值）。
+       以前这里是一行一条消息，看不出"哪一轮"，也没法按轮删除。 */
+    var order = [], byRound = {};
+    blocks.forEach(function (b) {
+      var r = String(b.round || '0');
+      if (!byRound[r]) { byRound[r] = []; order.push(r); }
+      byRound[r].push(b);
+    });
+    // 轮次倒序（最新在上，就近回看）
+    order.sort(function (a, b) { return (parseInt(b, 10) || 0) - (parseInt(a, 10) || 0); });
+
+    var maxRound = order.reduce(function (m, r) { return Math.max(m, parseInt(r, 10) || 0); }, 0);
+    var html = '';
+    order.forEach(function (r) {
+      var group = byRound[r];
+      var rn = parseInt(r, 10) || 0;
+      var on = false;
+      group.forEach(function (b) { if (S.reviewBlockId ? S.reviewBlockId === b.id : b.id === S.lastBlockId) on = true; });
+      var head = rn ? ('第 ' + rn + ' 轮') : '开场';
+      html += '<div class="vn-hist-round' + (on ? ' on' : '') + '" data-round="' + esc(r) + '">';
+      html += '<div class="vn-hist-rhead">' +
+        '<span class="rno">' + esc(head) + '</span>' +
+        (rn >= 1 ? '<button class="vn-hist-del" data-round="' + esc(r) + '" type="button">🗑 删除</button>' : '') +
+        '</div>';
+      group.forEach(function (b) {
+        html += '<button class="vn-hist-item' + (b.isUser ? ' me' : '') + '" data-block="' + esc(b.id) + '">' +
           '<span class="who">' + esc(b.name) + '</span>' +
           '<span class="txt">' + (b.isUser ? '' : '<span class="narr">') + esc(b.summary || '（无文本）') + (b.isUser ? '' : '</span>') + '</span>' +
-          '<span class="seq">' + (b.round ? ('#' + b.round) : '') + '</span>' +
           '</button>';
       });
-      body.innerHTML = html;
-      $$('.vn-hist-item', body).forEach(function (el) {
-        el.addEventListener('click', function () { jumpToBlock(el.dataset.block); });
+      html += '</div>';
+    });
+    body.innerHTML = html;
+
+    // 点条目 → 跳到那一段
+    $$('.vn-hist-item', body).forEach(function (el) {
+      el.addEventListener('click', function () { jumpToBlock(el.dataset.block); });
+    });
+    // 点删除 → 从该轮起截断（与桌面行为一致）
+    $$('.vn-hist-del', body).forEach(function (el) {
+      el.addEventListener('click', function (e) {
+        e.stopPropagation();
+        deleteFromRound(el.dataset.round, el);
       });
-    }
+    });
+
     sheet.classList.add('show');
     $('#vnScrim').classList.add('show');
+  }
+
+  /**
+   * 从第 N 轮起截断（与桌面「回顾」的 🗑 完全一致）。
+   *
+   * 交给**后端**做：消息区是分页渲染的，前端没有全量数据，
+   * 本地推算"第 N 轮之后"会算错（见 AGENTS §38）。
+   * 后端按 rowid 顺序一次删净，并同步清理记忆表格对应轮次。
+   */
+  function deleteFromRound(round, btnEl) {
+    var target = parseInt(round, 10);
+    if (!isFinite(target) || target < 1) return;
+    var convId = (window.AppState && window.AppState.currentConversation &&
+      window.AppState.currentConversation.id) || '';
+    if (!convId) { if (VN.shell && VN.shell.toast) VN.shell.toast('没有活跃的对话'); return; }
+
+    var totalRounds = Object.keys((function () {
+      var m = {}, bs = listBlocks();
+      bs.forEach(function (b) { if (b.round) m[b.round] = 1; });
+      return m;
+    })()).length;
+    var victims = Math.max(0, totalRounds - target + 1);
+
+    var msg = '将从第 ' + target + ' 轮起截断剧情。\n\n' +
+      '· 删除第 ' + target + '~' + totalRounds + ' 轮的全部内容（共 ' + victims + ' 轮：玩家发言 + AI 回复）\n' +
+      '· 记忆表格里第 ' + target + '~' + totalRounds + ' 轮的记录一并删除\n' +
+      '· 之后你将从第 ' + target + ' 轮重新开始\n\n' +
+      '此操作不可撤销，确定继续吗？';
+    if (!confirm(msg)) return;
+
+    if (btnEl) btnEl.disabled = true;
+    fetch('/api/messages/truncate-from-round', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversation_id: convId, round: target })
+    }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (info) {
+      if (VN.shell && VN.shell.toast) {
+        VN.shell.toast('已从第 ' + target + ' 轮截断，删除 ' + (info.deleted || 0) + ' 条内容');
+      }
+      // 重新拉取消息并重建（轮号、分页回到一致状态）
+      var done = function () {
+        if (VN.closeHistory) VN.closeHistory();
+        if (S.reviewBlockId) S.reviewBlockId = null;
+        try { syncFromDom(true); } catch (e) { /* 非关键 */ }
+      };
+      if (typeof window.loadConversation === 'function' && window.AppState && window.AppState.currentConversation) {
+        window.loadConversation(window.AppState.currentConversation.id).then(done, done);
+      } else { done(); }
+    }).catch(function (err) {
+      if (btnEl) btnEl.disabled = false;
+      if (VN.shell && VN.shell.toast) VN.shell.toast('删除失败：' + (err && err.message ? err.message : err));
+    });
   }
 
   function esc(s) {
