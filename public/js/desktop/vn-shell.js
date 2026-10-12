@@ -2582,6 +2582,16 @@
   });
   on(byId('menuTtsSys'), 'click', function () { closeMenu(); var t = byId('btnTTS'); t ? t.click() : toast('TTS 设置不可用'); });
 
+  /* 桌面 → 移动端：切到 mobile.html（手机竖屏界面）。
+     switchToMobile() 由 app.js 提供（会顺手清掉 forceDesktop 偏好并带上当前对话 id），
+     缺失时退回直接跳转。移动端顶栏自带「切换到普通版（桌面）」可切回。 */
+  on(byId('menuSwitchMobile'), 'click', function () {
+    closeMenu();
+    if (typeof window.switchToMobile === 'function') { window.switchToMobile(); return; }
+    var id = (App && App.currentConversation && App.currentConversation.id) || '';
+    location.href = 'mobile.html' + (id ? ('?conv=' + encodeURIComponent(id)) : '');
+  });
+
   on(byId('btnTheme'), 'click', function () { setTheme(themeMode === 'light' ? 'dark' : 'light'); });
   on(byId('btnHideUI'), 'click', function () { setHideUI(!app.classList.contains('ui-gone')); });
 

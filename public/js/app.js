@@ -446,6 +446,11 @@ async function loadInitialData() {
     // 视频端口（小视频窗口）：绑定一次，再按设置同步显示/隐藏
     initVideoWindow();
     syncVideoWindowEnabled();
+    // Roll 点开关：启动时就从后端同步一次。
+    // ⚠️ 以前只有"打开设置弹窗"才会读 roll_enabled（见 populateAIProviderSelectors），
+    //    于是刷新页面后前端永远停在默认值 true —— 即使库里已是 false，
+    //    选项徽章/成功率灯照样渲染，"看起来开关没生效"。
+    await syncRollEnabledFromServer();
     } catch (err) {
       console.error('[Init] 加载初始数据失败:', err);
       showToast('加载数据失败，请刷新重试', 'error');
@@ -2914,10 +2919,23 @@ function rerenderActionBadges() {
   });
 }
 
-/** Roll 点开关（默认开启）。由 loadRollSettings() 从后端同步；关闭时前端不渲染徽章。 */
+/** Roll 点开关（默认开启）。由 syncRollEnabledFromServer() 从后端同步；关闭时前端不渲染徽章。 */
 let ROLL_ENABLED = true;
 function isRollEnabled() { return ROLL_ENABLED !== false; }
 function setRollEnabled(on) { ROLL_ENABLED = !!on; }
+
+/**
+ * 从后端读回 roll_enabled 并同步到内存开关（默认开启：读不到一律按开启）。
+ *
+ * 必须在**页面启动时**调用一次（loadInitialData），不能只依赖设置弹窗里的那次读取 ——
+ * 否则刷新后前端仍按默认值 true 渲染徽章，与库里的实际设置脱节。
+ */
+async function syncRollEnabledFromServer() {
+  try {
+    const settings = await ThemeAPI.getSettings();
+    setRollEnabled(settings.roll_enabled !== 'false');
+  } catch (e) { /* 读不到 → 保持默认开启 */ }
+}
 
 /**
  * Roll 点：成功率灯（按档位染色的小圆点，放在选项按钮末尾）。
@@ -3061,7 +3079,8 @@ function renderDialogueBlock(seg, side) {
   const name = seg.name || '角色';
   // 情绪标签( seg.mood )仅用于 TTS 语气生成，不在前端展示，避免过长描述影响视觉效果
   const imgPlaceholders = [];
-  const safeDialogue = extractMarkdownImages(seg.text || '', imgPlaceholders);
+  // 对话里同样可能混进机制标签（实测 <NSFW_END/> 就落在对白与情节之间）
+  const safeDialogue = extractMarkdownImages(stripUiTags(seg.text || ''), imgPlaceholders);
   let text = escapeHtml(safeDialogue)
     .replace(/（([^）]+)）/g, '<em class="paren-italic">（$1）</em>')
     .replace(/\(([^)]+)\)/g, '<em class="paren-italic">($1)</em>');
@@ -3340,7 +3359,7 @@ function formatGalGameText(text) {
     segments.push({
       type: 'dialogue',
       speaker: effectiveSpeaker,
-      text: escapeHtml(dialogueText)
+      text: escapeHtml(stripUiTags(dialogueText))
         .replace(/（([^）]+)）/g, '<em class="paren-italic">（$1）</em>')
         .replace(/\(([^)]+)\)/g, '<em class="paren-italic">($1)</em>'),
     });
@@ -3501,7 +3520,62 @@ function renderInlineImages(content) {
   return html;
 }
 
+/**
+ * 面向用户隐藏「机制标签」。
+ *
+ * 背景（2026-10-04，用户报「<nsfw_start> 这类标签显示在主对话框里」）：
+ * 卡/模型会在正文里写 <NSFW_START/>、<NSFW_END/>、<StatusPlaceHolderImpl/> 这类
+ * **只给程序看的标记**。前端是"先转义再排版"，所以它们会原样出现在主人眼前。
+ *
+ * ⚠️ 这里的取舍：
+ *   · **只隐藏显示，不删库、不动上下文** —— 这些标记是卡格式的一部分，模型下一轮还要读回来，
+ *     MVU 的 <UpdateVariable> 更要落库执行、ST 的 <StatusPlaceHolderImpl/> 是状态栏占位符。
+ *     所以只挂在「文本 → 显示 HTML」这一步（formatNarrationText / 对话渲染）。
+ *   · **只删标记本身，绝不删标记之间的正文** —— 有的卡拿 <nsfw_start>…</nsfw_end> 当区间用，
+ *     连内容一起删就等于把剧情吃掉了。
+ *   · 名字白名单刻意收窄：不认识的标签原样保留，宁可漏隐藏也不要误伤正文。
+ */
+
+/** 像"机制标记"的标签名（成对或孤立）。注意：这是**显示层**白名单，不是解析白名单。 */
+const UI_MARKER_NAME_RE = new RegExp(
+  '^(?:' +
+    'nsfw(?:[_-](?:start|end))?' +            // <NSFW_START/> <nsfw_end> <nsfw>
+    '|[a-z0-9]+[_-](?:start|end)' +           // <scene_start> <event_end> 这类区间标记
+    '|status[_-]?current[_-]?variable' +
+    '|statusplace\\w*' +                      // <StatusPlaceHolderImpl/>
+    '|updatevariables?' +                     // MVU / Tavern Helper 的变量块标签
+    '|json[_-]?patch' +
+    '|initvar' +
+    '|samcheckpoint' +
+    '|mvu(?:[_-][a-z0-9]+)*' +
+    '|hud|panel|debug|sys|system' +
+  ')$', 'i');
+
+/** 这些自闭合标签是**正经 HTML**，删了会改变排版，必须留着（虽然当前是转义显示的）。 */
+const HTML_VOID_TAG_RE = /^(?:br|hr|img|input|wbr|source|track|area|col|embed|param|link|meta)$/i;
+
+/**
+ * 去掉正文里的机制标签，只留下剧情本身。
+ * @param {string} text 原始文本（可以含 %%、<!-- --> 等占位符，本函数不碰它们）
+ * @returns {string}
+ */
+function stripUiTags(text) {
+  let s = String(text == null ? '' : text);
+  if (!s || s.indexOf('<') < 0) return s;
+  // 1) 自闭合标记：<NSFW_START/>、<StatusPlaceHolderImpl/>、<foo_bar attr="x" />
+  s = s.replace(/<([A-Za-z][A-Za-z0-9_:.\-]*)(?:\s[^<>\n]{0,300})?\/>/g, (m, name) =>
+    HTML_VOID_TAG_RE.test(name) ? m : '');
+  // 2) 成对 / 孤立标记标签：只删标签，保留其中的正文
+  s = s.replace(/<\/?([A-Za-z][A-Za-z0-9_:.\-]*)\s*\/?>/g, (m, name) =>
+    UI_MARKER_NAME_RE.test(name) ? '' : m);
+  // 3) 标记被摘掉后常留下空行 / 行尾空格，收一收（最多留一个空行）
+  s = s.replace(/[ \t]+(\r?\n)/g, '$1').replace(/(\r?\n){3,}/g, '\n\n');
+  return s;
+}
+
 function formatNarrationText(text) {
+  // Step -1: 先摘掉机制标签（<NSFW_START/> 之类）：它们只给程序看，不该出现在正文里
+  text = stripUiTags(text);
   // Step 0: 分离 <!-- --> 注释块，替换为隐藏的 nowork 标签
   const commentBlocks = [];
   let processed = text.replace(/<!--([\s\S]*?)-->/g, (match, inner) => {
@@ -3650,7 +3724,7 @@ function renderGameNarrationText(text) {
 }
 
 function renderGameDialogue(name, text) {
-  let html = escapeHtml(text)
+  let html = escapeHtml(stripUiTags(text))
     .replace(/（([^）]+)）/g, '<em class="paren-italic">（$1）</em>')
     .replace(/\n/g, '<br>');
   /* 说话人标签同样做「我/你 → 用户名」归一（只动标签，正文 html 不动） */
@@ -5276,12 +5350,16 @@ async function runGenerationTurn(opts = {}) {
       {
         regenerate,
         // Roll 点：只在这两处透传 —— 后端据 roll_from_option 区分"点选项/手动输入"
-        rollFromOption: regenerate ? false : rollFromOption,
-        rollRate: regenerate ? null : rollRate,
+        // 开关关闭时一律不带：不请求判定（后端也会再拦一次，双保险）。
+        rollFromOption: (!isRollEnabled() || regenerate) ? false : rollFromOption,
+        rollRate: (!isRollEnabled() || regenerate) ? null : rollRate,
         onRollResult: (info) => {
           if (isStale()) return;
           // 判定已出：把"故事生成中……"提示条换成上一段的成败。
           // ⚠️ 只显示成败 —— 这里刻意不拿骰值（沉浸感），骰值走 onDone 的 result.roll 进控制台。
+          // ⚠️ 开关关闭时一律不显示：后端本就不该判定，这里再加一道门禁，
+          //    避免"设置里关了、提示条却报成败"这种自相矛盾（也兜住本地缓存了旧设置的情况）。
+          if (!isRollEnabled()) return;
           try { showRollResult(info); } catch (e) { console.warn('[Roll] 结果提示失败:', e); }
         },
         onTurnRemoved: (info) => {

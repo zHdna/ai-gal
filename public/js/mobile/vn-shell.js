@@ -252,11 +252,15 @@
     if (s) s.classList.toggle('show', !!on);
   }
 
-  /* ---------------- 切回桌面版 ---------------- */
+  /* ---------------- 切回桌面版 ----------------
+     注意：**只切这一次**，不写 forceDesktop 偏好。
+     以前这里会 localStorage.setItem('forceDesktop','1')，于是"切回桌面"变成了
+     永久偏好 —— 用户在电脑上想再进移动端就得去设置里手动恢复（与"随时切回"的
+     预期相反）。现在改为一次性跳转：`/` 默认就是桌面版（自动跳转脚本已停用），
+     下次仍可由「菜单 → 切换到移动端」再进来。 */
   function switchToDesktop() {
-    try { localStorage.setItem('forceDesktop', '1'); } catch (e) { }
-    toast('已切换：下次访问直接进入普通版');
-    setTimeout(function () { location.href = '/?desktop=1'; }, 350);
+    toast('正在切换到普通版（桌面）…');
+    setTimeout(function () { location.href = '/'; }, 250);
   }
 
   /* ---------------- 角色 / 存档：复用 app.js 的能力 ---------------- */
