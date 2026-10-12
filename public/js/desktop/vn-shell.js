@@ -2116,10 +2116,23 @@
     //    原因：消息区是**分页渲染**的（默认只挂最新 100 条），AppState/DOM 里
     //    都没有全量消息 —— 本地推算"第 N 轮之后"必然算错（实测漏删/多删）。
     //    后端按 rowid 顺序 + countRounds 同口径一次删净，并同步清理记忆表格。
+    //
+    // ★ 2026-10-12 事故修复：**轮号也必须由后端反推**。
+    //   这里以前传 round（来自 DOM 的 data-round / 本地计数），同样是分页后的值 ——
+    //   70+ 轮的存档里点"第 60 轮"会算成第 40 轮，后端照着截断 → **多删 20 轮**。
+    //   改为优先传 message_id（取该轮任意一个已渲染楼层的 id），后端据此反推权威轮号。
+    var probeId = '';
+    var grp = allBlocks().filter(function (b) {
+      return String(b.dataset.round == null ? '' : b.dataset.round) === String(round);
+    });
+    if (grp.length) probeId = grp[0].dataset.id || '';
+    var payload = { conversation_id: convId };
+    if (probeId) payload.message_id = probeId;
+    else payload.round = target;   // 兜底：拿不到楼层 id 时退回旧的 round 方式
     return fetch('/api/messages/truncate-from-round', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conversation_id: convId, round: target })
+      body: JSON.stringify(payload)
     }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();

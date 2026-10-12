@@ -103,16 +103,43 @@ module.exports = (db) => {
   //   第 k 轮 = 第 k 条 user 消息；assistant 归属于它之前最近的 user 那一轮。
   //   开场白（第一条 user 之前）属于第 0 段，**不在截断范围内**（永远保留）。
   router.post('/truncate-from-round', (req, res) => {
-    const { conversation_id, round } = req.body || {};
-    const target = parseInt(round, 10);
+    const { conversation_id, round, message_id } = req.body || {};
     if (!conversation_id) return res.status(400).json({ error: 'conversation_id required' });
-    if (!Number.isFinite(target) || target < 1) return res.status(400).json({ error: 'round must be >= 1' });
 
     // 按 rowid（真实写入顺序）取全部消息，顺序推算轮次
     const rows = db.prepare(
       'SELECT rowid AS rid, id, role FROM messages WHERE conversation_id = ? ORDER BY rowid'
     ).all(conversation_id);
-    if (!rows.length) return res.json({ deleted: 0, round: target, remainingRounds: 0 });
+    if (!rows.length) return res.json({ deleted: 0, round: parseInt(round, 10) || 1, remainingRounds: 0 });
+
+    // ★ 首选由 message_id 反推轮号（权威，不受前端分页影响）。
+    //
+    // 背景（2026-10-12 用户实测事故）：前端原先自己数"该消息是第几条 user 消息"，
+    // 但它手里只有**分页加载**的部分消息（默认最新 100 条）——
+    // 70+ 轮的存档里，点"第 60 轮"算出来只有第 40 轮 → 从第 40 轮起截断 → **多删 20 轮**。
+    // 后端能看到全量行，反推的轮号才是权威值。
+    let target = NaN;
+    if (message_id) {
+      let n = 0;
+      for (const row of rows) {
+        if (row.role === 'user') n++;
+        if (row.id === message_id) {
+          // assistant 归属它之前最近的那条 user 那一轮；若本身就是 user，n 已含它
+          target = row.role === 'user' ? n : n;
+          break;
+        }
+      }
+      // 命中开场白（第一条 user 之前）时 target 会是 0 → 交给下面判断
+      if (!Number.isFinite(target)) {
+        return res.status(404).json({ error: 'message_id not found in this conversation' });
+      }
+    } else {
+      // 兼容旧调用：仍接受显式 round（但前端已改为传 message_id）
+      target = parseInt(round, 10);
+    }
+    if (!Number.isFinite(target) || target < 1) {
+      return res.status(400).json({ error: 'round must be >= 1 (or provide a message_id within a round)' });
+    }
 
     let n = 0;
     const victimIds = [];

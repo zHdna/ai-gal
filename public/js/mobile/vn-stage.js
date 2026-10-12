@@ -1001,16 +1001,24 @@
     if (!confirm(msg)) return;
 
     if (btnEl) btnEl.disabled = true;
+    // ★ 2026-10-12 事故修复：轮号由**后端**按 message_id 反推。
+    //   本地 target 来自已渲染楼层（分页后的部分数据），70+ 轮时会偏小 → 多删。
+    var probeId = '';
+    var grp = listBlocks().filter(function (b) { return Number(b.round) === target; });
+    if (grp.length) probeId = grp[0].id || '';
+    var payload = { conversation_id: convId };
+    if (probeId && String(probeId).indexOf('idx-') !== 0) payload.message_id = probeId;
+    else payload.round = target;   // 兜底
     fetch('/api/messages/truncate-from-round', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conversation_id: convId, round: target })
+      body: JSON.stringify(payload)
     }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     }).then(function (info) {
       if (VN.shell && VN.shell.toast) {
-        VN.shell.toast('已从第 ' + target + ' 轮截断，删除 ' + (info.deleted || 0) + ' 条内容');
+        VN.shell.toast('已从第 ' + ((info && info.round) || target) + ' 轮截断，删除 ' + ((info && info.deleted) || 0) + ' 条内容');
       }
       // 重新拉取消息并重建（轮号、分页回到一致状态）
       var done = function () {

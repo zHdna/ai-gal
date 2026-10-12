@@ -8827,11 +8827,15 @@ async function deleteMessage(msgId) {
   const idx = msgs.findIndex(m => String(m.id) === String(msgId));
   if (idx < 0) { showToast('找不到该消息', 'error'); return; }
 
-  const round = roundOfMessageIndex(idx);
-  const total = msgs.filter(m => m.role === 'user').length;
+  // ⚠️ 这里的 round 只用于**确认框显示**。真正的轮号由后端按 message_id 反推。
+  //    原因（2026-10-12 事故）：AppState.messages 是**分页加载**的（默认最新 100 条），
+  //    70+ 轮的存档里本地数出来的轮号会偏小（点第 60 轮 → 算成第 40 轮），
+  //    若拿它去截断就会**多删**。所以本地值不再参与删除决策。
+  const roundShown = roundOfMessageIndex(idx);
+  const loadedTotal = msgs.filter(m => m.role === 'user').length;
 
   // 开场问候（第 0 轮）没有对应轮次：只允许单独删除这一条，不做截断
-  if (round === 0) {
+  if (roundShown === 0 && idx === 0) {
     if (!confirm('这是开场白（不属于任何轮次）。\n\n确定删除它吗？')) return;
     try {
       await request(`/messages/${msgId}`, { method: 'DELETE' });
@@ -8843,12 +8847,12 @@ async function deleteMessage(msgId) {
     return;
   }
 
-  const willDelete = total - round + 1;   // 该轮及之后还有几轮
   const ok = confirm(
-    `将从第 ${round} 轮起截断剧情。\n\n` +
-    `· 删除第 ${round}~${total} 轮（共 ${willDelete} 轮，含各自的玩家发言与 AI 回复）\n` +
-    `· 记忆表格里第 ${round}~${total} 轮的记录一并删除\n` +
-    `· 之后你将从第 ${round} 轮重新开始\n\n` +
+    `将从第 ${roundShown} 轮起截断剧情。\n\n` +
+    `· 删除该轮及之后的**全部**内容（玩家发言 + AI 回复）\n` +
+    `· 记忆表格里对应轮次的记录一并删除\n` +
+    `· 之后你将从第 ${roundShown} 轮重新开始\n\n` +
+    `（已加载 ${loadedTotal} 轮；实际范围以后端为准）\n\n` +
     `此操作不可撤销，确定继续吗？`
   );
   if (!ok) return;
@@ -8859,7 +8863,7 @@ async function deleteMessage(msgId) {
   try {
     const resp = await request('/messages/truncate-from-round', {
       method: 'POST',
-      body: { conversation_id: AppState.currentConversation.id, round },
+      body: { conversation_id: AppState.currentConversation.id, message_id: msgId },
     });
     // 重新拉取消息列表：轮号、分页、调试卡片全部回到一致状态
     try { await loadConversation(AppState.currentConversation.id); } catch (e) {
@@ -8869,7 +8873,7 @@ async function deleteMessage(msgId) {
     updateTokenCounter();
     // 记忆表格界面可能开着：重取一次，避免还显示已删除的旧快照
     try { await loadMemoryPage(); } catch (e) { /* 记忆面板可能没打开，非关键 */ }
-    showToast(`已从第 ${round} 轮截断，删除 ${willDelete} 轮`, 'success');
+    showToast(`已从第 ${(resp && resp.round) || roundShown} 轮截断，删除 ${(resp && resp.deleted) || 0} 条内容`, 'success');
     if (resp && resp.deleted === 0) showToast('没有可删除的内容', 'warning');
   } catch (err) {
     console.error('[Delete] 截断失败:', err);
