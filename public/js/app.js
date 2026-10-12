@@ -13398,6 +13398,17 @@ function ttsIsVolinkFormat(fmt, baseUrl) {
   const u = (baseUrl !== undefined && baseUrl !== null) ? baseUrl : (document.getElementById('ttsProviderUrl')?.value || '');
   return /volink/i.test(u || '');
 }
+/** 商汤 SenseAudio —— 与 Volink 同为「情绪靠换音色表达」，共用同一套情绪档映射 UI。 */
+function ttsIsSenseAudioFormat(fmt, baseUrl) {
+  const f = (fmt !== undefined && fmt !== null) ? fmt : (document.getElementById('ttsApiFormat')?.value || '');
+  if (f === 'senseaudio') return true;
+  const u = (baseUrl !== undefined && baseUrl !== null) ? baseUrl : (document.getElementById('ttsProviderUrl')?.value || '');
+  return /senseaudio|sensenova/i.test(u || '');
+}
+/** 是否需要「情绪音色映射」区块（Volink 与 SenseAudio 共用）。 */
+function ttsNeedsEmotionMap(fmt, baseUrl) {
+  return ttsIsVolinkFormat(fmt, baseUrl) || ttsIsSenseAudioFormat(fmt, baseUrl);
+}
 /** 重置 Volink 情绪档下拉（女/男各一）。 */
 function ttsResetVolinkBuckets() {
   TTS_VOLINK_KEYS.forEach(k => {
@@ -13450,11 +13461,13 @@ function ttsToggleFormatFields() {
   document.getElementById('ttsLanguageGroup').style.display = (fmt === 'nvidia' || fmt === 'comfyui') ? 'block' : 'none';
   // Volink：隐藏「角色音色映射（按性别+年龄）」，改用「Volink 情绪音色映射」。
   // 二者互斥——Volink 的情绪靠换音色表达，性别年龄映射对它没有意义（AI 不再决定音色）。
-  const isVolink = ttsIsVolinkFormat(fmt);
+  // Volink 与 SenseAudio 都靠换音色表达情绪 → 共用「情绪音色映射」区块，
+  // 并隐藏按性别年龄的「角色音色映射」（对它们没有意义，AI 不再决定音色）。
+  const needsEmo = ttsNeedsEmotionMap(fmt);
   const sexSec = document.getElementById('ttsVoiceMapSection');
   const vkSec = document.getElementById('ttsVolinkMapSection');
-  if (sexSec) sexSec.style.display = isVolink ? 'none' : '';
-  if (vkSec) vkSec.style.display = isVolink ? 'block' : 'none';
+  if (sexSec) sexSec.style.display = needsEmo ? 'none' : '';
+  if (vkSec) vkSec.style.display = needsEmo ? 'block' : 'none';
   // ComfyUI (Qwen3-TTS VoiceDesign) 没有云端音色列表，标签是静态 12 类，直接填充下拉框
   if (fmt === 'comfyui') ttsPopulateComfyLabels();
   // Update key hint + URL placeholder based on format
@@ -13608,7 +13621,10 @@ async function ttsAddPreset(type) {
     qwenapi: { name: "Qwen TTS 云平台", format: "qwenapi", base_url: "", model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", voice: "serena", api_format: "qwenapi" },
     qwenapi_local: { name: "Qwen TTS 本机", base_url: "http://127.0.0.1:7860", model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", voice: "serena", api_format: "qwenapi_local" },
     comfyui: { name: "Qwen3-TTS 本机工作流", base_url: "http://127.0.0.1:8188", model: "Qwen3-TTS-12Hz-1.7B-VoiceDesign", voice: "沉稳专业", api_format: "comfyui", language: "zh-CN" },
-    bailian: { name: "阿里云百炼 TTS", base_url: "https://dashscope.aliyuncs.com/api/v1", model: "qwen3-tts-flash", voice: "Cherry", api_format: "bailian" }
+    bailian: { name: "阿里云百炼 TTS", base_url: "https://dashscope.aliyuncs.com/api/v1", model: "qwen3-tts-flash", voice: "Cherry", api_format: "bailian" },
+    // 商汤 SenseAudio：base_url 只填到域名，代码会自动补 /v1/t2a_v2（也可直接填全路径）。
+    // 情绪同样靠换音色表达（voice_setting 无 emotion 字段），复用 Volink 那套情绪档映射。
+    senseaudio: { name: "商汤 SenseAudio TTS", base_url: "https://api.senseaudio.cn", model: "sensenova-tts-2.0", voice: "female_0038_a", api_format: "senseaudio" }
   };
   const p = presets[type];
   if (!p) return;
@@ -14367,7 +14383,8 @@ function ttsBuildTasks(segments, roster, voiceMap, format) {
   const isComfy = (format === 'comfyui');
   // Volink：情绪靠【换音色】表达（后端 mapEmotionToVolinkBucket），不发自然语言 instruct。
   // 故这里 emotion 只传 AI 的原始情绪词，voice 留空交给后端按情绪档选音色。
-  const isVolink = ttsIsVolinkFormat(format, null);
+  // 与 Volink 同思路的还有商汤 SenseAudio（都不支持自然语言情绪，靠换 voice_id 表达）
+  const isVolink = ttsNeedsEmotionMap(format, null);
   const narrateOn = document.getElementById('ttsNarrateNarration')?.checked;
   const segTypes = segments.map(s => s.type);
   console.log('[TTS] BuildTasks: format=', format, 'narrateOn=', narrateOn, 'segmentTypes=', segTypes, 'segments=', segments.length);

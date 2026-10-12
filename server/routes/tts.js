@@ -329,6 +329,70 @@ function getVolinkDefaultVoice(model, bucket, gender, isNarrator) {
   return row[g] || null;
 }
 
+// ============ 商汤 SenseAudio TTS ============
+// 文档：https://docs.senseaudio.cn/api-reference/endpoint/tts/synthesize
+//   POST https://api.senseaudio.cn/v1/t2a_v2   Authorization: Bearer <API_KEY>
+//
+// 与 Volink 的共性：**都没有自然语言情绪字段**。
+//   · Volink：实测 instructions 被静默忽略
+//   · SenseAudio：voice_setting 只有 voice_id/speed/vol/pitch，没有 emotion
+// 情绪同样只能靠【换音色】表达，故**复用同一套情绪档映射**（VOLINK_EMOTION_MAP）。
+//
+// SenseAudio 的特点：多数音色自带 _a~_f 情绪后缀，且后缀含义**因音色而异**
+// （官方表：female_0038_a 平稳通用 / _b 温柔讲解 / _d 严肃告知），无跨音色统一语义。
+// 因此内置默认表按「性别 × 情绪档」逐条给出。
+function isSenseAudioProvider(baseUrl, apiFormat) {
+  if (apiFormat === 'senseaudio') return true;
+  const u = String(baseUrl || '').toLowerCase();
+  return u.includes('senseaudio.cn') || u.includes('sensenova');
+}
+
+/** 内置默认音色：按「性别 × 情绪档」选该音色族里语义最贴合的一个 voice_id。
+ *  用户在音色库(voice_map)里可逐档覆盖，覆盖优先。 */
+const SENSEAUDIO_EMOTION_VOICES = {
+  female: {
+    neutral:  'female_0038_a', // 亲切女孩·平稳通用
+    happy:    'female_0016_a', // 俏皮女孩·开心
+    angry:    'female_0015_b', // 哭泣少女·生气
+    sad:      'female_0015_a', // 哭泣少女·低落
+    gentle:   'female_0038_b', // 亲切女孩·温柔讲解
+    fear:     'female_0037_b', // 自然少女·委屈
+    surprise: 'female_0036_a', // 青春女声·内容剖析
+    cold:     'female_0038_d', // 亲切女孩·严肃告知
+    nsfw:     'female_0011_a', // 美艳女人·妩媚
+  },
+  male: {
+    neutral:  'male_0017_a',   // 温柔青年·平稳
+    happy:    'male_0014_a',   // 开心
+    angry:    'male_0003_a',   // 暴躁大叔
+    sad:      'male_0025_c',   // 温柔霸总·深情
+    gentle:   'male_0004_a',   // 儒雅道长（温润叙事感）
+    fear:     'male_0029_a',   // 利落青年
+    surprise: 'male_0029_e',   // 利落青年·细心提问
+    cold:     'male_0025_b',   // 温柔霸总·严肃
+    nsfw:     'male_0025_c',   // 温柔霸总·深情
+  },
+};
+const SENSEAUDIO_NARRATOR = { female: 'female_0038_a', male: 'male_0004_a' };
+
+/**
+ * 解析 SenseAudio 该用哪个 voice_id。优先级（与 Volink 对齐）：
+ *   1) 音色库里为该档显式配置的（emo_<bucket>_<f|m>，兼容旧的 emo_<bucket>）
+ *   2) 内置默认表（性别 × 档位）
+ *   3) null → 调用方回落到 provider.voice
+ */
+function resolveSenseAudioVoice(bucket, voiceMap, isNarrator, gender) {
+  const vm = voiceMap || {};
+  const g = (gender === 'male') ? 'male' : 'female';
+  const keyBase = isNarrator ? 'emo_narrator' : ('emo_' + (bucket || 'neutral'));
+  const sfx = (g === 'male') ? 'm' : 'f';
+  if (vm[keyBase + '_' + sfx]) return vm[keyBase + '_' + sfx];
+  if (vm[keyBase]) return vm[keyBase];
+  if (isNarrator) return SENSEAUDIO_NARRATOR[g] || null;
+  const row = SENSEAUDIO_EMOTION_VOICES[g] || SENSEAUDIO_EMOTION_VOICES.female;
+  return row[bucket || 'neutral'] || row.neutral || null;
+}
+
 /** 是否走 Volink 分支：显式 api_format，或 base_url 命中 volink（兼容旧配置）。 */
 function isVolinkProvider(baseUrl, apiFormat) {
   if (apiFormat === 'volink') return true;
@@ -844,7 +908,10 @@ function buildTTSRouter(db) {
   }
 
   function clampTTS(text, apiFormat) {
-    const limit = (apiFormat === 'nvidia') ? 1900 : (apiFormat === 'volcengine' ? 990 : 990);
+    // SenseAudio 单次可合成 10000 字符（官方文档），远高于其它引擎
+    const limit = (apiFormat === 'nvidia') ? 1900
+      : (apiFormat === 'senseaudio') ? 9900
+      : (apiFormat === 'volcengine' ? 990 : 990);
     const t = (text || '').trim();
     return t.length > limit ? t.substring(0, limit - 10) + '...' : t;
   }
@@ -1208,6 +1275,8 @@ function buildTTSRouter(db) {
     // 情绪改由声线表达（provider.voice 已在 /speak 中按情绪档解析）。
     // isVolinkProvider 同时覆盖 api_format=volink 与旧配置（api_format=openai + base_url 含 volink）。
     if (isVolinkProvider(provider.base_url, provider.api_format)) return callVolinkTTS(provider, text, instruction);
+    // SenseAudio 同样【早于】openai 判断：它不是 OpenAI 兼容外形（自己的 /v1/t2a_v2 + 嵌套 body）
+    if (isSenseAudioProvider(provider.base_url, provider.api_format)) return callSenseAudioTTS(provider, text, instruction);
     if (format === 'nvidia') return callNvidiaTTS(provider, text, instruction);
     if (format === 'volcengine') return callVolcengineTTS(provider, text, instruction);
     if (format === 'qwenapi') return callQwenAPITTS(provider, text, instruction);
@@ -1255,6 +1324,127 @@ function buildTTSRouter(db) {
    *  CosyVoice 系列仅支持 WebSocket（实时）。这里：实时模型走 WS，其余走 HTTP。
    *  HTTP 端点：POST /api/v1/services/aigc/multimodal-generation/generation
    *  Auth：Authorization: Bearer <api_key> */
+  /**
+   * 商汤 SenseAudio TTS —— POST /v1/t2a_v2（非流式）。
+   *
+   * 文档：https://docs.senseaudio.cn/api-reference/endpoint/tts/synthesize
+   *
+   * ⚠️ 两个必须守住的点（都来自官方文档，错了不报错但结果坏）：
+   *   1) **返回的音频是 hex 编码**，不是 base64 —— 必须 Buffer.from(x, 'hex')。
+   *      误用 'base64' 会静默产出损坏的音频文件。
+   *   2) 成功判定看 **base_resp.status_code === 0**，而不是 HTTP 状态码；
+   *      失败时把 status_msg 原样抛出（官方给了错误对照表，排错友好）。
+   *
+   * 情绪：voice_setting 无 emotion 字段，情绪靠 voice_id 表达（与 Volink 同思路），
+   *       voice 已在 /speak 里按情绪档解析好；此处不再处理。
+   */
+  function callSenseAudioTTS(provider, text, instruction) {
+    return new Promise((resolve, reject) => {
+      // _rawKey：/test 表单直传明文 key，勿再解密（与其它 handler 约定一致）
+      const apiKey = provider.api_key
+        ? (provider._rawKey ? provider.api_key : decrypt(provider.api_key))
+        : '';
+      if (!apiKey) return reject(new Error('SenseAudio TTS: 缺少 API Key'));
+
+      let baseUrl = (provider.base_url || 'https://api.senseaudio.cn').replace(/\/+$/, '');
+      // 允许用户只填域名（预设即如此），自动补全路径
+      if (!/\/v1\/t2a_v2$/.test(baseUrl)) {
+        if (/\/v1$/.test(baseUrl)) baseUrl += '/t2a_v2';
+        else baseUrl += '/v1/t2a_v2';
+      }
+
+      // 文档上限 10000 字符；这里仍按调用方 limit 截断（/speak 已按 990 切段）
+      const safeText = String(text || '').slice(0, 10000);
+
+      // 参数 clamp：越界会被服务端 400（speed/vol/pitch 各有区间）
+      const clamp = (v, lo, hi, dflt) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return dflt;
+        return Math.min(hi, Math.max(lo, n));
+      };
+      const reqBody = {
+        model: provider.model || 'sensenova-tts-2.0',
+        text: safeText,
+        stream: false,                       // 只做非流式（用户已确认）
+        voice_setting: {
+          voice_id: provider.voice || 'female_0038_a',
+          speed: clamp(provider.speed, 0.5, 2.0, 1),
+          vol: clamp(provider.volume, 0.01, 10.0, 1),
+          pitch: clamp(provider.pitch, -12, 12, 0),
+        },
+        // 用户已确认：固定 mp3 / 32000 / 128000 / 立体声（即文档默认值）
+        audio_setting: {
+          format: 'mp3',
+          sample_rate: 32000,
+          bitrate: 128000,
+          channel: 2,
+        },
+      };
+
+      const body = JSON.stringify(reqBody);
+      const url = new URL(baseUrl);
+      const transport = url.protocol === 'https:' ? https : http;
+
+      const headers = {
+        'Content-Type': 'application/json; charset=utf-8',
+        // ⚠️ 显式带 Content-Length：不带时 Node 会改用 chunked，部分网关会拒（AGENTS §35 的坑）
+        'Content-Length': Buffer.byteLength(body, 'utf8'),
+        'Authorization': 'Bearer ' + apiKey,
+        'Accept': 'application/json',
+        'Connection': 'close',
+      };
+
+      const req = transport.request({
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname + url.search,
+        method: 'POST',
+        headers,
+        timeout: 120000,
+        agent: false,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf8');
+          if (res.statusCode !== 200) {
+            return reject(new Error('SenseAudio TTS HTTP ' + res.statusCode + ': ' + raw.slice(0, 300)));
+          }
+          let obj;
+          try { obj = JSON.parse(raw); }
+          catch (e) { return reject(new Error('SenseAudio TTS: 响应不是合法 JSON: ' + raw.slice(0, 200))); }
+
+          // 业务状态在 base_resp.status_code（不是 HTTP 码）
+          const br = obj.base_resp || {};
+          if (br.status_code !== 0) {
+            return reject(new Error('SenseAudio TTS error ' + br.status_code + ': ' + (br.status_msg || '(no msg)')));
+          }
+          const hex = obj.data && obj.data.audio;
+          if (!hex || typeof hex !== 'string') {
+            return reject(new Error('SenseAudio TTS: 响应里没有音频数据 (data.audio)'));
+          }
+          // ★ hex 解码（不是 base64！）
+          let audio;
+          try { audio = Buffer.from(hex, 'hex'); }
+          catch (e) { return reject(new Error('SenseAudio TTS: hex 解码失败: ' + e.message)); }
+          if (!audio.length) return reject(new Error('SenseAudio TTS: 解码后音频为空'));
+
+          const extra = obj.extra_info || {};
+          console.log('[TTS][SenseAudio] ok voice=' + reqBody.voice_setting.voice_id
+            + ' bytes=' + audio.length
+            + ' fmt=' + (extra.audio_format || 'mp3')
+            + ' dur=' + (extra.audio_length || '?') + 'ms'
+            + ' chars=' + (extra.usage_characters || '?'));
+          resolve({ audio, contentType: 'audio/mpeg' });
+        });
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(new Error('SenseAudio TTS: 请求超时')); });
+      req.write(body);
+      req.end();
+    });
+  }
+
   async function callBailianTTS(provider, text, instruction) {
     // 表单直传的明文 key 用 _rawKey 标记，避免对明文再做 AES 解密导致损坏
     const rawKey = provider.api_key
@@ -1980,6 +2170,25 @@ function buildTTSRouter(db) {
         + ' instr=' + JSON.stringify((instruction || '').slice(0, 40))
         + ' -> voice=' + JSON.stringify(effectiveVoice || provider.voice));
     }
+    // ===== 商汤 SenseAudio 专属：情绪 → 音色（与 Volink 同一套档位映射）=====
+    // 理由同 Volink：voice_setting 没有 emotion 字段，情绪只能靠换 voice_id 表达。
+    if (isSenseAudioProvider(provider.base_url, provider.api_format)) {
+      let _vm = {};
+      try {
+        _vm = typeof provider.voice_map === 'string'
+          ? JSON.parse(provider.voice_map || '{}') : (provider.voice_map || {});
+      } catch (e) { _vm = {}; }
+      const saBucket = mapEmotionToVolinkBucket(instruction);
+      const explicitReqVoice = !!voice;
+      if (!explicitReqVoice) {
+        const mapped = resolveSenseAudioVoice(saBucket, _vm, !!narrator, gender);
+        if (mapped) effectiveVoice = mapped;
+      }
+      console.log('[TTS][speak][SenseAudio] bucket=' + saBucket
+        + ' gender=' + (gender || '(none->female)')
+        + ' instr=' + JSON.stringify((instruction || '').slice(0, 40))
+        + ' -> voice=' + JSON.stringify(effectiveVoice || provider.voice));
+    }
     // Override voice if provided (multi-character TTS)
     if (effectiveVoice) provider = { ...provider, voice: effectiveVoice };
     console.log('[TTS][speak] voice_in=' + JSON.stringify(voice)
@@ -1987,8 +2196,10 @@ function buildTTSRouter(db) {
       + ' effective_voice=' + JSON.stringify(effectiveVoice)
       + ' desc=' + buildComfyVoiceDesc(effectiveVoice || provider.voice, instruction).slice(0, 30)
       + ' text=' + (text || '').trim().slice(0, 30));
-    // Limit: OpenAI/StepAudio=1000, NVIDIA NIM=2000. Frontend splits, this is safety net.
-    const limit = (provider.api_format === 'nvidia') ? 1900 : (provider.api_format === 'volcengine' ? 990 : 990);
+    // Limit: OpenAI/StepAudio=1000, NVIDIA NIM=2000, SenseAudio=10000. Frontend splits, this is safety net.
+    const limit = (provider.api_format === 'nvidia') ? 1900
+      : (provider.api_format === 'senseaudio') ? 9900
+      : (provider.api_format === 'volcengine' ? 990 : 990);
     const safeText = text.trim().length > limit ? text.trim().substring(0, limit - 10) + '...' : text.trim();
 
     // Disk cache: key includes voice + emotion to avoid mixing different characters/emotions
@@ -2342,6 +2553,48 @@ function getVolinkVoices(model) {
 /** Voice presets by provider domain */
 function getVoicePresets(baseUrl, model) {
   const url = (baseUrl || '').toLowerCase();
+  // 商汤 SenseAudio（官方音色表，含 _a~_f 情绪后缀；此处列常用款 + 情绪变体）
+  if (url.includes('senseaudio') || url.includes('sensenova')) {
+    return [
+      // —— 女声 ——
+      { id: 'female_0038_a', name: '亲切女孩·平稳通用' },
+      { id: 'female_0038_b', name: '亲切女孩·温柔讲解' },
+      { id: 'female_0038_c', name: '亲切女孩·致歉安慰' },
+      { id: 'female_0038_d', name: '亲切女孩·严肃告知' },
+      { id: 'female_0038_e', name: '亲切女孩·清晰播报' },
+      { id: 'female_0038_f', name: '亲切女孩·耐心关怀' },
+      { id: 'female_0037_a', name: '自然少女·劝导' },
+      { id: 'female_0037_b', name: '自然少女·委屈' },
+      { id: 'female_0037_c', name: '自然少女·温柔' },
+      { id: 'female_0037_d', name: '自然少女·严肃' },
+      { id: 'female_0037_e', name: '自然少女·平稳' },
+      { id: 'female_0023_a', name: '羞涩甜妹' },
+      { id: 'female_0018_a', name: '森系少女' },
+      { id: 'female_0036_a', name: '青春女声·内容剖析' },
+      { id: 'female_0036_b', name: '青春女声·开场介绍' },
+      { id: 'female_0036_d', name: '青春女声·轻松铺陈' },
+      { id: 'female_0016_a', name: '俏皮女孩·开心' },
+      { id: 'female_0016_b', name: '俏皮女孩·低落' },
+      { id: 'female_0016_c', name: '俏皮女孩·傲娇' },
+      { id: 'female_0015_a', name: '哭泣少女·低落' },
+      { id: 'female_0015_b', name: '哭泣少女·生气' },
+      { id: 'female_0011_a', name: '美艳女人·妩媚' },
+      { id: 'female_0030_b', name: '沉稳帅姐' },
+      { id: 'female_0030_c', name: '高能姐姐' },
+      { id: 'female_0004_a', name: '乐天女孩' },
+      // —— 男声 ——
+      { id: 'male_0004_a', name: '儒雅道长' },
+      { id: 'male_0017_a', name: '温柔青年·平稳' },
+      { id: 'male_0029_a', name: '利落青年·内容剖析' },
+      { id: 'male_0029_e', name: '利落青年·细心提问' },
+      { id: 'male_0025_a', name: '温柔霸总·平稳' },
+      { id: 'male_0025_b', name: '温柔霸总·严肃' },
+      { id: 'male_0025_c', name: '温柔霸总·深情' },
+      { id: 'male_0014_a', name: '男声·开心' },
+      { id: 'male_0014_b', name: '男声·平稳' },
+      { id: 'male_0003_a', name: '暴躁大叔' },
+    ];
+  }
   // StepFun
   if (url.includes('stepfun')) {
     return [
