@@ -108,11 +108,25 @@ function cleanupEventLog(db, conversation_id, affectedRounds) {
 
   fs.writeFileSync(eventLogPath, remaining.join('\n') + '\n', 'utf-8');
 
-  // Clear memory_context (will be rebuilt at next 20-round boundary)
-  db.prepare('UPDATE conversations SET memory_context = ? WHERE id = ?')
-    .run(JSON.stringify({}), conversation_id);
-
   console.log('[TurnCleanup] Event log cleaned: removed rounds', deleted, '→', remaining.length, 'entries remain (relabelled, gaps kept)');
+
+  // ── A 方案（2026-10-12 用户实测修复）────────────────────────────────────
+  // 以前这里是 `memory_context = '{}'`（注释写着"等下一个 20 轮边界重建"）。
+  // 问题：重建要等到 `round % N === 0`，而 N 默认 20 ——
+  // 于是删一次轮次，接下来的**最多 19 轮**所有记忆行都显示黄灯（未注入），
+  // 用户看到的就是"记忆表格注入情况没有显示"。
+  // 现改为**立刻按删减后的 event_log 重建**：灯立即恢复绿色，且内容与剩余轮次一致。
+  try {
+    const { rebuildMemoryContextAfterCleanup } = require('./memoryTable');
+    rebuildMemoryContextAfterCleanup(db, conversation_id);
+  } catch (e) {
+    // 兜底：重建失败（如极老库缺列）时仍清空，行为退回旧逻辑，绝不阻断删除本身
+    console.warn('[TurnCleanup] rebuild fallback -> clear:', e.message);
+    try {
+      db.prepare('UPDATE conversations SET memory_context = ? WHERE id = ?')
+        .run(JSON.stringify({}), conversation_id);
+    } catch (e2) { /* ignore */ }
+  }
 }
 
 module.exports = { roundOfRowId, getAffectedRounds, cleanupEventLog };

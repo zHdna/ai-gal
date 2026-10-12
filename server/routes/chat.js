@@ -33,6 +33,8 @@ const savePaths = require('../savePaths');
 const { lookupAnimeEnglishName } = require('../utils/anime-names');
 const { resolveContextWindow } = require('../utils/contextWindow');
 const { cleanupEventLog } = require('../utils/turnCleanup');
+// 记忆表格的构建/写入（唯一真源，turnCleanup 删轮次后的重建也用它）
+const memoryTable = require('../utils/memoryTable');
 // Roll 点：行动成败由代码裁定（见 server/utils/dice.js 与 ROLL-点机制-实施方案.md）
 const dice = require('../utils/dice');
 
@@ -7888,18 +7890,10 @@ if (isPureNaturalGenMode(cgGenMode)) {
    * The table is COMPLETE — no row trimming: it is only injected once every N rounds,
    * so paying the full size once is the whole point (early plot survives history trims).
    */
+  // 构建逻辑已抽到 utils/memoryTable.js（唯一真源）：
+  // turnCleanup 删轮次后要按同一份规则立刻重建，两处若各写一份必然漂移。
   function buildMemoryTable(eventLogPath) {
-    if (!fs.existsSync(eventLogPath)) return { table: '', rows: 0 };
-    const allLines = fs.readFileSync(eventLogPath, 'utf-8').split('\n').filter(l => l.trim());
-    if (allLines.length === 0) return { table: '', rows: 0 };
-    const tableHeader = '| 轮次 | 时间 | 地点 | 人物 | 事件 |\n|------|------|------|------|------|\n';
-    const rows = allLines.map(line => {
-      const parts = line.replace(/^第\d+轮\s*\|\s*/, '').split('|').map(p => p.trim());
-      const roundMatch = line.match(/^第(\d+)轮/);
-      const round = roundMatch ? roundMatch[1] : '?';
-      return `| ${round} | ${parts[0] || ''} | ${parts[1] || ''} | ${parts[2] || ''} | ${parts[3] || ''} |`;
-    });
-    return { table: tableHeader + rows.join('\n'), rows: rows.length };
+    return memoryTable.buildMemoryTable(eventLogPath);
   }
 
   /**
@@ -7911,19 +7905,10 @@ if (isPureNaturalGenMode(cgGenMode)) {
    */
   function injectMemoryTable(db, conversation_id, eventLogPath, currentRound) {
     try {
-      const { table, rows } = buildMemoryTable(eventLogPath);
-      if (!table) return;
-
-      // Update conversation memory_context. `injected_at_round` is what buildApiMessages()
-      // checks: the block is only sent while the conversation is still ON that round.
-      db.prepare('UPDATE conversations SET memory_context = ? WHERE id = ?')
-        .run(JSON.stringify({
-          [MEMORY_KEYS.EVENT_LOG]: table,
-          [MEMORY_KEYS.LAST_ROUND]: currentRound,
-          [MEMORY_KEYS.INJECTED_AT]: currentRound,
-        }), conversation_id);
-
-      console.log('[Memory] Injected full table at round ' + currentRound + ' (' + rows + ' entries)');
+      // 统一走 utils/memoryTable 的写入函数（与 turnCleanup 的重建共用同一份实现）
+      const res = memoryTable.writeMemoryContext(db, conversation_id, eventLogPath, currentRound);
+      if (!res) return;   // 表格为空 → 保持原样，不清空已有上下文
+      console.log('[Memory] Injected full table at round ' + currentRound + ' (' + res.rows + ' entries)');
     } catch (err) {
       console.error('[Memory] Injection failed:', err.message);
     }
@@ -7943,7 +7928,27 @@ if (isPureNaturalGenMode(cgGenMode)) {
     if (!roundNum || roundNum <= 0) return;
     const { N, M, dropPromptEnabled } = getMemorySettings();
 
-    if (roundNum % N === 0) {
+    // ── B 方案（2026-10-12）：判据由「精确落在 N 的倍数」放宽为「距上次注入 ≥ N 轮」──
+    //
+    // 旧写法 `roundNum % N === 0` 要求轮号**恰好**是 N 的倍数。一旦那一个轮号被错过
+    // （删楼层、那一轮生成失败、中途把 N 改大改小），就要**再干等一整轮 N** 才补得上；
+    // 配合 A 方案之前的"删轮即清空"，用户会长时间看到全部黄灯。
+    //
+    // 新写法读 memory_context 里记录的 last_round/injected_at：
+    //   · 从未注入过（=0）          → 到 N 轮就注入（保持"第一次在第 N 轮"的既有手感）
+    //   · 已注入过且过了 ≥ N 轮      → 立即补注入
+    // 这样边界只是"最早可以注入的时间"，错过也能下一轮补上，不会干等。
+    let injectedAt = 0;
+    try {
+      const c = db.prepare('SELECT memory_context FROM conversations WHERE id = ?').get(conversation_id);
+      const ctx = c && c.memory_context ? JSON.parse(c.memory_context) : {};
+      injectedAt = Number(ctx[MEMORY_KEYS.INJECTED_AT]) || 0;
+    } catch { /* 读不到按未注入处理 */ }
+
+    const due = (injectedAt === 0)
+      ? (roundNum >= N)            // 首次：第 N 轮（或更晚，若中途才开启）
+      : (roundNum - injectedAt >= N); // 之后：距上次 ≥ N 轮
+    if (due) {
       injectMemoryTable(db, conversation_id, eventLogPath, roundNum);
     }
 
