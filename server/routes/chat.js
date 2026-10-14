@@ -38,6 +38,15 @@ const memoryTable = require('../utils/memoryTable');
 // Roll 点：行动成败由代码裁定（见 server/utils/dice.js 与 ROLL-点机制-实施方案.md）
 const dice = require('../utils/dice');
 
+// ── 非流式 LLM 请求的 socket 空闲超时（2026-10-14）──────────────────────────
+// ⚠️ 这是【空闲】超时，不是总时长：只有 socket 上无数据往来时才计时。
+// 由于 callProviderAPI 现已改为【流式聚合并发】（见该函数注释），
+// 生成期间每个 token 都会重置计时器，因此本值只需覆盖：
+//   · 预填充（prompt processing）阶段的空窗
+//   · 端点不支持 SSE 时回退到原生非流式的场景
+// 保持 120s 不变 —— 用户明确不希望调大（正常轮次远低于此，调大只会让卡死时等更久）。
+const NONSTREAM_IDLE_TIMEOUT_MS = 120000;
+
 /**
  * Strip MVU variable blocks from narrative text. Variable blocks are DATA, not story:
  * they must never reach the butler AI or the main chat window.
@@ -2061,6 +2070,11 @@ module.exports = (db) => {
           let result = await storeAndProcessResponse(conversation_id, replacedContent, fullText, conv, provider, true, apiContent, wbInjected);
           if (mvuWorldState) result.worldState = mvuWorldState;
 
+          // 记录员 AI 的待办（2026-10-14 时序调整）
+          // 在管家块内只【登记】、不执行；done 事件发出后再异步跑，让玩家不必等它。
+          // null = 本轮不需要记录（功能关闭 / 管家失败）。
+          let rosterKeeperTask = null;
+
           // Run butler AI to fix and enrich output
           console.log('[Butler] Starting butler invocation...');
           let butlerResult = null;
@@ -2906,22 +2920,22 @@ module.exports = (db) => {
               }
 
               // ── 2.6 记录员 AI：核对本轮剧情 → 后台维护名册 ──────────────────────
-              // 位置刻意放在这里（管家 & 归位流程都跑完之后、最终落库之前）：
-              //   · 它读的是**最终正文**（finalText 已被管家修复），事件描述才准；
-              //   · 它【不受 imageEnabled 闸门影响】—— 生图关掉时角色的经历照样要记，
-              //     这正是不挂在画家 AI 上的原因（见 callRosterKeeperAI 的注释）。
-              //   · 全程 try/catch 吞掉异常：记录员失败绝不能连累正文落库。
-              // 所有记录工作都在后台完成，不注入正文、不产生任何对玩家可见的输出。
+              // ⚠️ 2026-10-14 时序调整：这里【不再 await】。
+              //
+              // 旧实现：await callRosterKeeperAI(...) 卡在「最终落库之前」，
+              //   而 done 事件在落库之后才发 → 玩家必须等记录员跑完一次完整 LLM 调用
+              //   才能看到本回合剧情（实测记录员是最后一道无谓的等待）。
+              //
+              // 新实现：此处只【准备待办】（记下参数），真正执行挪到 done 事件之后异步进行。
+              //   记录员本就不产生任何对玩家可见的输出（不注入正文、不参与 formatted），
+              //   所以把它移出关键路径不会改变玩家看到的任何内容。
+              //
+              // 约束不变：
+              //   · 读的是**最终正文**（finalText 已被管家修复），事件描述才准 —— 故在此快照；
+              //   · 【不受 imageEnabled 闸门影响】—— 生图关掉时角色的经历照样要记；
+              //   · 失败绝不能连累正文（改为后台后更彻底：连流都已结束）。
               if (isRosterKeeperEnabled()) {
-                try {
-                  const keeperResult = await callRosterKeeperAI(butlerProvider, finalText, conversation_id);
-                  if (keeperResult) {
-                    const applied = applyRosterUpdates(conversation_id, keeperResult);
-                    if (applied.changed > 0) result.rosterUpdates = applied.names;
-                  }
-                } catch (keeperErr) {
-                  console.error('[RosterKeeper] error (non-fatal):', keeperErr.message);
-                }
+                rosterKeeperTask = { provider: butlerProvider, text: finalText, conversationId: conversation_id };
               } else {
                 console.log('[RosterKeeper] Disabled via app_settings.roster_keeper_enabled — skipped');
               }
@@ -3264,6 +3278,30 @@ module.exports = (db) => {
 
           // Send done event with full data
           res.write(`event: done\ndata: ${JSON.stringify(result)}\n\n`);
+
+          // ── 记录员 AI：done 之后的**后台异步**执行（2026-10-14 时序调整）──────────
+          // 玩家此刻已经拿到完整剧情，记录员纯粹是后台维护名册的工作，不再占用关键路径。
+          // ⚠️ 刻意【不 await】：一旦 await，本函数会挂在这里等一次完整 LLM 调用，
+          //    虽然 done 已发出（前端已渲染），但 SSE 连接迟迟不关、activeStreams 不释放，
+          //    「停止」按钮与并发护栏都会被这条僵尸流干扰。
+          // 用 then/catch 让它在流收尾之后自行跑完；失败只记日志（绝不能影响已经发出的回合）。
+          if (rosterKeeperTask) {
+            const tk = rosterKeeperTask;   // 快照，避免变量被后续轮次覆盖
+            rosterKeeperTask = null;
+            console.log('[RosterKeeper] 转入后台异步执行（done 已下发，玩家无需等待）| textLen:', tk.text?.length);
+            Promise.resolve()
+              .then(() => callRosterKeeperAI(tk.provider, tk.text, tk.conversationId))
+              .then((keeperResult) => {
+                if (!keeperResult) return;
+                const applied = applyRosterUpdates(tk.conversationId, keeperResult);
+                if (applied.changed > 0) {
+                  console.log('[RosterKeeper] 后台完成，名册已更新:', applied.names.join(', '));
+                }
+              })
+              .catch((keeperErr) => {
+                console.error('[RosterKeeper] 后台执行失败 (non-fatal):', keeperErr.message);
+              });
+          }
         } else {
           res.write(`event: aborted\ndata: ${JSON.stringify({ message: 'Generation aborted' })}\n\n`);
         }
@@ -4658,9 +4696,13 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
   }
 
   /**
-   * Non-streaming API call
+   * 非流式 API 调用（原生实现，保留作为兜底路径）。
+   *
+   * ⚠️ 2026-10-14：本函数已被下面的 `callProviderAPI` 包装 —— 后者默认走【流式聚合】。
+   * 直接使用本函数会遇到「120s 空闲超时」问题（详见 callProviderAPI 的说明），
+   * 除非明确需要"一次性拿完整 JSON 响应体"，否则不要直接调用。
    */
-  function callProviderAPI(provider, messages, reasoningCollector) {
+  function callProviderAPIOnce(provider, messages, reasoningCollector) {
     return new Promise((resolve, reject) => {
       const { base_url, model, temperature, max_tokens, provider_type } = provider;
 
@@ -4715,6 +4757,24 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
           + '（网关可能 400）| base_url:', base_url);
       }
 
+      // ── 思考档位 reasoning_effort（2026-10-14，管家超时修复）──
+      // 背景：管家/画家反复 120s 超时取消，根因是非流式通路在生成期间 socket 无数据。
+      // 除了把超时语义改对流式（见 callProviderAPI 内部聚合）之外，还要【让模型少想】。
+      // 为什么用 reasoning_effort:'low' 而非 enable_thinking:false：
+      //   · enable_thinking:false 确实更快（实测 26.0s → 6.1s），但用户实测会引发其它 BUG ——
+      //     管家任务（格式修补 + 名册比对 + 画像判定）仍需要一定推理能力；
+      //   · reasoning_effort:'low' 保留推理链路但压缩其长度，兼容性更好。
+      // 引擎兼容性（本机 unsloth 实测，模型 Ornith-1.5-35B）：
+      //   chat_template_kwargs.reasoning_effort=low → 359 字
+      //   reasoning_effort=low                      → 416 字
+      //   （基线 585 字，medium 899 字 → 证明档位确实被识别，而非被静默忽略）
+      // 下发策略：与 thinkingOff 一致，只在本地引擎下发（远程网关不认会 400）。
+      if (provider && provider.reasoning_effort && isLocalLLM && provider_type !== 'xai') {
+        body.reasoning_effort = String(provider.reasoning_effort);
+        console.log('[Provider] 思考档位 reasoning_effort:', body.reasoning_effort,
+          '| provider:', provider?.name || '(unnamed)', '| non-streaming');
+      }
+
       // Make the effective output budget visible (see the streaming counterpart for rationale).
       console.log('[Provider] Output budget → provider:', provider?.name || '(unnamed)',
         '| provider.max_tokens:', provider?.max_tokens ?? '(unset)',
@@ -4753,7 +4813,7 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
             handleResponse(hres);
           });
           hreq.on('error', reject);
-          hreq.setTimeout(120000, () => { hreq.abort(); reject(new Error('Request timeout')); });
+          hreq.setTimeout(NONSTREAM_IDLE_TIMEOUT_MS, () => { hreq.abort(); reject(new Error('Request timeout')); });
           hreq.write(JSON.stringify(body));
           hreq.end();
         });
@@ -4769,7 +4829,7 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
           headers: { ...reqOptions.headers, 'Host': reqOptions.hostname }
         }, (res) => handleResponse(res));
         req.on('error', reject);
-        req.setTimeout(120000, () => { req.abort(); reject(new Error('Request timeout')); });
+        req.setTimeout(NONSTREAM_IDLE_TIMEOUT_MS, () => { req.abort(); reject(new Error('Request timeout')); });
         req.write(JSON.stringify(body));
         req.end();
         return; // Skip below
@@ -4782,13 +4842,13 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
         };
         req = client.request(localReqOptions, (res) => handleResponse(res));
         req.on('error', reject);
-        req.setTimeout(120000, () => { req.abort(); reject(new Error('Request timeout')); });
+        req.setTimeout(NONSTREAM_IDLE_TIMEOUT_MS, () => { req.abort(); reject(new Error('Request timeout')); });
         req.write(JSON.stringify(body));
         req.end();
       } else {
         req = client.request(reqOptions, (res) => handleResponse(res));
         req.on('error', reject);
-        req.setTimeout(120000, () => { req.abort(); reject(new Error('Request timeout')); });
+        req.setTimeout(NONSTREAM_IDLE_TIMEOUT_MS, () => { req.abort(); reject(new Error('Request timeout')); });
         req.write(JSON.stringify(body));
         req.end();
       }
@@ -4860,6 +4920,47 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
   }
 
   /**
+   * 非流式语义的 API 调用 —— **内部走流式聚合**（2026-10-14 管家超时修复）。
+   *
+   * 为什么改：管家（callButlerAI）与画家（callPainterAI）原本直接调 callProviderAPIOnce，
+   * 发的是 stream:false 请求。而 `req.setTimeout(120000)` 是 **socket 空闲超时** ——
+   * 非流式请求在模型【生成完毕、一次性返回】之前，socket 上没有任何数据，
+   * 于是空闲计时器从请求发出就开始跑，模型只要思考超过 120 秒必然被 abort()。
+   *
+   * 实测佐证（用户 unsloth 后台）：
+   *   Duration 120s / cancelled / First token: – / Generating 118s @ 199 tok/s ≈ 23.5K tokens
+   *   —— 模型一直在写，但非流式通路收不到任何中间数据，120 秒被掐断。
+   *
+   * 解决：内部改用 callProviderAPIStream（发 stream:true 并逐块聚合）。
+   * 流式下每个 token 都会重置空闲计时器，模型持续输出时不再受 120s 限制。
+   * 对外**签名与返回完全不变**（返回聚合后的完整字符串），因此管家/画家/记录员三处调用方零改动。
+   *
+   * 兜底策略：若流式路径整体失败，回退到 callProviderAPIOnce（原生非流式），
+   * 保证"某些不支持 SSE 的端点"仍能工作。
+   */
+  async function callProviderAPI(provider, messages, reasoningCollector) {
+    let acc = '';
+    let gotAnyChunk = false;
+    try {
+      await callProviderAPIStream(
+        provider,
+        messages,
+        (token) => { gotAnyChunk = true; acc += token; return true; },
+        (reasoning) => {
+          if (reasoningCollector) reasoningCollector.value = (reasoningCollector.value || '') + reasoning;
+        }
+      );
+      return acc;
+    } catch (e) {
+      // 流式通路失败：如果已经拿到部分内容，说明是中途断开，直接抛错让上层重试；
+      // 若一个 chunk 都没收到，可能是该端点不支持 SSE → 回退原生非流式。
+      if (gotAnyChunk) throw e;
+      console.warn('[Provider] 流式聚合失败（未收到任何数据），回退非流式通路：', e.message);
+      return callProviderAPIOnce(provider, messages, reasoningCollector);
+    }
+  }
+
+  /**
    * Streaming API call - calls provider with stream:true and invokes callback for each token
    * @param {object} provider - Provider config
    * @param {array} messages - Chat messages
@@ -4915,6 +5016,16 @@ scene: 当前场景的简要描述，必须突出描述NSFW情节（包括环境
         if (options.forceNoThinking && !(provider.thinking === false || provider.thinking === 0)) {
           console.warn('[Stream] ⚠️ 本轮强制关闭思考模式（enable_thinking:false）—— 上次请求的输出预算被思维链吃光了');
         }
+      }
+
+      // 思考档位 reasoning_effort（2026-10-14，与非流式通路对称补齐，见那边的详细说明）。
+      // 只在本地引擎下发；若已显式关闭思考（enable_thinking:false），则档位无意义、跳过。
+      if (!body.chat_template_kwargs
+          && provider && provider.reasoning_effort
+          && isLocalLLM2 && provider_type !== 'xai') {
+        body.reasoning_effort = String(provider.reasoning_effort);
+        console.log('[Stream] 思考档位 reasoning_effort:', body.reasoning_effort,
+          '| provider:', provider?.name || '(unnamed)');
       }
 
       const reqOptions = {
@@ -6660,16 +6771,25 @@ if (isPureNaturalGenMode(cgGenMode)) {
       let fmtContent = null;
       let lastError = null;
 
-      // Butler needs large output window — 65536 ensures thinking models have room for both reasoning and content
-      const butlerMaxTokens = 65536;
+      // 管家输出预算：32768（原为 65536）。
+      // 依据（2026-10-14 排查管家反复超时取消）：
+      //   · 非流式通路在模型生成完之前 socket 零数据，120s 空闲超时必然触发；
+      //   · 65536 按实测 199 tok/s 要写 329 秒，远超超时上限 —— 预算根本用不到；
+      //   · 32768 约 165 秒，配合下面的"低思考档"后实际远低于此；
+      //   · 32768 也是前端「ST 预设」里 max_tokens 输入框的上限，两者保持一致。
+      const butlerMaxTokens = 32768;
       console.log('[Butler] max_tokens:', butlerMaxTokens);
 
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           // Apply butler AI preset params, then ensure sufficient max_tokens
           let effectiveProvider = applyPresetToProvider(provider, APP_KEYS.BUTLER_AI_PRESET_ID);
-          // Always ensure butler has enough tokens for thinking models (reasoning + content)
-          effectiveProvider = { ...effectiveProvider, max_tokens: butlerMaxTokens };
+          // 管家输出预算 + 低思考档（2026-10-14）
+          // ⚠️ 用 reasoning_effort:'low' 而不是 enable_thinking:false ——
+          //    后者虽然更快，但实测会引发其它 BUG（管家任务需要一定推理能力）。
+          //    已实测本机 unsloth：medium(899字) > 基线(585字) > low(416字)，
+          //    证明引擎确实识别该档位（不是被静默忽略）。
+          effectiveProvider = { ...effectiveProvider, max_tokens: butlerMaxTokens, reasoning_effort: 'low' };
           const reasoningCollector = { value: '' };
           fmtContent = await callProviderAPI(effectiveProvider, butlerMessages, reasoningCollector);
           if (reasoningCollector.value && onReasoning) {
@@ -7375,12 +7495,14 @@ if (isPureNaturalGenMode(cgGenMode)) {
 
     let painterContent = null;
     let lastError = null;
-    const painterMaxTokens = 65536;
+    // 画家输出预算：32768（原为 65536）—— 与管家保持一致（2026-10-14 超时修复）。
+    const painterMaxTokens = 32768;
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         let effectiveProvider = applyPresetToProvider(provider, APP_KEYS.BUTLER_AI_PRESET_ID);
-        effectiveProvider = { ...effectiveProvider, max_tokens: painterMaxTokens };
+        // 同管家：低思考档，压缩思维链长度（用 reasoning_effort 而非关闭思考，保证兼容性）
+        effectiveProvider = { ...effectiveProvider, max_tokens: painterMaxTokens, reasoning_effort: 'low' };
         const reasoningCollector = { value: '' };
         painterContent = await callProviderAPI(effectiveProvider, painterMessages, reasoningCollector);
         if (reasoningCollector.value && onReasoning) {

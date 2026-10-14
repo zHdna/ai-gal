@@ -9893,7 +9893,17 @@ function openProviderModal(providerId = null) {
       keyField.value = '';
       keyField.placeholder = p.has_api_key ? '已保存密钥（留空则保持不变）' : 'sk-...';
       DOM.providerModel().value = p.model || '';
-      DOM.providerHeaders().value = p.custom_headers ? (typeof p.custom_headers === 'string' ? p.custom_headers : JSON.stringify(p.custom_headers, null, 2)) : '';
+      // 自定义请求头回显（2026-10-14）：格式化输出，便于阅读与编辑。
+      // 旧实现直接把库里的紧凑字符串塞进输入框（如 {"a":"1","b":"2"}），
+      // 用户想改就得手工调格式，很容易写出非法 JSON —— 而那正是"改了又恢复"的诱因之一。
+      {
+        let hdr = p.custom_headers;
+        if (typeof hdr === 'string') {
+          try { hdr = JSON.parse(hdr); } catch (e) { hdr = null; }
+        }
+        const isEmpty = !hdr || (typeof hdr === 'object' && !Array.isArray(hdr) && Object.keys(hdr).length === 0);
+        DOM.providerHeaders().value = isEmpty ? '' : JSON.stringify(hdr, null, 2);
+      }
       DOM.providerIsDefault().checked = !!p.is_default;
       const cwEl = DOM.providerContextWindow();
       if (cwEl) cwEl.value = p.context_window > 0 ? String(p.context_window) : '';
@@ -9935,11 +9945,32 @@ async function saveProvider() {
   const typedKey = DOM.providerApiKey().value.trim();
   if (typedKey) data.api_key = typedKey;
 
-  // Parse custom headers
-  try {
+  // 自定义请求头（2026-10-14 修复「改了又恢复」）
+  // 旧实现有两个缺陷，叠加后表现为"改了保存成功、重进却恢复原值"：
+  //   ① 解析失败被 catch 静默吞掉 → 用户看不到任何提示，字段也没进请求体；
+  //   ② 只有解析成功才发送该字段 → 后端 COALESCE 保持旧值，而前端已弹"已更新"。
+  //   另外"清空"也同样无效（空串不发字段 → 永远清不掉）。
+  // 现在：解析失败【明确报错并中止保存】；空输入【显式发送 {}】以支持清空。
+  {
     const hdrRaw = DOM.providerHeaders().value.trim();
-    if (hdrRaw) data.custom_headers = JSON.parse(hdrRaw);
-  } catch { /* ignore invalid JSON */ }
+    if (!hdrRaw) {
+      data.custom_headers = {};            // 显式清空（不再依赖 COALESCE 保持旧值）
+    } else {
+      let parsedHeaders;
+      try {
+        parsedHeaders = JSON.parse(hdrRaw);
+      } catch (e) {
+        // ⚠️ toast 用 textContent 渲染，\n 不会换行 → 用空格分隔
+        showToast('自定义请求头不是合法的 JSON，已取消保存。示例：{"X-Custom-Header": "value"}', 'error');
+        return;                            // 中止保存，避免"以为改了其实没改"
+      }
+      if (parsedHeaders === null || typeof parsedHeaders !== 'object' || Array.isArray(parsedHeaders)) {
+        showToast('自定义请求头必须是 JSON 对象（形如 {"键": "值"}），已取消保存。', 'error');
+        return;
+      }
+      data.custom_headers = parsedHeaders;
+    }
+  }
 
   if (!data.name || !data.base_url || !data.model) {
     showToast('请填写名称、URL 和模型', 'warning');
