@@ -79,6 +79,66 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
 });
+
+// ── 本机服务反 CSRF / 反 DNS 重绑定（安全审计 H1）─────────────────────────
+// 背景：门禁把 loopback 视为完全可信（mobileAuth.isLoopback），但"来自 127.0.0.1 的
+// TCP 连接"并不等于"用户本人的意图" —— 用户浏览器访问的任意恶意网页都能发起到
+// http://127.0.0.1:<port> 的简单请求（form-urlencoded / multipart 免预检，不触发 CORS）。
+// 因此这里补两道与"连接来源"无关的防线：
+//   ① Host 白名单  → 阻断 DNS 重绑定（攻击者域名解析到 127.0.0.1 时 Host 仍是攻击者域名）
+//   ② Origin 同站  → 阻断跨站 CSRF（恶意站点发起的请求，Origin 必为攻击者源）
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+/** 从 Host 头取出裸主机名（去掉端口、统一小写） */
+function hostNameOf(hostHeader) {
+  const h = String(hostHeader || '').trim().toLowerCase();
+  if (!h) return '';
+  if (h.startsWith('[')) {                 // IPv6 字面量形如 [::1]:3210
+    const end = h.indexOf(']');
+    return end > 0 ? h.slice(0, end + 1) : h;
+  }
+  const colon = h.lastIndexOf(':');
+  return colon > 0 ? h.slice(0, colon) : h;
+}
+
+/** 该主机名是否属于「本机自己也认得的地址」：回环 + 本机网卡 IP */
+function isSelfHostname(hostname) {
+  if (!hostname) return false;
+  if (LOOPBACK_HOSTNAMES.has(hostname)) return true;
+  // LAN 模式下必须允许本机网卡 IP（含 IPv6），否则手机访问会被自己的 Host 校验拦掉
+  try {
+    const os = require('os');
+    const ifaces = os.networkInterfaces();
+    for (const name of Object.keys(ifaces)) {
+      for (const ni of ifaces[name] || []) {
+        if (String(ni.address).toLowerCase() === hostname) return true;
+        if (ni.family === 'IPv6' && ('[' + String(ni.address).toLowerCase() + ']') === hostname) return true;
+      }
+    }
+  } catch (e) { /* 取不到网卡就不放行，宁可严格 */ }
+  return false;
+}
+
+app.use((req, res, next) => {
+  // ① Host 白名单：防 DNS 重绑定
+  //    Host 缺失时放行：HTTP/1.0 老客户端与部分脚本不带 Host，本机场景无重绑定风险。
+  const hostname = hostNameOf(req.headers.host);
+  if (hostname && !isSelfHostname(hostname)) {
+    return res.status(421).json({ error: 'Misdirected Request: 非法 Host' });
+  }
+
+  // ② 带 Origin 的请求必须是同站发起的
+  const origin = req.headers.origin;
+  if (origin && origin !== 'null') {
+    let oHost = '';
+    try { oHost = hostNameOf(new URL(origin).host); } catch (e) { oHost = ''; }
+    if (!oHost || !isSelfHostname(oHost)) {
+      return res.status(403).json({ error: 'Forbidden: 跨站请求被拒绝' });
+    }
+  }
+
+  next();
+});
 // ===== 移动端前端路由 (2026-09-13 启用) =====
 // 规则：
 //   · 手机/平板访问，或桌面浏览器窗口很窄 → 自动进入移动端 public/mobile.html

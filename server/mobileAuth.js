@@ -99,22 +99,44 @@ function verifyPassword(db, password) {
 function ensureDefaultPassword(db) {
   if (hasPassword(db)) return false;
   setPassword(db, DEFAULT_PASSWORD);
-  console.log('[Auth] 已写入默认访问密码（请提醒用户尽快在系统菜单里修改）');
+  // 安全审计 M4（B2 方案）：默认密码保留（老用户零意外），但必须显著告警。
+  // LAN 模式下这个口令是弱口令且公开（写在登录页与文档里），未改密 = 全站敞开。
+  console.warn('[Auth] ⚠ 当前使用默认访问密码 12345 —— 仅本机访问是安全的；');
+  console.warn('[Auth] ⚠ 若在「允许局域网访问 / LAN 模式」下使用，请务必先在系统菜单 → 访问密码 中修改！');
   return true;
 }
 
 /* ---------------- 会话（HMAC 签名 cookie） ---------------- */
 
 let SIGN_KEY = null;
+let SIGN_KEY_SOURCE = '';   // 'env' | 'file' | 'ephemeral' —— 供启动日志排查
 function signKey() {
   if (SIGN_KEY) return SIGN_KEY;
+  let material = '';
   // 与加密模块同源：优先环境变量，否则用同一份 per-install 密钥文件
-  const material = (process.env.CRYPTO_PASSWORD && process.env.CRYPTO_SALT)
-    ? process.env.CRYPTO_PASSWORD + '|' + process.env.CRYPTO_SALT
-    : (() => {
-        try { return fs.readFileSync(require('./paths').CRYPTO_SECRET_PATH, 'utf8').trim(); }
-        catch { return 'ai-gal-auth-fallback'; }
-      })();
+  if (process.env.CRYPTO_PASSWORD && process.env.CRYPTO_SALT) {
+    material = process.env.CRYPTO_PASSWORD + '|' + process.env.CRYPTO_SALT;
+    SIGN_KEY_SOURCE = 'env';
+  } else {
+    const secretPath = require('./paths').CRYPTO_SECRET_PATH;
+    try {
+      material = fs.readFileSync(secretPath, 'utf8').trim();
+      SIGN_KEY_SOURCE = 'file';
+    } catch (e) {
+      // ⚠️ 安全审计 M3：绝不回退到硬编码常量（那等于把签名私钥公开给所有人，
+      //    任何人都能自签 aigal_auth cookie 伪造会话、绕过 LAN 门禁）。
+      // 现场生成随机密钥并尽力持久化：至少保证本次进程内不可伪造；
+      // 持久化失败只影响"重启后需重新登录"，代价远小于会话被伪造。
+      material = crypto.randomBytes(48).toString('hex');
+      SIGN_KEY_SOURCE = 'ephemeral';
+      try { fs.writeFileSync(secretPath, material, { mode: 0o600 }); } catch (e2) { /* 只读盘：接受重启失效 */ }
+      console.error('[Auth] 无法读取密钥文件（%s），已现场生成随机会话密钥 —— 重启后需重新登录',
+        e && e.message);
+    }
+  }
+  if (!material || material.length < 16) {
+    throw new Error('[Auth] 会话密钥 material 非法，拒绝伪造风险');
+  }
   SIGN_KEY = crypto.scryptSync('auth-session|' + material, 'ai-gal-auth-v1', 32);
   return SIGN_KEY;
 }
@@ -148,7 +170,8 @@ function parseCookies(header) {
     if (i < 0) return;
     const k = pair.slice(0, i).trim();
     const v = pair.slice(i + 1).trim();
-    if (k) out[k] = decodeURIComponent(v);
+    // 安全审计 N3：畸形百分号编码（如 %ZZ）会抛 URIError → 500。按原样保留，不抛。
+    if (k) { try { out[k] = decodeURIComponent(v); } catch (e) { out[k] = v; } }
   });
   return out;
 }
@@ -207,12 +230,18 @@ function isPublicPath(p) {
 
 function registerRoutes(app, db) {
   app.get('/api/auth/status', (req, res) => {
-    res.json({
-      isLocal: isLoopback(req),
-      authed: isAuthed(req),
+    const local = isLoopback(req);
+    const authed = isAuthed(req);
+    // 安全审计 M4（B2 方案）：usingDefaultPassword 只对「本机或已登录」暴露。
+    // 原实现无条件返回，等于向未认证的 LAN 访客广播"这台机器还在用默认密码 12345"，
+    // 直接告诉他第一步该输什么。
+    const payload = {
+      isLocal: local,
+      authed,
       hasPassword: hasPassword(db),
-      usingDefaultPassword: isDefaultPassword(db),
-    });
+    };
+    if (local || authed) payload.usingDefaultPassword = isDefaultPassword(db);
+    res.json(payload);
   });
 
   app.post('/api/auth/login', (req, res) => {
@@ -237,18 +266,46 @@ function registerRoutes(app, db) {
     res.json({ ok: true });
   });
 
-  // 改密码 / 重置：**仅本机**可调用（忘记密码的人在本机登录后重置）
+  // ── 修改访问密码 ─────────────────────────────────────────────────────────
+  // 权限模型（安全审计 M4 方案 B）：
+  //   · 本机（loopback）：免密，可直接改 —— 忘记密码的人在本机重置；
+  //   · 非本机但**已登录**：允许改，但**必须提供正确的旧密码**。
+  //     这样手机/平板用户可以自己完成改密闭环，而不必跑回电脑前。
+  //   · 非本机且未登录：403（门禁本就会先拦下，这里是纵深防御）。
+  //
+  // 防爆破：复用登录失败限速（同一 IP 计数、20 次/10 分钟）。校验旧密码失败
+  // 与登录失败共享配额，避免"换一个接口继续猜"。
   app.post('/api/auth/password', (req, res) => {
-    if (!isLoopback(req)) return res.status(403).json({ error: '只能在本机修改访问密码' });
+    const local = isLoopback(req);
+    if (!local && !isAuthed(req)) {
+      return res.status(403).json({ error: '需要登录后才能修改密码' });
+    }
+
     const next = req.body && req.body.password;
     if (!next || String(next).length < 4) return res.status(400).json({ error: '密码至少 4 位' });
     if (String(next).length > 200) return res.status(400).json({ error: '密码过长' });
+
+    // 非本机必须验旧密码（本机免密，无需提供）
+    if (!local) {
+      const ip = String((req.socket && req.socket.remoteAddress) || req.ip || '');
+      if (tooManyFailures(ip)) {
+        return res.status(429).json({ error: '尝试次数过多，请稍后再试' });
+      }
+      const current = req.body && req.body.current_password;
+      if (!current || !verifyPassword(db, current)) {
+        noteFailure(ip);           // 与登录失败共享配额
+        return res.status(401).json({ error: '当前密码不正确' });
+      }
+      clearFailures(ip);
+    }
+
     setPassword(db, String(next));
-    setAuthCookie(res);          // 本机本来就免密，这里顺手刷新会话
+    setAuthCookie(res);            // 改密后刷新本会话，避免自己把自己踢下线
     res.json({ ok: true, usingDefaultPassword: isDefaultPassword(db) });
   });
 
-  // 重置为默认密码 12345（同样仅本机）
+  // 重置为默认密码 12345（**始终仅本机** —— 这是"忘记密码"的兜底通道，
+  // 放开给远程用户等于给攻击者一键降级口令的机会）
   app.post('/api/auth/reset', (req, res) => {
     if (!isLoopback(req)) return res.status(403).json({ error: '只能在本机重置访问密码' });
     setPassword(db, DEFAULT_PASSWORD);
@@ -279,6 +336,7 @@ function gate(db) {
 module.exports = {
   DEFAULT_PASSWORD,
   COOKIE_NAME,
+  get SIGN_KEY_SOURCE() { return SIGN_KEY_SOURCE; },
   isLoopback,
   isAuthed,
   hasPassword,

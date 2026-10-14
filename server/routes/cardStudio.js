@@ -437,7 +437,9 @@ module.exports = (db) => {
             }
             resolve({ text: String(text), finish_reason: finishReason });
           } catch (e) {
-            reject(new Error('供应商响应解析失败：' + data.slice(0, 160)));
+            // 安全审计 N2：不回显上游响应体（与 M1 同族）
+            console.warn('[CardStudio] LLM 响应解析失败，前 160 字节：%s', data.slice(0, 160));
+            reject(new Error('供应商响应解析失败（HTTP ' + (res.statusCode || '?') + '）'));
           }
         });
         res.on('error', reject);
@@ -1048,8 +1050,17 @@ module.exports = (db) => {
     });
   }
 
+  // 安全审计 N1：原实现用 req.headers.host 构造 origin，而 selfJson 会取其 port 连
+  // 127.0.0.1 —— 在 Host 头不受信任的场景（见 index.js 的 H1 中间件；若该防线被绕过）下，
+  // 攻击者可让服务端以 PUT + JSON body 打向任意本地端口。改为使用服务端自己知道的
+  // 真实监听端口（index.js 的 listenOn 在端口避让后会回写 desktop-config.json）。
   function currentOrigin(req) {
-    return 'http://' + (req.headers.host || ('127.0.0.1:' + (process.env.PORT || 3000)));
+    let port = 3210;
+    try {
+      const dc = require('../desktop-config');
+      port = dc.resolveConfiguredPort() || port;
+    } catch (e) { /* 配置不可读时退回默认端口 */ }
+    return 'http://127.0.0.1:' + port;
   }
 
   // 卡片引擎性判定（apply 写 ui_hints 用；同 inspect 的信号口径）

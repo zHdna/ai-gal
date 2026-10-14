@@ -6044,3 +6044,33 @@ html[data-theme="light"] .app .art-frame .stage-video {
   aspect-ratio: auto;
   background: #000;
 }
+
+
+/* ── 回顾：加载更早的对话（B 方案，2026-10-13）─────────────────────────────
+   消息区是分页渲染的（默认只挂最新 100 条），「回顾」默认只能看到最近这批楼层。
+   更早的轮次需要点这个按钮往前补。 */
+.hist-earlier {
+  padding: 0 0 10px;
+  text-align: center;
+}
+
+.hist-earlier-btn {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px dashed rgba(126, 178, 255, .45);
+  background: rgba(126, 178, 255, .08);
+  color: #9ec1ff;
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.hist-earlier-btn:hover {
+  background: rgba(126, 178, 255, .16);
+}
+
+.hist-earlier-btn[disabled] {
+  opacity: .55;
+  cursor: default;
+}

@@ -180,17 +180,18 @@
       keys.forEach(function (name) {
         var e = roster[name] || {};
         var avUrl = rosterAvatarUrl(e, name);
-        var bits = [];
-        var g = e['种族性别'] || e.gender || '';
-        if (g) bits.push(genderZh(g));
-        var age = e['年龄'] || e.age || '';
-        if (age) bits.push(String(age).replace(/_/g, ' '));
-        if (e.relation || e['关系']) bits.push(e.relation || e['关系']);
+        // ⚠️ 2026-10-13：与桌面端保持一致 —— 名册【只展示 关系 + 简要介绍】，
+        // 不再展示 种族性别 / 年龄（用户要求）。种族性别是生图存储格式（human_girl），
+        // 对玩家没有可读性；关系由记录员 AI 每轮后台维护。
+        var rel = e['关系'] || e.relation || '';
         var intro = e['简要介绍'] || e.intro || '';
+        var bits = [];
+        if (rel) bits.push(rel);
+        if (intro) bits.push(intro);
         html += '<div class="vn-roster" data-name="' + esc(name) + '"' + (avUrl ? ' data-av="' + esc(avUrl) + '"' : '') + '>' +
           '<div class="av"' + (avUrl ? ' style="background-image:url(' + esc(avUrl) + ')"' : '') + '>' +
           (avUrl ? '' : esc((name || '?').charAt(0))) + '</div>' +
-          '<div class="info"><b>' + esc(name) + '</b><p>' + esc(bits.join(' · ') || intro || '—') + '</p></div>' +
+          '<div class="info"><b>' + esc(name) + '</b><p>' + esc(bits.join(' · ') || '—') + '</p></div>' +
           (avUrl ? '<span class="tag">看大图</span>' : '') +
           '</div>';
       });
@@ -227,12 +228,6 @@
     return '/api/saves/' + encodeURIComponent(sid) + '/avatar/' + encodeURIComponent(name);
   }
 
-  function genderZh(g) {
-    var s = String(g);
-    if (/girl|female/i.test(s)) return '女';
-    if (/boy|male/i.test(s)) return '男';
-    return s;
-  }
 
   /* ---------------- 画廊页 ---------------- */
   P._latestCG = '';

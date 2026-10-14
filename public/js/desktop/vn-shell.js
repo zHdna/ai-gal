@@ -1581,8 +1581,11 @@
     el.innerHTML = names.map(function (name) {
       var r = roster[name] || {};
       var url = speakerAvatar(name);
-      var desc = [r['种族性别'], r['年龄'] ? r['年龄'] + '岁' : '', r['身份'] || r['职业'] || r['简要介绍']]
-        .filter(Boolean).join(' · ') || (name === personaName() ? '玩家' : '');
+      // ⚠️ 2026-10-13：与桌面名册页 / 移动端保持一致 —— 只展示 关系 + 简要介绍，
+      // 不再展示 种族性别（用户要求）。种族性别是生图存储格式，对玩家没有可读性。
+      var rel = r['关系'] || r.relation || '';
+      var intro = r['简要介绍'] || r['身份'] || r['职业'] || '';
+      var desc = [rel, intro].filter(Boolean).join(' · ') || (name === personaName() ? '玩家' : '');
       var affKey = Object.keys(r).filter(function (k) { return /好感|affinity|信任/.test(k) && !isNaN(parseFloat(r[k])); })[0];
       var aff = affKey ? Math.max(0, Math.min(100, parseFloat(r[affKey]))) : null;
       var thumbUrl2 = url && (typeof window.thumbUrl === 'function') ? window.thumbUrl(url, 256) : url;
@@ -1981,10 +1984,44 @@
         '</div></div>'
       );
     });
-    body2.innerHTML = out.join('') || emptyPane('该筛选下没有内容');
+    // ── B 方案：更早的轮次不在 DOM 里时，提供「加载更早」 ────────────────────
+    // 消息区是**分页渲染**的（默认只挂最新 100 条），所以「回顾」默认只能看到
+    // 最近这批楼层。74 轮的存档里就只显示到第 25 轮（=50 轮）。
+    // 这里在顶部给一个按钮，点一次往前补 100 条，直到全部加载。
+    var pag = (window.AppState && typeof window.AppState === 'object') ? window.AppState : {};
+    var loadedCount = (pag.messages || []).length;
+    var totalCount = pag.totalMessages || loadedCount;
+    var remain = Math.max(0, totalCount - loadedCount);
+    var earlierBar = '';
+    if (remain > 0) {
+      earlierBar = '<div class="hist-earlier">' +
+        '<button type="button" class="hist-earlier-btn" title="向上翻看更早的聊天记录">' +
+        '↑ 加载更早的对话（还有 ' + remain + ' 条 / 约 ' + Math.ceil(remain / 2) + ' 轮）' +
+        '</button></div>';
+    }
+    body2.innerHTML = earlierBar + (out.join('') || emptyPane('该筛选下没有内容'));
+    var ebtn = $('.hist-earlier-btn', body2);
+    if (ebtn) {
+      on(ebtn, 'click', function () {
+        ebtn.disabled = true;
+        ebtn.textContent = '加载中…';
+        var p = (typeof loadEarlierMessages === 'function')
+          ? Promise.resolve(loadEarlierMessages())
+          : Promise.reject(new Error('当前界面不支持加载更早消息'));
+        p.then(function () { renderHistory(); })
+         .catch(function (err) {
+           ebtn.disabled = false;
+           ebtn.textContent = '↑ 加载更早的对话（失败，点击重试）';
+           console.warn('[Hist] load earlier failed:', err && err.message);
+         });
+      });
+    }
     /* 副标题给真实轮数（以前是设计稿里的静态「12 轮」） */
     var sub = $('#sheetHist .sub');
-    if (sub) sub.textContent = '本存档 · ' + maxRound + ' 轮 / ' + blocks.length + ' 楼';
+    if (sub) {
+      sub.textContent = '本存档 · ' + maxRound + ' 轮 / ' + blocks.length + ' 楼'
+        + (remain > 0 ? '（更早的 ' + remain + ' 条未加载）' : '');
+    }
     $$('.hist', body2).forEach(function (h) {
       on(h, 'click', function (e) {
         if (e.target.closest('.jump')) return;
@@ -2469,8 +2506,12 @@
     var note = byId('pwNote');
     if (!note) return;
     if (!pwState.isLocal) {
-      note.className = 'pw-note warn';
-      note.innerHTML = '当前不是本机访问，<b>无法修改或重置密码</b>。<br>请到运行 AI-GAL 的那台电脑上打开本窗口操作。';
+      // 安全审计 M4（方案 B）：非本机用户已登录后也可以改密，但必须验证旧密码。
+      // 「重置为默认密码」仍只限本机（那是忘记密码的兜底通道，远程放开=一键降级口令）。
+      note.className = 'pw-note';
+      note.innerHTML = pwState.usingDefaultPassword
+        ? '当前仍是<b>默认密码 12345</b>，建议马上改成自己的密码。<br>远程修改需要先输入当前密码。'
+        : '已设置自定义密码。远程修改需要先输入当前密码。';
       return;
     }
     note.className = 'pw-note';
@@ -2509,12 +2550,20 @@
     var err = byId('pwErr'); if (err) err.textContent = '';
     var a = byId('pwNew'), b = byId('pwNew2');
     if (a) a.value = ''; if (b) b.value = '';
+    var cur = byId('pwCurrent'); if (cur) cur.value = '';
     loadAuthStatus().then(function () {
-      /* 非本机不给改：把输入区禁掉，免得白填 */
-      var disabled = !pwState.isLocal;
-      [byId('pwNew'), byId('pwNew2'), byId('pwSave'), byId('pwResetDefault')].forEach(function (el) {
-        if (el) el.disabled = disabled;
+      /* 方案 B：本机免密直改；非本机已登录也可改，但要填「当前密码」。 */
+      var needCurrent = !pwState.isLocal;
+      var row = byId('pwCurrentRow');
+      if (row) row.style.display = needCurrent ? '' : 'none';
+      [byId('pwNew'), byId('pwNew2'), byId('pwSave')].forEach(function (el) {
+        if (el) el.disabled = false;      // 两种情形都可以改
       });
+      /* 「重置为默认密码」仍只限本机 */
+      var rst = byId('pwResetDefault');
+      if (rst) rst.disabled = pwState.isLocal ? false : true;
+      var tip = byId('pwResetTip');
+      if (tip) tip.style.display = pwState.isLocal ? '' : 'none';
     });
   }
   function closePwModal() { if (pwModal) pwModal.classList.remove('on'); }
@@ -2530,16 +2579,21 @@
     if (err) err.textContent = '';
     if (!v1 || v1.length < 4) { if (err) err.textContent = '密码至少 4 位'; return; }
     if (v1 !== v2) { if (err) err.textContent = '两次输入的密码不一致'; return; }
+    /* 方案 B：非本机必须提供当前密码 */
+    var curEl = byId('pwCurrent');
+    var curVal = curEl ? curEl.value : '';
+    if (!pwState.isLocal && !curVal) { if (err) err.textContent = '请输入当前密码'; return; }
     var btn = this; btn.disabled = true;
     fetch('/api/auth/password', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: v1 })
+      body: JSON.stringify({ password: v1, current_password: curVal })
     }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
         if (!res.ok) { if (err) err.textContent = res.d.error || '保存失败'; return; }
         toast('访问密码已更新');
         if (a) a.value = ''; if (b) b.value = '';
+        var c0 = byId('pwCurrent'); if (c0) c0.value = '';
         pwState.usingDefaultPassword = !!res.d.usingDefaultPassword;
         pwSetNote(); pwSetStateLabel();
       })
@@ -3290,7 +3344,9 @@
       try { if (localStorage.getItem(key) === '1') return; } catch (e) { }
       setTimeout(function () {
         try { localStorage.setItem(key, '1'); } catch (e) { }
-        toast('访问密码仍是默认的 12345 —— 建议在「菜单 → 访问密码」里改掉');
+        // 安全审计 M4（B2 方案）：默认密码保留（老用户零意外），但在本机做显著引导。
+        // 之所以只说"建议"而不强制：本机访问本来就免密，默认密码只影响 LAN 场景。
+        toast('⚠ 访问密码仍是默认的 12345 —— 开启局域网访问前请务必改掉（菜单 → 访问密码）', 8000);
       }, 2500);
     });
     observeMessages();

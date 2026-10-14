@@ -10,6 +10,31 @@ const { SETTINGS_ID, ANIMA_PRESET, NOVELAI_PRESET, OPENAI_COMPATIBLE_MODES, EXTE
 const { isPathWithin } = require('../utils/pathGuard');
 const savePaths = require('../savePaths');
 const { isUrlSafe } = require('../utils/urlGuard');
+const { encrypt, decrypt } = require('../crypto');
+
+// ── API 密钥掩码（安全审计 M2）────────────────────────────────────────────
+// 与 routes/providers.js 同源逻辑：GET 返回掩码而非真钥，写入时识别掩码不覆盖。
+const API_KEY_MASK = '••••••••';
+
+/** 界面回传的掩码占位符？空串不算（空串 = 显式清空） */
+function isMaskedApiKey(value) {
+  if (value === undefined || value === null) return false;
+  const s = String(value).trim();
+  if (!s) return false;
+  if (s === API_KEY_MASK) return true;
+  if (/^[\u2022\u25CF\u25CB\u25AA\u25AB\u2023\u2043\u2219\u00B7\u002A\uFF0A\u25E6\u26AB\u25CE]+$/.test(s)) return true;
+  if (/(\.\.\.|\u2026)$/.test(s) && s.length <= 12) return true;
+  return false;
+}
+
+/** 入库解析：明文 → 加密；掩码 → undefined（让 COALESCE 跳过，保留库中原值） */
+function resolveApiKeyForStore(incoming) {
+  if (incoming === undefined || incoming === null) return undefined;
+  const s = String(incoming).trim();
+  if (!s) return '';                       // 显式清空
+  if (isMaskedApiKey(s)) return undefined; // 掩码：保留库中原值
+  return encrypt(s);                       // 明文：加密
+}
 const { normalizeImageSize, sizeForEngine } = require('../utils/imageSize');
 
 // Maximum allowed size for base64 data URLs (5 MB)
@@ -55,9 +80,17 @@ function resolveExternalEndpoint(genMode, settings) {
     const v = typeof value === 'string' ? value.trim() : '';
     return v || ((isAnima || isNovelai) ? fallback : '');
   };
+  // 安全审计 M2：库中 api_key 现在是 AES-256-GCM 密文，使用前必须解密。
+  // decrypt() 对无法解密的输入返回空串（fail-closed），因此老库的明文值也能平滑过渡？
+  // ——不能：明文不是合法密文，decrypt 会返回 ''。这正是 init.js 迁移存在的理由。
+  const rawKey = settings && settings.api_key;
+  let plainKey = '';
+  if (typeof rawKey === 'string' && rawKey.trim()) {
+    plainKey = decrypt(rawKey.trim());
+  }
   return {
     apiUrl: pick(settings && settings.api_url, preset.API_URL),
-    apiKey: pick(settings && settings.api_key, isNovelai ? '' : ANIMA_PRESET.API_KEY),
+    apiKey: pick(plainKey, isNovelai ? '' : ANIMA_PRESET.API_KEY),
     apiModel: pick(settings && settings.api_model, preset.API_MODEL),
     timeoutMs: isAnima ? ANIMA_PRESET.TIMEOUT_MS
       : (isNovelai ? NOVELAI_PRESET.TIMEOUT_MS : EXTERNAL_API_TIMEOUT_MS),
@@ -843,6 +876,9 @@ module.exports = (db) => {
     // 历史坏值（如 `1536X1024`）在返回给界面时就规范化：用户一打开设置页看到的就是
     // 正确写法，保存一次即可把库里的坏值覆盖掉（本地引擎只认小写 x，见 utils/imageSize.js）。
     if (row.image_size) row.image_size = normalizeImageSize(row.image_size) || row.image_size;
+    // 安全审计 M2：绝不把密钥原文发回客户端。
+    // ⚠️ 必须放在上面 anima/novelai 分支【之后】——那两个分支会把解析出的明文写进 row.api_key。
+    row.api_key = row.api_key ? API_KEY_MASK : '';
     res.json(row);
   });
 
@@ -860,7 +896,8 @@ module.exports = (db) => {
       const row = db.prepare('SELECT * FROM image_settings WHERE id = ?').get(SETTINGS_ID);
       // anima 引擎的端点有内置默认值，字段留空时也能拉模型列表
       api_url = resolveExternalEndpoint(row && row.mode, row).apiUrl;
-      if (!api_key) api_key = (row && row.api_key) || '';
+      // 安全审计 M2：库中密钥是密文，用前解密（resolveExternalEndpoint 已解密 apiKey）
+      if (!api_key) api_key = resolveExternalEndpoint(row && row.mode, row).apiKey || '';
     }
     if (!api_url) return res.status(400).json({ error: '未配置 API 地址' });
     // 由生图端点推导 /models 基址：去掉末尾 /images/generations 等后缀
@@ -901,7 +938,9 @@ module.exports = (db) => {
     }
     // 去除 API 地址/密钥首尾空白，避免用户复制粘贴时带入空格导致请求发到错误地址
     if (typeof api_url === 'string') api_url = api_url.trim();
-    if (typeof api_key === 'string') api_key = api_key.trim();
+    // 安全审计 M2：密钥加密后入库；界面回传的掩码占位符不覆盖真实密钥
+    //（返回 undefined 时 COALESCE(?, api_key) 保持库中原值）
+    if (api_key !== undefined) api_key = resolveApiKeyForStore(api_key);
     if (typeof comfyui_url === 'string') comfyui_url = comfyui_url.trim();
     // 工作流文件名：仅接受项目根目录下的裸文件名（后端 getWorkflowFile 会再校验）
     if (typeof cg_workflow === 'string') cg_workflow = cg_workflow.trim();

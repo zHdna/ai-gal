@@ -954,7 +954,36 @@
       });
       html += '</div>';
     });
-    body.innerHTML = html;
+    // ── B 方案：更早的轮次不在 DOM 里时，提供「加载更早」 ────────────────────
+    // 消息区是分页渲染的（默认只挂最新 100 条），「回顾」默认只能看到最近这批楼层。
+    var pag = (window.AppState && typeof window.AppState === 'object') ? window.AppState : {};
+    var loadedCount = (pag.messages || []).length;
+    var totalCount = pag.totalMessages || loadedCount;
+    var remain = Math.max(0, totalCount - loadedCount);
+    var earlierBar = '';
+    if (remain > 0) {
+      earlierBar = '<div class="vn-hist-earlier">' +
+        '<button type="button" class="vn-hist-earlier-btn">' +
+        '↑ 加载更早的对话（还有 ' + remain + ' 条）' +
+        '</button></div>';
+    }
+    body.innerHTML = earlierBar + html;
+    var ebtn = $('.vn-hist-earlier-btn', body);
+    if (ebtn) {
+      ebtn.addEventListener('click', function () {
+        ebtn.disabled = true;
+        ebtn.textContent = '加载中…';
+        var p = (typeof window.loadEarlierMessages === 'function')
+          ? Promise.resolve(window.loadEarlierMessages())
+          : Promise.reject(new Error('当前界面不支持加载更早消息'));
+        p.then(function () { showHistory(); })
+         .catch(function (err) {
+           ebtn.disabled = false;
+           ebtn.textContent = '↑ 加载更早的对话（失败，点击重试）';
+           console.warn('[Hist] load earlier failed:', err && err.message);
+         });
+      });
+    }
 
     // 点条目 → 跳到那一段
     $$('.vn-hist-item', body).forEach(function (el) {

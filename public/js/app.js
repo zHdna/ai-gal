@@ -6941,6 +6941,13 @@ const RACE_CN = {
   robot: '机器人', neko: '猫娘', kitsune: '狐妖', succubus: '魅魔', unknown: '未知'
 };
 const GENDER_CN = { girl: '女', female: '女', male: '男', boy: '男', futa: '扶她', other: '其他' };
+// 拆分 种族性别 复合 token 用的性别词表 —— 与后端 chat.js 的 GENDER_WORDS **同源**，
+// 改一边必须改另一边（后端那套是生图标签的权威口径）。
+const GENDER_WORDS = ['futa', 'girl', 'boy'];
+// 复合种族前缀 → 中文。RACE_CN 里没有这些键，缺了它们 cat_furry_futa 会显示成 "cat_furry"。
+const RACE_CN_EXTRA = {
+  cat_furry: '猫兽人', dog_furry: '犬兽人', catgirl: '猫娘', foxgirl: '狐娘',
+};
 // Danbooru tag -> Chinese translation for portrait field fallback
 const TAG_CN = {
   // Hair color
@@ -6972,17 +6979,27 @@ const TAG_CN = {
 const cnTag = (tag) => TAG_CN[tag?.toLowerCase()] || tag || '';
 
 function parseRosterFields(char) {
-  const rg = char['种族性别'] || '';
+  // ⚠️ 2026-10-13 修复：旧实现用 rg.split('_')[1] 当性别，遇到【三段式】复合种族就取错 ——
+  //   'cat_furry_futa'.split('_') = ['cat','furry','futa'] → 性别被读成 'furry'。
+  //   改为与后端 splitRaceGender() **同一套算法**：性别从【尾部】匹配（endsWith('_' + g)），
+  //   前面整段都是种族。于是 cat_furry_futa → race='cat_furry', gender='futa'，
+  //   与生图标签所用的口径完全一致。
+  const rg = String(char['种族性别'] || '').trim();
   let race = '', gender = '';
   if (rg) {
-    const parts = rg.split('_');
-    if (parts.length >= 2) {
-      race = RACE_CN[parts[0].toLowerCase()] || parts[0];
-      gender = GENDER_CN[parts[1].toLowerCase()] || parts[1];
-    } else {
-      race = rg;
-    }
+    const rgc = rg.toLowerCase();
+    const genderPart = GENDER_WORDS.find(g => rgc === g || rgc.endsWith('_' + g)) || '';
+    // 剥掉结尾的 "_性别"，剩下的是种族（整段就是性别词时种族为空）
+    const racePart = genderPart
+      ? (rgc === genderPart ? '' : rg.slice(0, rg.length - genderPart.length - 1))
+      : rg;
+    race = racePart ? (RACE_CN[racePart.toLowerCase()] || RACE_CN_EXTRA[racePart.toLowerCase()] || racePart) : '';
+    gender = genderPart ? (GENDER_CN[genderPart] || genderPart) : '';
   }
+  // 关系：角色对主角的当前立场（由记录员 AI 每轮后台维护，见 chat.js ROSTER_KEEPER）。
+  // ⚠️ 2026-10-13 起名册页【只展示 关系 + 简要介绍】，不再展示 种族性别
+  //   （用户要求）。race/gender 仍然保留在返回值里 —— 编辑表单要用它们反解回 种族性别。
+  const relation = char['关系'] || char.relation || '';
   // Intro from 简要介绍/简介/description or construct from available fields
   let intro = char['简要介绍'] || char['简介'] || char.description || char.intro || '';
   if (!intro) {
@@ -7002,7 +7019,7 @@ function parseRosterFields(char) {
     if (char['身高']) parts.push(char['身高'] + 'cm');
     intro = parts.join(' · ') || '';
   }
-  return { race, gender, intro };
+  return { race, gender, intro, relation };
 }
 
 async function loadRosterPage() {
@@ -7035,7 +7052,7 @@ async function loadRosterPage() {
         ${avatarHtml}
         <div class="roster-card-info">
           <div class="roster-card-name">${escapeHtml(name)}</div>
-          <div class="roster-card-meta">${escapeHtml(info.race)} · ${escapeHtml(info.gender)}</div>
+          <div class="roster-card-meta">${escapeHtml(info.relation || '关系未知')}</div>
           <div class="roster-card-intro">${escapeHtml((info.intro || '').substring(0, 50))}</div>
         </div>
       </div>`;
@@ -7080,7 +7097,7 @@ async function viewRosterChar(name) {
       <div class="char-detail-header">
         ${avatarHtml}
         <div class="char-detail-name">${escapeHtml(name)}</div>
-        <div class="char-detail-meta">${escapeHtml(info.race)} · ${escapeHtml(info.gender)}</div>
+        <div class="char-detail-meta">${escapeHtml(info.relation || '关系未知')}</div>
         <div class="char-detail-intro">${escapeHtml(info.intro || '暂无介绍')}</div>
       </div>
       <div class="char-detail-actions">
@@ -7103,9 +7120,8 @@ function editRosterChar(name) {
     content.innerHTML = `
       <div class="char-edit-form">
         <div class="char-edit-field"><label>姓名</label><input id="editCharName" value="${escapeHtml(name)}" readonly style="opacity:0.6"></div>
-        <div class="char-edit-field"><label>种族</label><input id="editCharRace" value="${escapeHtml(info.race)}"></div>
-        <div class="char-edit-field"><label>性别</label><input id="editCharGender" value="${escapeHtml(info.gender)}"></div>
-        <div class="char-edit-field"><label>简介</label><textarea id="editCharIntro" rows="3">${escapeHtml(info.intro)}</textarea></div>
+        <div class="char-edit-field"><label>关系</label><input id="editCharRelation" value="${escapeHtml(info.relation)}" placeholder="如：友好；主角曾出手相救"></div>
+        <div class="char-edit-field"><label>简介</label><textarea id="editCharIntro" rows="4">${escapeHtml(info.intro)}</textarea></div>
         <div style="display:flex;gap:8px;margin-top:8px;justify-content:flex-end">
           <button class="char-detail-btn" onclick="saveRosterCharEdit('${escapeJs(name)}')">保存</button>
           <button class="char-detail-btn" onclick="viewRosterChar('${escapeJs(name)}')">取消</button>
@@ -7118,14 +7134,15 @@ window.editRosterChar = editRosterChar;
 function saveRosterCharEdit(name) {
   const saveId = getCurrentSaveId();
   if (!saveId) return;
-  const race = document.getElementById('editCharRace')?.value || '';
-  const gender = document.getElementById('editCharGender')?.value || '';
+  const relation = document.getElementById('editCharRelation')?.value || '';
   const intro = document.getElementById('editCharIntro')?.value || '';
-  // Build 种族性别 from race+gender
-  const raceEn = Object.entries(RACE_CN).find(([, v]) => v === race)?.[0] || race.toLowerCase();
-  const genderEn = Object.entries(GENDER_CN).find(([, v]) => v === gender)?.[0] || gender.toLowerCase();
+  // ⚠️ 2026-10-13：编辑表单【不再提供 种族/性别】—— 用户要求名册只展示 关系 + 简要介绍。
+  // 旧实现的 "种族+性别 → 反解成 种族性别" 有两个真问题：
+  //   ① 展示的是中文（女/人类），反解回去会把生图用的 danbooru 值改成中文；
+  //   ② 只要用户在编辑框里留空或写错，就会把角色的种族性别直接写坏（立绘跟着变）。
+  // 现在只写这两个键，体貌/种族字段完全不受编辑影响。
   const updates = {
-    '种族性别': raceEn + '_' + genderEn,
+    '关系': relation,
     '简要介绍': intro,
   };
   request('/saves/' + saveId + '/roster/' + encodeURIComponent(name), {

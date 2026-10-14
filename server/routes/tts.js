@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { isPathWithin } = require('../utils/pathGuard');
+const { isUrlSafe } = require('../utils/urlGuard');
 
 const TTS_CACHE_DIR = require('../paths').TTS_CACHE_DIR;
 const TTS_QUEUE_FILE = require('../paths').TTS_QUEUE_FILE;
@@ -509,6 +510,36 @@ async function comfyDownloadAudio(baseUrl, fileInfo, savePath) {
 function buildTTSRouter(db) {
   const router = Router();
 
+  /**
+   * 安全审计 M1：出站前统一 SSRF 校验。
+   * /api/tts/models 的 base_url 直接来自请求体、/providers/:id/models 来自库中配置，
+   * 两者都可被指向内网/云元数据端点。这里统一拦截（默认模式下仍放行 127./10./192.168.
+   * 等私有段，因为本地 TTS 引擎就在这些地址上，见 utils/urlGuard.js 的设计说明）。
+   */
+  /**
+   * 安全审计 M1：判断是否是 Qwen3-TTS 端点。
+   * 原实现用 baseUrl.includes('cnb') —— 任何含 "cnb" 的域名（如 cnb.evil.com）都会走
+   * Qwen 分支，既可能误判也可能被利用。改为解析 URL 后精确比对。
+   */
+  function isQwenBaseUrl(baseUrl) {
+    try {
+      const u = new URL(String(baseUrl));
+      const host = u.hostname.toLowerCase();
+      if ((host === '127.0.0.1' || host === 'localhost') && u.port === '7860') return true;
+      if (u.pathname.startsWith('/qwenapi')) return true;
+      return false;
+    } catch (e) { return false; }
+  }
+
+  function assertOutboundUrlSafe(raw, label) {
+    const check = isUrlSafe(raw);
+    if (!check.ok) {
+      const err = new Error(label + ' 地址不被允许：' + check.reason);
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
   // ============ TTS Provider CRUD ============
 
   // GET /api/tts/providers
@@ -600,6 +631,7 @@ function buildTTSRouter(db) {
     if (!base_url) return res.status(400).json({ error: 'base_url required' });
     try {
       const baseUrl = base_url.replace(/\/+$/, '');
+      assertOutboundUrlSafe(baseUrl, 'TTS base_url');   // 安全审计 M1
 
       // Volink：标准 /v1/models 只列 LLM 文本模型（deepseek/qwen/claude…），TTS 模型不在其中；
       // /tts/models 也不存在（404）。唯一可靠来源是 tts/voices 里的 model 字段，
@@ -612,8 +644,9 @@ function buildTTSRouter(db) {
 
       // Qwen3-TTS (local or cloud) — fetch from /qwenapi/v1/models
       // Response format: { models: [{ name, type }, ...] }
-      const isQwenAPI = baseUrl.includes('127.0.0.1:7860') || baseUrl.includes('localhost:7860')
-        || baseUrl.includes('/qwenapi') || baseUrl.includes('cnb');
+      // 安全审计 M1：原实现用 includes('cnb') 等子串判定，任意含该串的域名都会被当 Qwen 处理。
+      // 改为解析 URL 后按 hostname/端口/路径前缀精确判定。
+      const isQwenAPI = isQwenBaseUrl(baseUrl);
       if (isQwenAPI) {
         let qwenModelUrl = baseUrl;
         if (qwenModelUrl.endsWith('/qwenapi/v1')) qwenModelUrl = qwenModelUrl + '/models';
@@ -636,7 +669,9 @@ function buildTTSRouter(db) {
                 return;
               }
               if (resp.statusCode !== 200) {
-                reject(new Error(`Qwen3-TTS 返回 HTTP ${resp.statusCode}: ${body.substring(0, 200)}`));
+                // 安全审计 M1：不回显目标响应体（可能含内网/云元数据内容），只留状态码
+                console.warn('[TTS] Qwen3-TTS 返回 HTTP %s，响应体前 200 字节：%s', resp.statusCode, body.substring(0, 200));
+                reject(new Error(`Qwen3-TTS 返回 HTTP ${resp.statusCode}`));
                 return;
               }
               try {
@@ -645,7 +680,11 @@ function buildTTSRouter(db) {
                 const arr = data.models || data.data || data || [];
                 const models = arr.map(m => typeof m === 'string' ? m : (m.name || m.id || '')).filter(Boolean);
                 resolve(models);
-              } catch (e) { reject(new Error('Failed to parse QwenAPI models response: ' + body.substring(0, 200))); }
+              } catch (e) {
+                // 安全审计 M1：不回显目标响应体
+                console.warn('[TTS] QwenAPI models 响应解析失败，前 200 字节：%s', body.substring(0, 200));
+                reject(new Error('Failed to parse QwenAPI models response'));
+              }
             });
           });
           r.on('error', (e) => {
@@ -723,7 +762,8 @@ function buildTTSRouter(db) {
         res.json([]);
       }
     } catch (e) {
-      res.status(502).json({ error: 'Failed to fetch models' });
+      // 安全审计 M1：SSRF 校验失败要返回 400（客户端错误），而不是 502（上游错误）
+      res.status(e.statusCode === 400 ? 400 : 502).json({ error: e.statusCode === 400 ? e.message : 'Failed to fetch models' });
     }
   });
 
@@ -734,6 +774,7 @@ function buildTTSRouter(db) {
     try {
       const apiKey = provider.api_key ? decrypt(provider.api_key) : '';
       const baseUrl = (provider.base_url || '').replace(/\/+$/, '');
+      assertOutboundUrlSafe(baseUrl, '供应商 base_url');   // 安全审计 M1
 
       // 云百炼 (阿里云 DashScope) — 实时拉取模型清单（compatible-mode /v1/models）
       if (isBailianProvider(baseUrl, provider.api_format)) {
@@ -747,8 +788,7 @@ function buildTTSRouter(db) {
       }
 
       // Qwen3-TTS (local or cloud) — fetch from /qwenapi/v1/models
-      const isQwenAPI = baseUrl.includes('127.0.0.1:7860') || baseUrl.includes('localhost:7860')
-        || baseUrl.includes('/qwenapi') || baseUrl.includes('cnb');
+      const isQwenAPI = isQwenBaseUrl(baseUrl);   // 安全审计 M1：精确判定
       let modelUrl;
       if (isQwenAPI) {
         if (baseUrl.endsWith('/qwenapi/v1')) modelUrl = baseUrl + '/models';
@@ -792,14 +832,20 @@ function buildTTSRouter(db) {
               return;
             }
             if (resp.statusCode !== 200) {
-              reject(new Error(`HTTP ${resp.statusCode}: ${body.substring(0, 200)}`));
+              // 安全审计 M1：不回显目标响应体（models 拉取目标为用户可控地址，可能命中内网/元数据）
+              console.warn('[TTS] models 拉取返回 HTTP %s，响应体前 200 字节：%s', resp.statusCode, body.substring(0, 200));
+              reject(new Error(`HTTP ${resp.statusCode}`));
               return;
             }
             try {
               const data = JSON.parse(body);
               const models = (data.data || data.models || data || []).map(m => typeof m === 'string' ? m : (m.id || m.name || '')).filter(Boolean);
               resolve(models);
-            } catch (e) { reject(new Error('Failed to parse models response: ' + body.substring(0, 200))); }
+            } catch (e) {
+              // 安全审计 M1：不回显目标响应体
+              console.warn('[TTS] models 响应解析失败，前 200 字节：%s', body.substring(0, 200));
+              reject(new Error('Failed to parse models response'));
+            }
           });
         });
         r.on('error', (e) => {

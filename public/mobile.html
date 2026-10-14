@@ -226,7 +226,7 @@
   </style>
 
   <!-- ===== 移动端（GAL）样式：置于桌面样式之后以覆盖 ===== -->
-  <link rel="stylesheet" href="css/mobile/vn.css?v=20261004z">
+  <link rel="stylesheet" href="css/mobile/vn.css?v=20261013a">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#060B18">
@@ -996,6 +996,7 @@
             <button class="settings-nav-btn" data-pane="image"><span class="sn-ic">🎨</span><span class="sn-tx"><b>图像生成</b><small>画风 · 供应商 · 参数</small></span></button>
             <button class="settings-nav-btn" data-pane="video"><span class="sn-ic">🎬</span><span class="sn-tx"><b>视频生成</b><small>生图的辅助 · 触发条件</small></span></button>
             <button class="settings-nav-btn" data-pane="look"><span class="sn-ic">🎛</span><span class="sn-tx"><b>外观与界面</b><small>主题 · 移动端</small></span></button>
+            <button class="settings-nav-btn" data-pane="security"><span class="sn-ic">🔒</span><span class="sn-tx"><b>访问密码</b><small>远程访问保护</small></span></button>
             <button class="settings-nav-btn" data-pane="memory"><span class="sn-ic">🧠</span><span class="sn-tx"><b>记忆表格</b><small>注入间隔 · 忽略提示</small></span></button>
           </nav>
           <div class="settings-panes">
@@ -1179,6 +1180,36 @@
         </section>
 
         <!-- 记忆表格：注入与忽略设置 -->
+        <section class="settings-pane" data-pane="security">
+          <section class="settings-section">
+            <h4>访问密码（远程访问保护）</h4>
+            <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;line-height:1.6">
+              <b>本机访问（运行 AI-GAL 的那台电脑）不需要密码</b>；<b>局域网 / 外网访问整个界面都需要密码</b>。<br>
+              当前设备是远程访问，修改密码需要先输入<strong>当前密码</strong>。
+            </p>
+            <p class="pw-note" id="mPwNote">加载中…</p>
+            <div class="form-group">
+              <label for="mPwCurrent">当前密码</label>
+              <input type="password" id="mPwCurrent" class="setting-input" autocomplete="current-password" placeholder="请输入当前访问密码">
+            </div>
+            <div class="form-group">
+              <label for="mPwNew">新密码</label>
+              <input type="password" id="mPwNew" class="setting-input" autocomplete="new-password" placeholder="至少 4 位">
+            </div>
+            <div class="form-group">
+              <label for="mPwNew2">确认新密码</label>
+              <input type="password" id="mPwNew2" class="setting-input" autocomplete="new-password" placeholder="再输一次">
+            </div>
+            <p class="pw-err" id="mPwErr" style="color:#FF7DA8;font-size:12.5px;min-height:17px;margin:4px 0"></p>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="btn btn-sm" id="mPwSave">保存密码</button>
+            </div>
+            <p style="font-size:12px;color:var(--text-muted);margin-top:10px;line-height:1.6">
+              忘记密码时，请到运行 AI-GAL 的那台电脑上，在「菜单 → 访问密码」里重置。
+            </p>
+          </section>
+        </section>
+
         <section class="settings-pane" data-pane="memory">
           <section class="settings-section">
             <h4>记忆表格注入</h4>
@@ -1822,10 +1853,10 @@
 
   <script src="js/api.js?v=20261004y"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20261012a"></script>
-  <script src="js/mobile/vn-shell.js?v=20261012a"></script>
-  <script src="js/mobile/vn-pages.js?v=20261004y"></script>
-  <script src="js/mobile/vn-stage.js?v=20261004z"></script>
+  <script src="js/app.js?v=20261013c"></script>
+  <script src="js/mobile/vn-shell.js?v=20261014b"></script>
+  <script src="js/mobile/vn-pages.js?v=20261013b"></script>
+  <script src="js/mobile/vn-stage.js?v=20261013a"></script>
 </body>
 
 </html>

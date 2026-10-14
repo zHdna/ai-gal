@@ -224,7 +224,7 @@
       }
     }
   </style>
-  <link rel="stylesheet" href="css/desktop/vn.css?v=20261004y">
+  <link rel="stylesheet" href="css/desktop/vn.css?v=20261013a">
 </head>
 
 <body>
@@ -1000,6 +1000,10 @@ confidence = 0.88</pre>
         </div>
         <div class="cm-body" id="pwModalBody">
           <p class="pw-note" id="pwNote">加载中…</p>
+          <div class="pw-row" id="pwCurrentRow" style="display:none">
+            <label for="pwCurrent">当前密码</label>
+            <input type="password" id="pwCurrent" autocomplete="current-password" placeholder="请输入当前访问密码">
+          </div>
           <div class="pw-row">
             <label for="pwNew">新密码</label>
             <input type="password" id="pwNew" autocomplete="new-password" placeholder="至少 4 位">
@@ -1013,9 +1017,13 @@ confidence = 0.88</pre>
             <button class="pw-btn primary" id="pwSave">保存密码</button>
             <button class="pw-btn" id="pwResetDefault">重置为默认 12345</button>
           </div>
+          <p class="pw-tip" id="pwResetTip">
+            <b>重置为默认密码仅在本机可用</b>（忘记密码时的兜底通道）。<br>
+            远程修改密码需要先验证当前密码。
+          </p>
           <p class="pw-tip">
             规则：<b>本机访问（这台电脑）不需要密码</b>；<b>局域网 / 外网访问整个界面都需要密码</b>。<br>
-            移动端用户忘记密码时，请在本机打开本窗口重置。
+            忘记密码时，请在本机打开本窗口重置。
           </p>
         </div>
       </div>
@@ -2306,7 +2314,7 @@ confidence = 0.88</pre>
 
   <script src="js/api.js?v=20261004y"></script>
   <script src="js/stscript.js?v=20260709a"></script>
-  <script src="js/app.js?v=20261012a"></script>
+  <script src="js/app.js?v=20261013c"></script>
   <script>
     // === Theater Enhancement: UI Logic ===
     (function () {
@@ -2384,7 +2392,7 @@ confidence = 0.88</pre>
     <div id="ttsListPopupBody" class="tts-list-popup-body"></div>
   </div>
   <script src="js/card-studio.js?v=3"></script>
-  <script src="js/desktop/vn-shell.js?v=20261012a"></script>
+  <script src="js/desktop/vn-shell.js?v=20261014b"></script>
 </body>
 
 </html>

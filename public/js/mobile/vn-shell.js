@@ -808,6 +808,87 @@
   }
 
   /* ---------------- 初始化 ---------------- */
+  /**
+   * 安全审计 M4（方案 B）：移动端「访问密码」面板。
+   * 后端已放开"已登录的远程用户可改密（需验旧密码）"，这里提供对应表单。
+   * 注意：本函数只做「改密」，**不提供重置为默认密码**（那条路仍只限本机）。
+   */
+  function bindPasswordPane() {
+    var save = document.getElementById('mPwSave');
+    if (!save) return;
+    var errEl = document.getElementById('mPwErr');
+    var noteEl = document.getElementById('mPwNote');
+
+    function refreshNote() {
+      fetch('/api/auth/status', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (s) {
+          if (!noteEl) return;
+          if (!s) { noteEl.textContent = '无法读取密码状态'; return; }
+          if (s.isLocal) { noteEl.textContent = '当前是本机访问，无需密码。'; return; }
+          noteEl.textContent = s.usingDefaultPassword
+            ? '⚠ 当前仍是默认密码 12345 —— 建议马上改成自己的密码。'
+            : '已设置自定义密码。';
+        })
+        .catch(function () { if (noteEl) noteEl.textContent = '无法读取密码状态'; });
+    }
+    refreshNote();
+    // 每次切到该面板时刷新一次状态（设置导航是 data-pane 驱动的）
+    document.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest && e.target.closest('[data-pane="security"]');
+      if (btn) setTimeout(refreshNote, 60);
+    });
+
+    save.addEventListener('click', function () {
+      var cur = document.getElementById('mPwCurrent');
+      var a = document.getElementById('mPwNew');
+      var b = document.getElementById('mPwNew2');
+      var vCur = cur ? cur.value : '';
+      var v1 = a ? a.value : '';
+      var v2 = b ? b.value : '';
+      if (errEl) errEl.textContent = '';
+      if (!vCur) { if (errEl) errEl.textContent = '请输入当前密码'; return; }
+      if (!v1 || v1.length < 4) { if (errEl) errEl.textContent = '新密码至少 4 位'; return; }
+      if (v1 !== v2) { if (errEl) errEl.textContent = '两次输入的新密码不一致'; return; }
+
+      save.disabled = true;
+      fetch('/api/auth/password', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: v1, current_password: vCur })
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+          if (!res.ok) { if (errEl) errEl.textContent = res.d.error || '保存失败'; return; }
+          toast('访问密码已更新');
+          if (cur) cur.value = ''; if (a) a.value = ''; if (b) b.value = '';
+          refreshNote();
+        })
+        .catch(function () { if (errEl) errEl.textContent = '无法连接服务器'; })
+        .then(function () { save.disabled = false; });
+    });
+  }
+
+  /**
+   * 安全审计 M4（B2 方案）：若访问密码仍是默认的 12345，在移动端提示一次。
+   * 纯只读 —— 只查 /api/auth/status 并 toast，绝不发起任何写请求。
+   * 同一设备只提示一次（localStorage 标记），避免每次进入都打扰。
+   */
+  function checkDefaultPasswordNotice() {
+    fetch('/api/auth/status', { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (s) {
+        if (!s || !s.usingDefaultPassword) return;   // 非默认密码 / 无权得知 → 不提示
+        var key = 'aigal_pw_prompt_mobile_done';
+        try { if (localStorage.getItem(key) === '1') return; } catch (e) { }
+        setTimeout(function () {
+          try { localStorage.setItem(key, '1'); } catch (e) { }
+          toast('⚠ 访问密码仍是默认的 12345 —— 请到运行 AI-GAL 的电脑上改掉', 8000);
+        }, 2600);
+      })
+      .catch(function () { /* 状态查询失败不影响使用 */ });
+  }
+
   function init() {
     initTheme();
     initFontScale();
@@ -844,6 +925,15 @@
         document.dispatchEvent(new CustomEvent('vn:page', { detail: b.dataset.refresh }));
       });
     });
+
+    bindPasswordPane();
+
+    // 安全审计 M4（B2 方案）：默认密码提醒（**只读提示，不提供改密入口**）。
+    // 移动端一律是非本机访问（本机不会走移动端布局，除手动 ?mobile=1），因此：
+    //   · 后端只对「本机或已登录」返回 usingDefaultPassword —— 移动端用户登录后可见；
+    //   · 改密接口 POST /api/auth/password 仅限本机调用，故这里只提示"回本机修改"，
+    //     不做任何写操作（不新增攻击面）。
+    checkDefaultPasswordNotice();
 
     // 观察顶栏标题（app.js 会写入会话标题）→ 同步到移动端顶栏
     var src = document.getElementById('conversationTitle');

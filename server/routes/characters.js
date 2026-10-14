@@ -26,8 +26,15 @@ const avatarUpload = multer({
     fieldSize: 20 * 1024 * 1024,  // 20MB — large JSON data in form fields (world books etc.)
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) cb(null, true);
-    else cb(new Error('Only image files allowed'));
+    // 加固（安全审计 L1 复核后降级为加固建议）：原实现只按 mimetype 判定，
+    // image/svg+xml（可内联 <script>）能绕过 multer 层。当前路由内的 magic bytes 校验
+    // （见 POST /import/file 的 PNG/JPEG 头校验）能兜住，但"先落盘后校验"意味着危险文件
+    // 会短暂存在于可静态访问的目录中。这里把类型判定前移，与 user.js 头像上传一致。
+    // ⚠️ 路由内的 magic bytes 校验必须保留 —— 两层是互补关系。
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const ALLOWED = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.bmp'];
+    if (ALLOWED.includes(ext)) return cb(null, true);
+    cb(new Error('Only image files allowed (PNG/JPG/GIF/WEBP/AVIF/BMP; SVG is not accepted)'));
   }
 });
 /**

@@ -20,6 +20,10 @@ exports.APP_KEYS = {
   ROLL_ENABLED: 'roll_enabled',
   // Roll 违规重试：AI 输出与系统判定相悖时驳回重写一次。默认开启，出问题可一键关。
   ROLL_STRICT_RETRY: 'roll_strict_retry',
+  // 记录员 AI：每轮核对剧情后把名册变动（性经验 / 关系 / 简要介绍）写回磁盘。
+  // 与管家/画家不同，它是**纯后台**任务，不影响正文与生图。
+  // 与 ROLL_ENABLED 同款口径：读取时用 !== 'false'，库里没这行也算"开启"。
+  ROSTER_KEEPER_ENABLED: 'roster_keeper_enabled',
 };
 
 // ── Image engines ──

@@ -294,13 +294,40 @@ try { db.exec(`ALTER TABLE conversations ADD COLUMN nsfw_hold INTEGER DEFAULT 0`
          AND COALESCE(api_url, '') = ''
          AND COALESCE(api_key, '') = ''
          AND COALESCE(comfyui_url, 'http://127.0.0.1:8188') = 'http://127.0.0.1:8188'
-    `).run(ANIMA.MODE, ANIMA.API_URL, ANIMA.API_KEY, ANIMA.API_MODEL, ANIMA.IMAGE_SIZE);
+    `).run(ANIMA.MODE, ANIMA.API_URL,
+      // 安全审计 M2：密钥列改为存密文，这里也必须加密写入
+      (() => { try { return require('../crypto').encrypt(ANIMA.API_KEY); } catch (e) { return ANIMA.API_KEY; } })(),
+      ANIMA.API_MODEL, ANIMA.IMAGE_SIZE);
   } catch (e) { /* Nothing to migrate */ }
 
   // --- App Settings (key-value store) ---
   db.exec(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT DEFAULT '')`);
   db.prepare(`INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`)
     .run(APP_KEYS.GLOBAL_SYSTEM_PROMPT, getDefaultSystemPrompt());
+
+  // ── 安全审计 M2：image_settings.api_key 明文 → AES-256-GCM 密文（一次性迁移）──
+  // 背景：改版前该列是明文存储且会经 GET /api/images 原样回显。改版后写入走 encrypt、
+  // 读取走 decrypt（见 routes/images.js），因此老库里的明文必须先加密，否则
+  // resolveExternalEndpoint 的 decrypt 会 fail-closed 返回空串 → 生图全线 401。
+  // 判据：非空 且 decrypt() 解不开 → 视为明文，加密之。已是密文的跳过（防二次加密毁钥）。
+  try {
+    const flag = db.prepare('SELECT value FROM app_settings WHERE key = ?').get('image_key_enc_2026');
+    if (!flag) {
+      const { encrypt, decrypt } = require('../crypto');
+      const row = db.prepare("SELECT api_key FROM image_settings WHERE id = 'default'").get();
+      const cur = row && typeof row.api_key === 'string' ? row.api_key.trim() : '';
+      if (cur) {
+        let alreadyEncrypted = false;
+        try { alreadyEncrypted = !!decrypt(cur); } catch (e) { alreadyEncrypted = false; }
+        if (!alreadyEncrypted) {
+          db.prepare("UPDATE image_settings SET api_key = ? WHERE id = 'default'").run(encrypt(cur));
+          console.log('[Migrate] image_settings.api_key 已由明文迁移为密文');
+        }
+      }
+      db.prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)')
+        .run('image_key_enc_2026', '1');
+    }
+  } catch (e) { console.warn('[Migrate] api_key 加密迁移跳过:', e && e.message); }
 
   // Roll 点机制：默认开启（INSERT OR IGNORE —— 已存在则不动，用户关掉后不会被重置）
   db.prepare(`INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`)

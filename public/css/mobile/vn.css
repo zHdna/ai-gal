@@ -3077,3 +3077,29 @@ button {
 .vn-hist-round .vn-hist-item {
   margin-bottom: 6px;
 }
+
+
+/* ── 回顾：加载更早的对话（B 方案，2026-10-13）───────────────────────────── */
+.vn-hist-earlier {
+  padding: 0 2px 10px;
+}
+
+.vn-hist-earlier-btn {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px dashed rgba(126, 178, 255, .45);
+  background: rgba(126, 178, 255, .08);
+  color: #9ec1ff;
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.vn-hist-earlier-btn:active {
+  background: rgba(126, 178, 255, .2);
+}
+
+.vn-hist-earlier-btn[disabled] {
+  opacity: .55;
+}
