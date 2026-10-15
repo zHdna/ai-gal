@@ -43,6 +43,10 @@ desktop-config.json
 # 换一台机器克隆下来它们就会变成未跟踪文件，一次 `git add -A` 就会连本机路径一起推上去。
 *.local.md
 
+# .local/ 是本机工具 / CLI 登录助手写下的机器状态（例如 .local/state/gh/device-id）。
+# 绝不入库。
+.local/
+
 # ---- 桌面版构建产物 & 工具链 ----
 # desktop/ 的源码要提交；下面是它的依赖与产物，不入库。
 desktop/node_modules/
